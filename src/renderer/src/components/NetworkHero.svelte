@@ -1,0 +1,251 @@
+<script lang="ts">
+  import { Button } from '$lib/components/ui/button'
+  import { app } from '$lib/app-state.svelte'
+  import { cn } from '$lib/utils'
+  import { PROBE_GROUPS, formatLatency, isControl, isReachable } from '@shared/network'
+  import { sinceTime } from '@shared/time'
+  import type { ProbeGroup } from '@shared/types'
+  import Power from '@lucide/svelte/icons/power'
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw'
+  import WifiOff from '@lucide/svelte/icons/wifi-off'
+  import ReachabilityRing from './ReachabilityRing.svelte'
+
+  let { now, onjump }: { now: number; onjump(group: ProbeGroup): void } = $props()
+
+  const snapshot = $derived(app.snapshot)
+  const summary = $derived(app.network)
+  const enabled = $derived(app.settings.networkChecks)
+  const atmosphere = $derived(snapshot.services.filter((service) => !isControl(service)))
+  const measured = $derived(snapshot.finishedAt !== null)
+
+  /** Requests settled out of those started, for the progress bar while a sweep runs. */
+  const progress = $derived.by(() => {
+    const checks = snapshot.services.flatMap((service) => service.checks)
+    const settled = checks.filter((check) => check.ok !== null).length
+    return { settled, total: checks.length }
+  })
+
+  /** Observed failing, but not confirmed yet: the monitor is re-checking them. */
+  const suspect = $derived(
+    atmosphere.filter((s) => s.state === 'down' || s.state === 'partial' || s.rechecking).length
+  )
+
+  const medianLatency = $derived.by(() => {
+    const times = atmosphere
+      .map((service) => service.latencyMs)
+      .filter((ms): ms is number => ms !== null)
+      .toSorted((a, b) => a - b)
+    return times.length ? times[times.length >> 1]! : null
+  })
+
+  type Tone = 'good' | 'warn' | 'bad' | 'quiet'
+
+  const verdict = $derived.by((): { title: string; tone: Tone } => {
+    if (!enabled) return { title: 'Network checks are off', tone: 'quiet' }
+    if (snapshot.offline) return { title: 'You’re offline', tone: 'quiet' }
+    if (summary.down.length) {
+      return {
+        title:
+          summary.down.length === 1
+            ? `${summary.down[0]} is unreachable`
+            : `${summary.down.length} services unreachable`,
+        tone: 'bad'
+      }
+    }
+    if (summary.degraded.length) {
+      return {
+        title:
+          summary.degraded.length === 1
+            ? `${summary.degraded[0]} is degraded`
+            : `${summary.degraded.length} services degraded`,
+        tone: 'warn'
+      }
+    }
+    if (!measured) {
+      return {
+        title: snapshot.running ? 'Checking the Atmosphere…' : 'Not checked yet',
+        tone: 'quiet'
+      }
+    }
+    if (suspect) {
+      return {
+        title: `Re-checking ${suspect} service${suspect === 1 ? '' : 's'}`,
+        tone: 'warn'
+      }
+    }
+    return { title: 'The Atmosphere is reachable', tone: 'good' }
+  })
+
+  const detail = $derived.by((): string => {
+    if (!enabled) {
+      return 'Turn them on to measure relays, PDSes and AppViews from this computer.'
+    }
+    if (snapshot.offline) {
+      return 'None of the control checks got through, so nothing else can be judged. Checking again every 30 seconds.'
+    }
+    if (snapshot.running) {
+      return progress.total
+        ? `Checking… ${progress.settled} of ${progress.total} requests answered`
+        : 'Starting…'
+    }
+    if (!measured) return 'Measures every service from this computer.'
+    const parts = [`${summary.reachable} of ${summary.total} answering`]
+    if (medianLatency !== null) parts.push(`median ${formatLatency(medianLatency)}`)
+    return parts.join(' · ')
+  })
+
+  const TONE: Record<Tone, { wash: string; title: string }> = {
+    good: {
+      wash: 'from-sev-resolved/14',
+      title: 'text-foreground'
+    },
+    warn: {
+      wash: 'from-sev-investigating/16',
+      title: 'text-sev-investigating'
+    },
+    bad: {
+      wash: 'from-sev-outage/18',
+      title: 'text-sev-outage'
+    },
+    quiet: {
+      wash: 'from-muted-foreground/10',
+      title: 'text-foreground'
+    }
+  }
+
+  const tone = $derived(TONE[verdict.tone])
+
+  /**
+   * Each Atmosphere group's tally, doubling as a way to jump down the list. The control
+   * group is left out, as it is from the ring: it measures the user, not the network.
+   */
+  const groups = $derived(
+    PROBE_GROUPS.filter((group) => group.id !== 'internet')
+      .map(({ id, title }) => {
+        const services = snapshot.services.filter((service) => service.group === id)
+        const up = services.filter((service) => isReachable(service.state)).length
+        const failing = services.some((s) => s.state === 'down' || s.state === 'partial')
+        return { id, title, up, count: services.length, failing }
+      })
+      .filter((group) => group.count > 0)
+  )
+</script>
+
+<section
+  class={cn(
+    'relative overflow-hidden rounded-xl border border-border/60 bg-card/60 bg-gradient-to-br via-transparent to-transparent p-3',
+    tone.wash
+  )}
+>
+  <div class="flex items-center gap-3.5">
+    <ReachabilityRing
+      states={atmosphere.map((service) => service.state)}
+      reachable={measured || snapshot.running ? summary.reachable : 0}
+      total={atmosphere.length}
+      dim={!enabled || snapshot.offline}
+    />
+
+    <div class="min-w-0 flex-1">
+      <div class="flex items-center gap-1.5">
+        {#if snapshot.offline}
+          <WifiOff class="size-3.5 shrink-0 text-muted-foreground" />
+        {/if}
+        <h2 class={cn('truncate text-[14px] leading-tight font-semibold', tone.title)}>
+          {verdict.title}
+        </h2>
+      </div>
+      <p class="mt-1 text-[11.5px] leading-snug text-muted-foreground" aria-live="polite">
+        {detail}
+      </p>
+      {#if enabled && !snapshot.running && !snapshot.offline}
+        <p class="mt-0.5 flex items-center gap-1 text-[10.5px] text-muted-foreground/80">
+          {#if snapshot.finishedAt}
+            Checked {sinceTime(snapshot.finishedAt, now)} ·
+          {/if}
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 font-medium text-primary transition-opacity hover:opacity-80"
+            onclick={() => app.runNetworkChecks()}
+          >
+            <RefreshCw class="size-2.5" />
+            Check now
+          </button>
+        </p>
+      {/if}
+    </div>
+
+    {#if !enabled}
+      <Button
+        size="sm"
+        class="shrink-0"
+        onclick={() => void app.patchSettings({ networkChecks: true })}
+      >
+        <Power class="size-3.5" />
+        Turn on
+      </Button>
+    {/if}
+  </div>
+
+  {#if enabled && groups.length}
+    <div class="mt-2.5 flex flex-wrap gap-1">
+      {#each groups as group (group.id)}
+        <button
+          type="button"
+          onclick={() => onjump(group.id)}
+          class={cn(
+            'flex items-center gap-1 rounded-full border border-border/60 bg-background/35 px-1.5 py-[1px] text-[10px] transition-colors hover:bg-accent/60',
+            group.failing && !snapshot.offline ? 'text-foreground' : 'text-muted-foreground'
+          )}
+        >
+          <span
+            class={cn(
+              'size-1.5 rounded-full',
+              snapshot.offline
+                ? 'bg-muted-foreground/40'
+                : group.failing
+                  ? 'bg-sev-outage'
+                  : group.up === group.count
+                    ? 'bg-sev-resolved'
+                    : 'bg-muted-foreground/40'
+            )}
+            aria-hidden="true"
+          ></span>
+          {group.id === 'infrastructure' ? 'Infra' : group.title}
+          <span class="tabular-nums opacity-75">{group.up}/{group.count}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if snapshot.running && progress.total}
+    <div class="absolute inset-x-0 bottom-0 h-[2px] bg-border/40" aria-hidden="true">
+      <div
+        class="progress h-full bg-primary transition-[width] duration-300 ease-out"
+        style:width="{Math.round((progress.settled / progress.total) * 100)}%"
+      ></div>
+    </div>
+  {/if}
+</section>
+
+<style>
+  .progress {
+    background-image: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in oklch, white 45%, transparent),
+      transparent
+    );
+    background-size: 60px 100%;
+    background-repeat: no-repeat;
+    animation: sheen 1.1s linear infinite;
+  }
+
+  @keyframes sheen {
+    from {
+      background-position: -60px 0;
+    }
+    to {
+      background-position: calc(100% + 60px) 0;
+    }
+  }
+</style>

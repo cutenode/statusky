@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": false,
+    "types": ["vite/client"],
+    "paths": {
+      "$lib": ["./src/renderer/src/lib"],
+      "$lib/*": ["./src/renderer/src/lib/*"],
+      "@shared/*": ["./src/shared/*"],
+      "@ipc/*": ["./src/ipc/*"],
+      "@components/*": ["./src/renderer/src/components/*"]
+    }
+  },
+  "include": [
+    "src/renderer/src/**/*.ts",
+    "src/renderer/src/**/*.svelte",
+    "src/test/bridge.ts",
+    "src/test/factories.ts",
+    "src/test/cbor.ts",
+    "src/shared/**/*.ts",
+    "src/ipc/common/**/*.ts",
+    "src/ipc/renderer/**/*.ts",
+    "src/ipc/_internal/common/**/*.ts",
+    "src/ipc/_internal/renderer/**/*.ts",
+    "src/preload/**/*.d.ts"
+  ]
+}

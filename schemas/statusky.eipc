@@ -1,0 +1,209 @@
+// The one description of the renderer <-> main boundary.
+//
+// `npm run generate:ipc` turns this into src/ipc/, which registers the handlers,
+// validates every argument and return value, exposes the API through contextBridge
+// and gives the renderer a typed client. Nothing here is hand-wired, so main and
+// renderer cannot drift.
+//
+// The module name is the namespace on `window`, so the renderer sees
+// `window.statusky.<Interface>.<method>()`.
+module statusky
+
+// Origin validation. Run twice: in the preload, to decide whether the API is exposed
+// to this frame at all, and again in the main process on every single call.
+//
+// The popover is the only page allowed to talk to main. In a packaged build it is
+// served from the app:// scheme registered in src/main/protocol.ts — a real, private
+// origin, unlike file://, where every local page shares one origin. In development it
+// comes from electron-vite's dev server on loopback. Sub-frames never qualify: a
+// remote page embedded in an iframe must not inherit the popover's reach.
+//
+// Which branch is compiled in is decided by EIPC_ENV/NODE_ENV at generation time, not
+// at runtime, so a production build physically cannot contain the loopback rule.
+//
+// The development branch covers both ways of running from source: `npm run dev`, where
+// the popover comes from the dev server on loopback, and `npm start`, which previews
+// the built renderer over the same app:// origin a packaged build uses — but unpackaged,
+// which the production branch rightly refuses.
+validator PopoverOnly = {
+    production: AND(
+        is_packaged is true
+        is_main_frame is true
+        origin is "app://statusky"
+    )
+    development: AND(
+        is_packaged is false
+        is_main_frame is true
+        OR(
+            origin is "app://statusky"
+            AND(
+                protocol is "http:"
+                OR(
+                    hostname is "localhost"
+                    hostname is "127.0.0.1"
+                )
+            )
+        )
+    )
+}
+
+// The payload types live in src/shared/types.ts and are validated by the Zod schemas
+// in src/shared/schemas.ts. They are referenced rather than redeclared here because
+// the schema language has no discriminated unions, and because one definition of
+// `Account` is better than two.
+zod_reference AppState {
+    import = "../../../shared/schemas"
+    type = "AppState"
+    schema = "appStateSchema"
+}
+
+zod_reference Account {
+    import = "../../../shared/schemas"
+    type = "Account"
+    schema = "accountSchema"
+}
+
+zod_reference AccountPatch {
+    import = "../../../shared/schemas"
+    type = "AccountPatch"
+    schema = "accountPatchSchema"
+}
+
+zod_reference Settings {
+    import = "../../../shared/schemas"
+    type = "Settings"
+    schema = "settingsSchema"
+}
+
+zod_reference SettingsPatch {
+    import = "../../../shared/schemas"
+    type = "SettingsPatch"
+    schema = "settingsPatchSchema"
+}
+
+zod_reference ResolvedProfile {
+    import = "../../../shared/schemas"
+    type = "ResolvedProfile"
+    schema = "resolvedProfileSchema"
+}
+
+zod_reference Platform {
+    import = "../../../shared/schemas"
+    type = "Platform"
+    schema = "platformSchema"
+}
+
+zod_reference WebhookStatus {
+    import = "../../../shared/schemas"
+    type = "WebhookStatus"
+    schema = "webhookStatusSchema"
+}
+
+zod_reference NetworkSnapshot {
+    import = "../../../shared/schemas"
+    type = "NetworkSnapshot"
+    schema = "networkSnapshotSchema"
+}
+
+zod_reference NetworkReveal {
+    import = "../../../shared/schemas"
+    type = "NetworkReveal"
+    schema = "networkRevealSchema"
+}
+
+// The renderer holds no state of its own: it asks for a snapshot once and then
+// redraws from whatever main pushes.
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface State {
+    get() -> AppState
+
+    [Event]
+    changed(state: AppState)
+}
+
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface Accounts {
+    add(input: string) -> Account
+    remove(did: string)
+    patch(did: string, patch: AccountPatch) -> Account
+}
+
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface Preferences {
+    patch(patch: SettingsPatch) -> Settings
+}
+
+// Reading is a cursor per source rather than a list of unread URIs, so `markRead` is
+// "these posts, out of order" and `markReadThrough` is "this one and everything older
+// than it, across every source", which is the thing only a cursor can say. See
+// `ReadState` in src/main/state.ts.
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface Feed {
+    refresh()
+    markRead(uris: string[])
+    markReadThrough(uri: string)
+    markAllRead()
+}
+
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface Actors {
+    resolve(input: string) -> ResolvedProfile
+}
+
+// The local receiver for pushed status updates. Whether it listens at all, and on
+// which port, are ordinary settings and go through `Preferences`; this is only the
+// one action that is not a preference.
+//
+// The endpoint URL — secret included — is read from `AppState.webhook`, which the
+// popover already receives on every change.
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface Webhook {
+    regenerateSecret() -> WebhookStatus
+}
+
+// The live network dashboard. Its snapshot changes with every request a sweep makes, so
+// it travels on its own channel rather than on `State.changed`, which carries every post;
+// the summary the header and tray need is on `AppState.network`.
+//
+// `reveal` is main asking the popover to show the dashboard, optionally at one service:
+// a notification about that service was clicked, or the tray menu was used.
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface Network {
+    get() -> NetworkSnapshot
+    run()
+
+    [Event]
+    changed(snapshot: NetworkSnapshot)
+
+    [Event]
+    reveal(target: NetworkReveal)
+}
+
+// Things that reach outside the app: the OS shell, the window, the process.
+// `openExternal` takes any string because the scheme allowlist lives in main —
+// the schema language cannot express "http or https".
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface Host {
+    openExternal(url: string)
+    copyText(text: string)
+    hideWindow()
+    quit()
+    sendTestNotification()
+    getPlatform() -> Platform
+}

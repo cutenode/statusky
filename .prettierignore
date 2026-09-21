@@ -1,0 +1,11 @@
+out
+dist
+release
+coverage
+node_modules
+package-lock.json
+resources
+build
+src/ipc
+src/ipc-development
+*.eipc

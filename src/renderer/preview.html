@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Statusky — UI preview</title>
+    <style>
+      /* Approximate the popover's real size and float it on a neutral backdrop, so
+         layout problems show up here exactly as they would in the menu bar. */
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        background: #1a1c22;
+      }
+      #app {
+        width: 440px;
+        height: 640px;
+        overflow: hidden;
+        border-radius: 12px;
+        box-shadow: 0 24px 60px rgb(0 0 0 / 0.5);
+      }
+      body.light-preview {
+        background: #d8dae2;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      // A stand-in for the preload bridge so the real UI can be developed and
+      // reviewed in a browser. This file is dev-server only — it is not a build
+      // input, so it never ships.
+      //
+      // The shape mirrors the interfaces in schemas/statusky.eipc, which is what the
+      // generated preload puts on `window.statusky` in the real app. Failures reject,
+      // because that is how they arrive from the generated client.
+      import fixture from './fixtures/state.json'
+      import networkFixture from './fixtures/network.json'
+      import { summarizeNetwork } from '@shared/network'
+
+      const params = new URLSearchParams(location.search)
+      const state = structuredClone(fixture)
+      const listeners = new Set()
+      const push = () => {
+        for (const listener of listeners) listener(structuredClone(state))
+      }
+      const fail = (message) => Promise.reject(new Error(message))
+
+      // ------------------------------------------------------------ network
+      //
+      // `?network=outage|offline|off|running` puts the dashboard in a state worth
+      // designing against; `?view=network` (or `?reveal=<service id>`) opens on it.
+      let network = structuredClone(networkFixture)
+      const networkListeners = new Set()
+      const revealListeners = new Set()
+      const pushNetwork = () => {
+        state.network = summarizeNetwork(network, state.settings.networkChecks)
+        for (const listener of networkListeners) listener(structuredClone(network))
+        push()
+      }
+      const serviceById = (id) => network.services.find((s) => s.id === id)
+      const minutesAgo = (m) => new Date(Date.now() - m * 60_000).toISOString()
+
+      const scenario = params.get('network')
+      if (scenario === 'outage') {
+        const relay = serviceById('relay:relay1.us-east.bsky.network')
+        Object.assign(relay, {
+          state: 'down',
+          condition: 'down',
+          since: minutesAgo(12),
+          latencyMs: null,
+          checks: relay.checks.map((check) => ({
+            ...check,
+            ok: false,
+            error:
+              check.kind === 'stream'
+                ? 'Firehose connection closed (1006)'
+                : 'Connection timed out',
+            durationMs: check.kind === 'stream' ? 3120 : 30000
+          }))
+        })
+        relay.history.splice(
+          -3,
+          3,
+          ...[3, 2, 1].map((i) => ({ at: minutesAgo(i * 4), state: 'down', latencyMs: null }))
+        )
+        const pds = serviceById('pds:morel.us-east.host.bsky.network')
+        Object.assign(pds, {
+          state: 'partial',
+          condition: 'partial',
+          since: minutesAgo(31),
+          checks: pds.checks.map((check) =>
+            check.label === 'listRecords'
+              ? { ...check, ok: false, error: 'HTTP 502', durationMs: 814 }
+              : check
+          )
+        })
+        pds.history.splice(
+          -2,
+          2,
+          { at: minutesAgo(10), state: 'partial', latencyMs: 700 },
+          { at: minutesAgo(1), state: 'partial', latencyMs: 690 }
+        )
+        const appview = serviceById('appview:api.pop2.bsky.app')
+        Object.assign(appview, { state: 'slow', latencyMs: 16400 })
+      } else if (scenario === 'offline') {
+        network.offline = true
+        for (const service of network.services) {
+          service.state = 'down'
+          service.checks = service.checks.map((check) => ({
+            ...check,
+            ok: false,
+            error: 'No internet connection',
+            durationMs: 2
+          }))
+        }
+      } else if (scenario === 'off') {
+        state.settings.networkChecks = false
+        network = {
+          running: false,
+          startedAt: null,
+          finishedAt: null,
+          offline: false,
+          services: network.services.map((s) => ({
+            ...s,
+            state: 'pending',
+            condition: 'unknown',
+            checks: [],
+            history: [],
+            latencyMs: null
+          }))
+        }
+      }
+      state.network = summarizeNetwork(network, state.settings.networkChecks)
+
+      /** A pretend sweep: every check goes back to pending and settles at its own pace. */
+      let sweeping = null
+      function sweep() {
+        if (sweeping) return sweeping
+        const started = Date.now()
+        network.running = true
+        network.startedAt = new Date(started).toISOString()
+        const finals = network.services.map((service) => structuredClone(service))
+        for (const service of network.services) {
+          service.state = 'pending'
+          service.startedAt = network.startedAt
+          service.checks = service.checks.map((check) => ({
+            ...check,
+            ok: null,
+            error: null,
+            durationMs: null
+          }))
+        }
+        pushNetwork()
+        sweeping = new Promise((resolve) => {
+          let remaining = finals.reduce((n, s) => n + s.checks.length, 0)
+          finals.forEach((final, s) => {
+            final.checks.forEach((check, c) => {
+              setTimeout(
+                () => {
+                  const live = network.services[s]
+                  live.checks[c] = check
+                  if (live.checks.every((x) => x.ok !== null)) {
+                    live.state = final.state
+                    live.latencyMs = final.latencyMs
+                    live.checkedAt = new Date().toISOString()
+                    live.history = [
+                      ...final.history.slice(1),
+                      { at: live.checkedAt, state: final.state, latencyMs: final.latencyMs }
+                    ]
+                  }
+                  pushNetwork()
+                  if (--remaining === 0) {
+                    network.running = false
+                    network.finishedAt = new Date().toISOString()
+                    pushNetwork()
+                    sweeping = null
+                    resolve()
+                  }
+                },
+                300 + Math.random() * 2600
+              )
+            })
+          })
+        })
+        return sweeping
+      }
+
+      window.statusky = {
+        State: {
+          get: () => Promise.resolve(structuredClone(state)),
+          onChanged(listener) {
+            listeners.add(listener)
+            return () => listeners.delete(listener)
+          }
+        },
+        Accounts: {
+          add: (input) => fail(`Preview mode: cannot resolve "${input}".`),
+          remove: async (did) => {
+            state.accounts = state.accounts.filter((a) => a.did !== did)
+            state.posts = state.posts.filter((p) => p.authorDid !== did)
+            push()
+          },
+          patch: async (did, patch) => {
+            const account = state.accounts.find((a) => a.did === did)
+            if (account) Object.assign(account, patch)
+            push()
+            return account
+          }
+        },
+        Preferences: {
+          patch: async (patch) => {
+            const wasChecking = state.settings.networkChecks
+            Object.assign(state.settings, patch)
+            if (!wasChecking && state.settings.networkChecks) setTimeout(sweep)
+            // The receiver only exists while it is switched on, as in the real app.
+            state.webhook = {
+              ...state.webhook,
+              state: state.settings.webhookEnabled ? 'listening' : 'off',
+              port: state.settings.webhookEnabled ? state.settings.webhookPort : null
+            }
+            push()
+            return state.settings
+          }
+        },
+        Feed: {
+          refresh: async () => {
+            state.sync = { ...state.sync, status: 'syncing' }
+            push()
+            setTimeout(() => {
+              state.sync = { status: 'idle', lastSyncedAt: new Date().toISOString(), error: null }
+              push()
+            }, 900)
+          },
+          markRead: async (uris) => {
+            state.unread = state.unread.filter((u) => !uris.includes(u))
+            push()
+          },
+          // Main holds a cursor per source; over a flat list the same statement is
+          // "drop everything posted no later than this one".
+          markReadThrough: async (uri) => {
+            const target = state.posts.find((p) => p.uri === uri)
+            if (!target) return
+            const through = Date.parse(target.createdAt)
+            const newer = new Set(
+              state.posts.filter((p) => Date.parse(p.createdAt) > through).map((p) => p.uri)
+            )
+            state.unread = state.unread.filter((u) => newer.has(u))
+            push()
+          },
+          markAllRead: async () => {
+            state.unread = []
+            push()
+          }
+        },
+        Actors: {
+          resolve: () => fail('Preview mode.')
+        },
+        Network: {
+          get: async () => structuredClone(network),
+          run: () => (state.settings.networkChecks ? sweep() : Promise.resolve()),
+          onChanged(listener) {
+            networkListeners.add(listener)
+            return () => networkListeners.delete(listener)
+          },
+          onReveal(listener) {
+            revealListeners.add(listener)
+            return () => revealListeners.delete(listener)
+          }
+        },
+        Webhook: {
+          regenerateSecret: async () => {
+            state.webhook = {
+              ...state.webhook,
+              url: state.webhook.url.replace(/[^/]+$/, `preview-secret-${Date.now()}`)
+            }
+            push()
+            return state.webhook
+          }
+        },
+        Host: {
+          openExternal: async (url) => {
+            console.log('[preview] openExternal', url)
+          },
+          copyText: async (text) => {
+            console.log('[preview] copyText', text)
+          },
+          hideWindow: async () => {},
+          quit: async () => {},
+          sendTestNotification: async () => {},
+          getPlatform: async () => 'darwin'
+        }
+      }
+
+      // `?theme=light` forces the light palette; otherwise follow the browser.
+      const theme = params.get('theme')
+      if (theme) {
+        document.body.classList.toggle('light-preview', theme === 'light')
+        Object.defineProperty(window, 'matchMedia', {
+          value: () => ({
+            matches: theme === 'dark',
+            addEventListener() {},
+            removeEventListener() {}
+          })
+        })
+      }
+
+      await import('./src/main.ts')
+
+      const reveal = params.get('reveal') ?? (params.get('view') === 'network' ? '' : null)
+      if (reveal !== null || scenario === 'running') {
+        // Wait for the app to subscribe, as it always has before main could ever ask.
+        const ask = () => {
+          if (!revealListeners.size) return setTimeout(ask, 20)
+          if (reveal !== null) {
+            for (const listener of revealListeners) listener({ serviceId: reveal || null })
+          }
+          if (scenario === 'running') sweep()
+        }
+        ask()
+      }
+    </script>
+  </body>
+</html>
