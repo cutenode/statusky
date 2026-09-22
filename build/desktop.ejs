@@ -1,0 +1,26 @@
+<%#
+  Vendored from electron-installer-debian's resources/desktop.ejs (3.2.0), with one
+  change: StartupNotify is false rather than true.
+
+  Statusky has no window to raise, so the launch feedback the startup notification
+  protocol asks for — a bouncing cursor, then a taskbar entry — never resolves into
+  anything the user can see, and the desktop shell eventually gives up on its own after
+  several seconds of pretending the app is starting. electron-builder expressed this as
+  `linux.desktop.entry.StartupNotify`; @electron-forge/maker-deb has no per-key override
+  of the desktop entry, only `desktopTemplate`, so the whole template comes along.
+
+  That means owning it: if electron-installer-debian changes its template upstream, this
+  copy silently keeps the old one. It is eleven lines, so the cost of re-reading it at
+  upgrade time is small, but it is not zero.
+-%>
+[Desktop Entry]
+<% if (productName) { %>Name=<%= productName %>
+<% } %><% if (description) { %>Comment=<%= description %>
+<% } %><% if (genericName) { %>GenericName=<%= genericName %>
+<% } %><% if (name) { %>Exec=<%= name %> %U
+Icon=<%= name %>
+<% } %>Type=Application
+StartupNotify=false
+<% if (categories && categories.length) { %>Categories=<%= categories.join(';') %>;
+<% } %><% if (mimeType && mimeType.length) { %>MimeType=<%= mimeType.join(';') %>;
+<% } %>

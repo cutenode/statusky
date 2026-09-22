@@ -203,14 +203,8 @@ const NPM_SHORTHANDS = new Map([
   ['start', 'start']
 ])
 
-/** electron-builder commands that manage dependencies or artifacts rather than packaging out/. */
-const NOT_PACKAGING = new Set([
-  'install-app-deps',
-  'node-gyp-rebuild',
-  'create-self-signed-cert',
-  'clear-cache',
-  'publish'
-])
+/** The Electron Forge subcommands that take what is in out/ and turn it into artifacts. */
+const FORGE_PACKAGING = new Set(['package', 'make', 'publish'])
 
 function runCommand(
   scripts: Scripts,
@@ -274,12 +268,23 @@ function runCommand(
     return { ...ledger, touched: true }
   }
 
-  const builder = locate(argv, 'electron-builder')
-  if (builder !== -1 && !NOT_PACKAGING.has(subcommand(argv, builder) ?? '')) {
-    // electron-builder packages out/ and never reads src/ipc, so regenerating the wiring is
-    // not enough on its own: out/ has to have been built from production wiring.
-    expectBuild(ledger.out, 'production', shown, trail)
-    return { ...ledger, touched: true }
+  const forge = locate(argv, 'electron-forge')
+  if (forge !== -1) {
+    if (FORGE_PACKAGING.has(subcommand(argv, forge) ?? '')) {
+      // Forge packages out/ and never reads src/ipc, so regenerating the wiring is not
+      // enough on its own: out/ has to have been built from production wiring. `publish`
+      // packages and makes on its way to uploading, so it is no different from `make`.
+      expectBuild(ledger.out, 'production', shown, trail)
+      return { ...ledger, touched: true }
+    }
+    // Everything else Forge can be told to do either scaffolds a project or runs the app
+    // (`start`, which would want development wiring and a development build, and which
+    // this project does not use — `npm start` is electron-vite's preview). Refusing is
+    // deliberate, and matches what an unknown electron-vite command does: a packaging
+    // command that slipped through here unrecognised would return the ledger unchanged
+    // and ship a build that refuses every IPC call, which is the whole reason this file
+    // exists.
+    throw new Violation(trail, `${shown} is not an electron-forge command this check knows`)
   }
 
   return ledger
@@ -442,7 +447,7 @@ describe('checkScripts', () => {
         checkScripts({
           check: 'tsc --noEmit',
           build: 'npm run check && electron-vite build',
-          dist: 'npm run build && electron-builder'
+          dist: 'npm run build && electron-forge make'
         })
       ).toEqual([
         'build: `electron-vite build` runs without generating production IPC wiring first',
@@ -535,31 +540,34 @@ describe('checkScripts', () => {
         checkScripts({
           prebuild: generate('production'),
           build: 'electron-vite build',
-          dist: 'npm run build && electron-builder --mac'
+          dist: 'npm run build && electron-forge make --platform=darwin'
         })
       ).toEqual([])
     })
 
-    it('refuses to package an out/ nothing in the run built', () => {
-      expect(checkScripts({ dist: 'electron-builder --mac' })).toEqual([
-        'dist: `electron-builder --mac` uses out/ without building it from production IPC wiring first'
-      ])
-    })
+    it.each(['package', 'make', 'publish'])(
+      'refuses to %s an out/ nothing in the run built',
+      (command) => {
+        expect(checkScripts({ dist: `electron-forge ${command}` })).toEqual([
+          `dist: \`electron-forge ${command}\` uses out/ without building it from production IPC wiring first`
+        ])
+      }
+    )
 
-    // electron-builder never reads src/ipc, so this would package whatever was built last.
+    // Forge never reads src/ipc, so this would package whatever was built last.
     it('does not accept a production generation that never rebuilt out/', () => {
-      expect(checkScripts({ dist: `${generate('production')} && electron-builder` })).toEqual([
-        'dist: `electron-builder` uses out/ without building it from production IPC wiring first'
+      expect(checkScripts({ dist: `${generate('production')} && electron-forge make` })).toEqual([
+        'dist: `electron-forge make` uses out/ without building it from production IPC wiring first'
       ])
     })
 
     it('refuses to package the out/ a development preview built', () => {
       expect(
         checkScripts({
-          package: `${generate('development')} && electron-vite preview && electron-builder --dir`
+          package: `${generate('development')} && electron-vite preview && electron-forge package`
         })
       ).toEqual([
-        'package: `electron-builder --dir` uses an out/ built from development IPC wiring but needs production'
+        'package: `electron-forge package` uses an out/ built from development IPC wiring but needs production'
       ])
     })
 
@@ -573,10 +581,6 @@ describe('checkScripts', () => {
       ).toEqual([
         'start: `electron-vite preview --skipBuild` uses out/ without building it from development IPC wiring first'
       ])
-    })
-
-    it('ignores electron-builder commands that do not package', () => {
-      expect(checkScripts({ postinstall: 'electron-builder install-app-deps' })).toEqual([])
     })
   })
 
@@ -613,6 +617,19 @@ describe('checkScripts', () => {
       ).toEqual([
         'start: `electron-vite --mode staging preview` is not an electron-vite command this check knows'
       ])
+    })
+
+    // `electron-forge start` would run the app from out/ on development wiring, which is
+    // a different question from packaging; nothing here answers it, so nothing here
+    // pretends to.
+    it('rejects an electron-forge command it does not recognise', () => {
+      expect(
+        checkScripts({
+          prebuild: generate('production'),
+          build: 'electron-vite build',
+          dev: 'npm run build && electron-forge start'
+        })
+      ).toEqual(['dev: `electron-forge start` is not an electron-forge command this check knows'])
     })
   })
 })

@@ -4,6 +4,7 @@ import type {
   IFeedRenderer,
   IHostRenderer,
   INetworkRenderer,
+  IPopoverRenderer,
   IPreferencesRenderer,
   IStateRenderer,
   IWebhookRenderer
@@ -19,6 +20,7 @@ export interface StatuskyBridge {
   Webhook: IWebhookRenderer
   Network: INetworkRenderer
   Host: IHostRenderer
+  Popover: IPopoverRenderer
 }
 
 /**

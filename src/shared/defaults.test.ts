@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   BUILTIN_ACCOUNTS,
   DEFAULT_SETTINGS,
+  formatAccelerator,
+  GLOBAL_SHORTCUT_CHOICES,
   MAX_STORED_POSTS,
   POLL_INTERVAL_CHOICES,
   PUBLIC_APPVIEW
@@ -69,6 +71,60 @@ describe('DEFAULT_SETTINGS', () => {
 
   it('is the default poll interval offered in the UI', () => {
     expect(POLL_INTERVAL_CHOICES.map((c) => c.value)).toContain(DEFAULT_SETTINGS.pollIntervalSec)
+  })
+
+  /**
+   * A global shortcut is taken from every other application on the machine for as long
+   * as this one runs, which is not something an app gets to do to somebody who never
+   * asked for it.
+   */
+  it('claims no key combination from the rest of the machine', () => {
+    expect(DEFAULT_SETTINGS.globalShortcut).toBe('')
+    expect(GLOBAL_SHORTCUT_CHOICES).toContain(DEFAULT_SETTINGS.globalShortcut)
+  })
+})
+
+describe('GLOBAL_SHORTCUT_CHOICES', () => {
+  it('offers off, and nothing twice', () => {
+    expect(GLOBAL_SHORTCUT_CHOICES[0]).toBe('')
+    expect(new Set(GLOBAL_SHORTCUT_CHOICES).size).toBe(GLOBAL_SHORTCUT_CHOICES.length)
+  })
+
+  /**
+   * `CommandOrControl` is the whole point of offering a fixed list: it is the one
+   * modifier that means a different key on each platform, so every combination here is
+   * one the OS can honour wherever the app runs.
+   */
+  it('names a real modifier and a real key in every combination', () => {
+    for (const choice of GLOBAL_SHORTCUT_CHOICES.filter(Boolean)) {
+      const parts = choice.split('+')
+      expect(parts.length).toBeGreaterThanOrEqual(2)
+      expect(parts.at(-1)).toMatch(/^[A-Z0-9]$/)
+    }
+  })
+})
+
+describe('formatAccelerator', () => {
+  /**
+   * The accelerator is the string the OS needs and is not a thing to show anybody: macOS
+   * writes that combination `⌘⇧S` with no separators, and Windows and Linux write it
+   * `Ctrl+Shift+S`. Showing the raw string would be a small lie on one platform or the
+   * other, since `CommandOrControl` is exactly the part that differs.
+   */
+  it('writes a combination the way each platform writes it', () => {
+    expect(formatAccelerator('CommandOrControl+Shift+S', 'darwin')).toBe('⌘⇧S')
+    expect(formatAccelerator('CommandOrControl+Shift+S', 'win32')).toBe('Ctrl+Shift+S')
+    expect(formatAccelerator('Alt+Shift+S', 'darwin')).toBe('⌥⇧S')
+    expect(formatAccelerator('Alt+Shift+S', 'linux')).toBe('Alt+Shift+S')
+  })
+
+  it('says "Off" rather than nothing at all for no shortcut', () => {
+    expect(formatAccelerator('', 'darwin')).toBe('Off')
+  })
+
+  it('passes a modifier it has no symbol for through unchanged', () => {
+    expect(formatAccelerator('Ctrl+F13', 'darwin')).toBe('⌃F13')
+    expect(formatAccelerator('Super+K', 'win32')).toBe('Win+K')
   })
 })
 

@@ -86,17 +86,44 @@ export function frame(header: unknown, body: unknown): ArrayBuffer {
   return bytes.buffer
 }
 
-/** A `#commit` event stamped `time`. */
+/**
+ * A CID link as the firehose writes one: the 0x00 multibase prefix a DAG-CBOR link
+ * carries, then a CIDv1 (0x01) dag-cbor (0x71) sha2-256 (0x12 0x20) digest. Thirty-seven
+ * bytes, which is what every link in a real frame measures.
+ */
+const CID = new Tagged(
+  42,
+  new Uint8Array([0x00, 0x01, 0x71, 0x12, 0x20, ...Array.from({ length: 32 }, (_, i) => i + 1)])
+)
+
+/**
+ * A `#commit` event stamped `time`.
+ *
+ * Both maps are the shape `bsky.network` sends, key for key and in its order, captured
+ * from `com.atproto.sync.subscribeRepos` on 2026-09-22 — including the three CID links
+ * and the CAR block bytes that only the header's `t` and the body's `time` are ever read
+ * past. A thinner stand-in decoded just as happily, which is the trouble with it: it
+ * could not tell a decoder that had fallen behind the wire from one that had not, and
+ * the day the dashboard called every relay in the Atmosphere silent, this fixture was
+ * the first thing that had to be ruled out. Now it rules itself out.
+ */
 export function commitFrame(time: string | number = new Date().toISOString()): ArrayBuffer {
   return frame(
-    { op: 1, t: '#commit' },
+    { t: '#commit', op: 1 },
     {
-      seq: 1,
+      ops: [{ cid: CID, path: 'app.bsky.feed.post/3mw2wlvjjdd23', action: 'create' }],
+      rev: '3mw2wlvjt3t23',
+      seq: 33_825_347_653,
       repo: 'did:plc:someone',
-      rev: '3abc',
       time,
-      ops: [{ action: 'create', path: 'app.bsky.feed.post/3abc', cid: null }],
-      blocks: new Uint8Array([1, 2, 3])
+      blobs: [],
+      since: '3mw2wlmd4tg2v',
+      // A real one is a CAR file of a few kilobytes; its length is all that is copied.
+      blocks: new Uint8Array(2449),
+      commit: CID,
+      rebase: false,
+      tooBig: false,
+      prevData: CID
     }
   )
 }

@@ -225,6 +225,33 @@ describe('PostCard', () => {
   })
 })
 
+/**
+ * Right-click is answered by a menu the main process draws — see src/main/context-menu.ts
+ * — and the one thing this side is responsible for is asking for it, with the update's
+ * URI and nothing else. Everything the menu says is read out of main's own state, which
+ * is what stops a page putting words of its own in front of somebody.
+ */
+describe('the context menu', () => {
+  it('asks main for a menu on the update that was right-clicked', async () => {
+    const post = makePost()
+    const { container, bridge } = await renderWith(PostCard, { post, now: NOW }, { posts: [post] })
+
+    await fireEvent.contextMenu(container.querySelector('article')!)
+
+    expect(bridge.api.Popover.postMenu).toHaveBeenCalledWith(post.uri)
+  })
+
+  it('does not leave the page to answer as well', async () => {
+    const post = makePost()
+    const { container } = await renderWith(PostCard, { post, now: NOW }, { posts: [post] })
+
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    container.querySelector('article')!.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+  })
+})
+
 describe('marking read up to here', () => {
   const newer = makePost({ rkey: 'newer', createdAt: '2026-01-01T11:00:00Z' })
   const older = makePost({ rkey: 'older', createdAt: '2026-01-01T09:00:00Z' })

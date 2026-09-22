@@ -10,6 +10,7 @@ import { MAX_WEBHOOK_SOURCES } from '../shared/defaults'
 import { BUILTIN_PROFILES, createHarness, flush, seedFeed, waitFor } from '../test/harness'
 import type { Harness } from '../test/harness'
 import { makeAccount } from '../test/factories'
+import { safeStorage } from '../test/electron'
 
 const BSKY = BUILTIN_PROFILES.bsky
 
@@ -304,6 +305,28 @@ describe('the receiver lifecycle', () => {
     const h = await boot()
 
     expect(h.state().webhook).toMatchObject({ state: 'off', url: null, port: null })
+  })
+
+  // `AppState.webhook.url` embeds the secret, so a state push is the other thing that
+  // could have dragged the OS credential store onto the startup path. It cannot: there
+  // is no URL to build until the receiver is listening, and reading the secret is a
+  // synchronous trip into the credential store — on macOS a Keychain call that can park
+  // the main thread. Turning the receiver on is the first moment the value is genuinely
+  // needed, by which point the app has been up for as long as the user has been in it.
+  it('opens no credential store until the receiver is turned on', async () => {
+    const h = await boot()
+    h.model.start()
+    await flush()
+
+    expect(h.state().webhook.url).toBeNull()
+    expect(safeStorage.isEncryptionAvailable).not.toHaveBeenCalled()
+    expect(safeStorage.encryptString).not.toHaveBeenCalled()
+    expect(safeStorage.decryptString).not.toHaveBeenCalled()
+
+    await h.api.Preferences.patch({ webhookEnabled: true, webhookPort: 0 })
+    await waitFor(() => h.state().webhook.state === 'listening', 'the receiver to bind')
+
+    expect(safeStorage.encryptString).toHaveBeenCalled()
   })
 
   it('starts listening when the setting is turned on, and stops when it is turned off', async () => {

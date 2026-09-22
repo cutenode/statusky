@@ -1,6 +1,6 @@
 /**
- * Which IPC wiring a built `out/` really contains, checked by electron-builder's
- * `beforePack` hook.
+ * Which IPC wiring a built `out/` really contains, checked by Electron Forge's
+ * `packageAfterCopy` hook.
  *
  * This is build tooling, not app code. Nothing in the app imports it, so it never ends
  * up in the bundle. It sits beside the main process because it needs Node's `fs`, and
@@ -126,7 +126,11 @@ const SCRIPT = /\.(?:c|m)?js$/
 /**
  * Fail packaging unless `out/` under `appDir` holds production wiring.
  *
- * Source maps are skipped because electron-builder.ts leaves them out of the package.
+ * `appDir` is packager's staged application directory rather than the repository, so
+ * `out/` under it is the copy that is about to be asar'd — but the layout is the same
+ * either way, which is why this path is still just `out`.
+ *
+ * Source maps are skipped because forge.config.ts leaves them out of the package.
  * Their embedded sources can show wiring the shipped code no longer has.
  */
 export async function assertProductionWiring(appDir: string): Promise<void> {

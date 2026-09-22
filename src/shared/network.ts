@@ -13,7 +13,7 @@
  * are made in `src/main/probes.ts`; scheduling and debouncing live in
  * `src/main/network.ts`.
  */
-import { HEALTH_LABEL, overallHealth, type Health } from './status'
+import { HEALTH_LABEL, deriveClaim, overallHealth, type Claim, type Health } from './status'
 import type {
   Account,
   NetworkHealth,
@@ -46,7 +46,9 @@ export const CATALOGUE = {
     // relay2 is not on microcosm's homepage; it only appears in their updates feed.
     'relay3.fr.hose.cam',
     'relay.fire.hose.cam',
-    'relay2.fire.hose.cam'
+    'relay2.fire.hose.cam',
+    // W Social's relay, also stock `indigo`. It carries the whole network, not only W's PDS.
+    'relay.wsocial.eu'
   ],
   /**
    * Jetstream carries the same commits as the firehose as plain JSON, with a top-level
@@ -62,14 +64,23 @@ export const CATALOGUE = {
     'api.eurosky.network'
   ],
   /**
-   * Probed directly, every sweep. This is a hand-kept sample of a fleet that is 89 hosts
-   * and growing: `fleet` below checks the whole set from one page instead. Keeping these
-   * fixed means the dashboard shows the same rows sweep to sweep, which no automatic
-   * ranking of the fleet could — every uptime strip would be measuring a different host.
+   * AppViews that are real but not yet whole. W Social's is in public beta and says so:
+   * it is missing most of the authors the freshness check reads, and trails the others by
+   * hours. Measured and shown, but graded at the `community` tier so a known gap does not
+   * hold the tray amber. See `ProbeTier`.
+   */
+  communityAppViews: ['appview.wsocial.eu'],
+  /**
+   * Probed directly, every sweep: the independent providers' PDSes, then a hand-kept
+   * sample of Bluesky's fleet, which is 89 hosts and growing. Keeping these fixed means
+   * the dashboard shows the same rows sweep to sweep, which no automatic ranking of the
+   * fleet could — every uptime strip would be measuring a different host.
    */
   pdses: [
     'eurosky.social',
     'blacksky.app',
+    'northsky.social',
+    'pds.wsocial.network',
     'amanita.us-east.host.bsky.network',
     'blewit.us-west.host.bsky.network',
     'boletus.us-west.host.bsky.network',
@@ -155,31 +166,6 @@ export const CATALOGUE = {
   communityPdses: ['pds.rip', 'pds.pckt.cafe', 'npmx.social'],
   /** An identity that has not changed and will not, for exact-match checks. */
   anchor: { handle: 'bsky.app', did: 'did:plc:z72i7hdynmk6r22z27h6tvur' },
-  /**
-   * Who is asked about everybody else, and who answers `getHostStatus`.
-   *
-   * `listHosts` is the only authoritative host enumeration in the Atmosphere, and far
-   * too much of it to walk: 6,312 hosts, 488 KB uncompressed. The fleet check reads one
-   * page of it, which is all Bluesky's own fleet takes. See `probeFleet`.
-   */
-  directory: {
-    relay: 'bsky.network',
-    /** Hosts under this suffix are Bluesky's own fleet. */
-    fleetSuffix: '.host.bsky.network',
-    /**
-     * Graded through the relay's eyes rather than probed: 72 bytes each for its own
-     * `active`/`idle`/`offline`/`banned` verdict, with no third-party round trip.
-     */
-    watched: [
-      'atproto.brid.gy',
-      'pds.wsocial.network',
-      'certified.one',
-      'haruhwa.com',
-      'tngl.sh',
-      'keik.info',
-      'bailey.protobase.at'
-    ]
-  },
   /** The microcosm.blue suite around Constellation. */
   microcosm: {
     ufos: 'ufos-api.microcosm.blue',
@@ -190,7 +176,7 @@ export const CATALOGUE = {
   },
   /**
    * Tangled: an AppView serving HTML only, a separate XRPC API (Bobbin) with its own
-   * upstream (Hydrant), and the distributed git nodes — knots — and CI runners — spindles.
+   * upstream (Hydrant), its own PDS, and the distributed git nodes — knots — and CI runners — spindles.
    * The infrastructure has not moved off `tangled.sh` even though the site has.
    */
   tangled: {
@@ -206,6 +192,8 @@ export const CATALOGUE = {
      */
     repoTitle: 'tangled.org/core',
     api: 'api.tangled.org',
+    /** Tangled's own PDS, where `*.tngl.sh` handles live. A stock PDS, probed as one. */
+    pds: 'tngl.sh',
     /** This project's own repo, as minted by its knot. */
     repoDid: 'did:plc:j5hmlfdrwkvtxm7cjmu7j2is',
     ownerDid: 'did:plc:wshs7t2adsemcrrd4snkeqli',
@@ -289,12 +277,15 @@ export const SERVICES: readonly ServiceDefinition[] = [
   ...CATALOGUE.jetstreams.map((host) => define('jetstream', 'streams', host)),
   define('spacedust', 'streams', CATALOGUE.microcosm.spacedust),
   ...CATALOGUE.appViews.map((host) => define('appview', 'appviews', host)),
+  ...CATALOGUE.communityAppViews.map((host) =>
+    define('appview', 'appviews', host, { tier: 'community' })
+  ),
   ...CATALOGUE.pdses.map((host) => define('pds', 'pdses', host)),
-  define('fleet', 'pdses', CATALOGUE.directory.relay, { label: 'Host directory' }),
   ...CATALOGUE.communityPdses.map((host) => define('pds', 'pdses', host, { tier: 'community' })),
   define('tangled-appview', 'tangled', CATALOGUE.tangled.appview),
   define('bobbin', 'tangled', CATALOGUE.tangled.api, { label: 'Bobbin (Tangled API)' }),
   define('hydrant', 'tangled', CATALOGUE.tangled.api, { label: 'Hydrant (Bobbin upstream)' }),
+  define('pds', 'tangled', CATALOGUE.tangled.pds, { label: 'tngl.sh (Tangled PDS)' }),
   ...CATALOGUE.tangled.knots.map((host) => define('knot', 'tangled', host)),
   ...CATALOGUE.tangled.spindles.map((host) => define('spindle', 'tangled', host)),
   define('pckt', 'apps', CATALOGUE.apps.pckt),
@@ -323,7 +314,11 @@ export const PROBE_GROUPS: readonly { id: ProbeGroup; title: string; blurb: stri
   { id: 'streams', title: 'Streams', blurb: 'The firehose as JSON, and the links built from it' },
   { id: 'appviews', title: 'AppViews', blurb: 'Serve the profiles, feeds and threads apps read' },
   { id: 'pdses', title: 'PDSes', blurb: 'Host accounts and the records they write' },
-  { id: 'tangled', title: 'Tangled', blurb: 'Git collaboration: appview, API, knots and spindles' },
+  {
+    id: 'tangled',
+    title: 'Tangled',
+    blurb: 'Git collaboration: appview, API, PDS, knots and spindles'
+  },
   { id: 'apps', title: 'Apps', blurb: 'Publishing apps and the indexes behind them' },
   {
     id: 'infrastructure',
@@ -483,7 +478,10 @@ export function summarizeNetwork(snapshot: NetworkSnapshot, enabled: boolean): N
     degraded,
     community,
     running: snapshot.running,
-    lastSweepAt: snapshot.finishedAt
+    lastSweepAt: snapshot.finishedAt,
+    // Carried through unjudged: it says why the schedule is behaving as it is, which is
+    // never a statement about the Atmosphere and so never touches `health`.
+    restraint: snapshot.restraint
   }
 }
 
@@ -505,10 +503,40 @@ export function networkAsHealth(health: NetworkHealth): Health | null {
   }
 }
 
+/**
+ * Who the headline rests on, for the line underneath it.
+ *
+ * A verdict that comes from somebody's post is a report, not a measurement, and the
+ * header says so: which source, and how long ago. A `stale` attribution is the case
+ * this exists for — the claim no longer sets the verdict, and rather than dropping it
+ * silently the header keeps it on screen with its age, where the reader can weigh it.
+ */
+export interface Attribution {
+  /** How the source names itself: a display name, a handle, or a status page's host. */
+  name: string
+  /**
+   * What was claimed. The same as the headline's own health while the claim is current;
+   * once it is stale the headline has moved on to what was measured, and this is the
+   * only place left that says what the post actually said.
+   */
+  health: Health
+  /** When the source said it. */
+  at: string
+  /** How many other sources are saying the same thing, beyond this one. */
+  others: number
+  /** The claim has outlived its own window; it is context now, not a report. */
+  stale: boolean
+}
+
 export interface Headline {
   health: Health
   label: string
+  /** Null when the line is this machine's own measurement rather than anybody's claim. */
+  attribution: Attribution | null
 }
+
+/** Nothing current from anybody, and what is on file has outlived itself. */
+const NOTHING_RECENT = 'Nothing reported recently'
 
 /**
  * The one line at the top of the popover and the tray tooltip.
@@ -517,10 +545,19 @@ export interface Headline {
  * they agree, the accounts' wording is kept — an operator's "Active incident" is more
  * authoritative than a probe's. Being offline trumps both: with nothing reachable, the
  * cached posts are stale and every check is meaningless.
+ *
+ * `posts` is the rollup of the claims still speaking for the present; see
+ * `reportHeadline`, which is what both processes actually call.
  */
-export function headline(posts: Health, network: NetworkSummary | null): Headline {
+export function headline(
+  posts: Health,
+  network: NetworkSummary | null,
+  attribution: Attribution | null = null
+): Headline {
   const measured = network ? networkAsHealth(network.health) : null
-  if (measured === 'offline') return { health: 'offline', label: HEALTH_LABEL.offline }
+  if (measured === 'offline') {
+    return { health: 'offline', label: HEALTH_LABEL.offline, attribution: null }
+  }
 
   const health = measured ? overallHealth([posts, measured]) : posts
   // Only name services when the measurement is what made the headline worse.
@@ -532,7 +569,8 @@ export function headline(posts: Health, network: NetworkSummary | null): Headlin
       label:
         network.down.length === 1
           ? `${network.down[0]} is unreachable`
-          : `${network.down.length} services unreachable`
+          : `${network.down.length} services unreachable`,
+      attribution: null
     }
   }
   if (measuredWorse && network.degraded.length) {
@@ -541,10 +579,95 @@ export function headline(posts: Health, network: NetworkSummary | null): Headlin
       label:
         network.degraded.length === 1
           ? `${network.degraded[0]} is degraded`
-          : `${network.degraded.length} services degraded`
+          : `${network.degraded.length} services degraded`,
+      attribution: null
     }
   }
-  return { health, label: HEALTH_LABEL[health] }
+  // "No data yet" is false when somebody said something three days ago; that it has
+  // gone stale is the news, and the attribution underneath carries the rest.
+  const nothingCurrent = health === 'unknown' && attribution?.stale === true
+  return {
+    health,
+    label: nothingCurrent ? NOTHING_RECENT : HEALTH_LABEL[health],
+    attribution
+  }
+}
+
+/** A source and what it is currently claiming. */
+interface Claimed {
+  name: string
+  claim: Claim
+}
+
+/** Sources that have actually said something is wrong; the rest attribute nothing. */
+function speaking(claims: Claimed[]): Claimed[] {
+  return claims.filter(
+    (c) => c.claim.at !== null && c.claim.health !== 'operational' && c.claim.health !== 'unknown'
+  )
+}
+
+function newest(claims: Claimed[]): Claimed | null {
+  let best: Claimed | null = null
+  for (const candidate of claims) {
+    const at = Date.parse(candidate.claim.at as string)
+    if (Number.isNaN(at)) continue
+    if (!best || at > Date.parse(best.claim.at as string)) best = candidate
+  }
+  return best
+}
+
+/**
+ * Who to name under the headline: whoever's claim set the verdict, or — when nothing
+ * current set it — whoever last said something that has since gone quiet.
+ */
+function attributionFor(claims: Claimed[], reported: Health): Attribution | null {
+  const said = speaking(claims)
+  const current = said.filter((c) => !c.claim.stale && c.claim.health === reported)
+  const candidates = current.length ? current : said.filter((c) => c.claim.stale)
+
+  const chosen = newest(candidates)
+  if (!chosen) return null
+  // "+1" has to mean one more source saying *this*. Withdrawn claims are not otherwise
+  // alike — one account's maintenance and another's incident both end up here — so the
+  // count is taken among those agreeing with whoever is being named.
+  const agreeing = candidates.filter((c) => c.claim.health === chosen.claim.health)
+  return {
+    name: chosen.name,
+    health: chosen.claim.health,
+    at: chosen.claim.at as string,
+    others: agreeing.length - 1,
+    stale: chosen.claim.stale
+  }
+}
+
+/**
+ * The header line and the tray tooltip, assembled from a whole snapshot.
+ *
+ * The popover and the tray draw the same sentence from the same state, and any
+ * difference between them is a bug — so neither builds it itself. A claim that has
+ * outlived its own window stops counting towards the verdict and becomes the line
+ * underneath instead: the header goes on reporting what this machine knows, and the
+ * tray icon goes back to neutral, while the post itself keeps its colour everywhere it
+ * is a post rather than a verdict.
+ */
+export function reportHeadline(
+  accounts: Account[],
+  posts: StatusPost[],
+  network: NetworkSummary,
+  now: number
+): Headline {
+  const claims: Claimed[] = accounts
+    .filter((account) => !account.muted && !isProbeSource(account.did))
+    .map((account) => ({
+      name: account.displayName || account.handle,
+      claim: deriveClaim(
+        posts.filter((post) => post.authorDid === account.did),
+        now
+      )
+    }))
+
+  const reported = overallHealth(claims.filter((c) => !c.claim.stale).map((c) => c.claim.health))
+  return headline(reported, networkForHealth(accounts, network), attributionFor(claims, reported))
 }
 
 /**

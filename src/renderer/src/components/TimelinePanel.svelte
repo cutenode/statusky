@@ -13,15 +13,19 @@
    * what you have not read at the top of it.
    *
    * The menu bar asked you to look at something. This is that something — one stop per
-   * update, no filters to set and no decisions to make. Feed, Alerts and Network are
-   * where you go when you want to browse by source; this is where you land when you
-   * were summoned, and it keeps reading downwards into what you have already seen.
+   * update, no filters to set and no decisions to make. Feed and Network are where you
+   * go when you want to browse by source; this is where you land when you were
+   * summoned, and it keeps reading downwards into what you have already seen.
+   *
+   * It is also the only place a pushed delivery or a network finding is listed. Those
+   * are machine-filed and terse — a named service moved between states — so a tab of
+   * their own said nothing this one does not.
    *
    * **Opening it is reading it.** Everything unread is marked read the moment the tab
    * appears, and again whenever the popover is brought back to the front, which for a
    * menu bar app is the same gesture without a remount. That is unconditional: the
-   * Settings › Feed *Mark as read* preference governs the Feed and Alerts tabs, where
-   * you are browsing rather than being caught up.
+   * Settings › Feed *Mark as read* preference governs the Feed tab, where you are
+   * browsing rather than being caught up.
    *
    * Which means the top section has to survive its own catch-up. Letting the batch fall
    * into **Read** the instant it is marked would empty the section out from under the

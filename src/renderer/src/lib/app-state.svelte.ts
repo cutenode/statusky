@@ -5,19 +5,15 @@ import type {
   AppState,
   NetworkSnapshot,
   NetworkSummary,
+  Platform,
   Settings,
   StatusPost,
+  UpdateStatus,
   WebhookStatus
 } from '@shared/types'
-import {
-  headline,
-  isProbeSource,
-  networkAsHealth,
-  networkForHealth,
-  type Headline
-} from '@shared/network'
+import { isProbeSource, networkAsHealth, reportHeadline, type Headline } from '@shared/network'
 import { isWebhookSource } from '@shared/webhook'
-import { deriveHealth, overallHealth, type Health } from '@shared/status'
+import { deriveHealth, type Health } from '@shared/status'
 import { bridge, ipcErrorMessage } from '@shared/bridge'
 import { nav } from './nav.svelte'
 
@@ -43,8 +39,12 @@ const EMPTY: AppState = {
     degraded: [],
     community: [],
     running: false,
-    lastSweepAt: null
+    lastSweepAt: null,
+    restraint: null
   },
+  loginItem: { registered: false, error: null },
+  shortcut: { registered: false, error: null },
+  update: { stage: 'current', version: null },
   version: '0.0.0'
 }
 
@@ -53,6 +53,7 @@ const EMPTY_SNAPSHOT: NetworkSnapshot = {
   startedAt: null,
   finishedAt: null,
   offline: false,
+  restraint: null,
   services: []
 }
 
@@ -65,6 +66,17 @@ class AppStore {
   #state = $state<AppState>(EMPTY)
   /** The network dashboard, which arrives on its own channel. */
   #snapshot = $state<NetworkSnapshot>(EMPTY_SNAPSHOT)
+  /**
+   * Which platform this is running on, as main reports it.
+   *
+   * Asked once at startup rather than guessed from the user agent, and used for the
+   * things whose *wording* differs rather than whose behaviour does — a keyboard
+   * shortcut is written `⌘⇧S` on macOS and `Ctrl+Shift+S` everywhere else, and showing
+   * either spelling on the wrong machine is a small lie about which key to press. The
+   * default is only what the store holds before `init()` answers, and nothing is drawn
+   * until `ready`.
+   */
+  #platform = $state<Platform>('darwin')
   #ready = $state(false)
   #busy = $state(false)
   /** Non-fatal errors from the last user action, shown inline. */
@@ -84,6 +96,44 @@ class AppStore {
   }
   get webhook(): WebhookStatus {
     return this.#state.webhook
+  }
+  /**
+   * Why the OS is not doing what the *Launch at login* toggle says, or null when it is.
+   *
+   * The toggle itself keeps showing the setting rather than the outcome, on purpose: the
+   * setting is what the user asked for and it is still what they asked for. This is the
+   * sentence that goes underneath it saying the machine disagreed, which is the only
+   * chance anybody gets to find out — the alternative is discovering it after a reboot,
+   * from an app that is not running.
+   */
+  get loginItemError(): string | null {
+    return this.#state.loginItem.error
+  }
+  /**
+   * Why the global shortcut is not working, or null when it is — or when there is none.
+   *
+   * The same arrangement as `loginItemError`, for the same reason: the setting says what
+   * the user asked for and keeps saying it, and this is the sentence underneath saying
+   * the machine disagreed. A shortcut another application already owns produces no other
+   * symptom at all — the key press simply goes somewhere else — so if it is not said
+   * here it is not said anywhere. See `ShortcutStatus`.
+   */
+  get shortcutError(): string | null {
+    return this.#state.shortcut.error
+  }
+  /**
+   * Whether there is a newer Statusky, and whose job it is to go and get it.
+   *
+   * Deliberately read here and drawn in Settings rather than announced. This app's OS
+   * notifications mean the Atmosphere is broken; a new version is not that, and putting
+   * it through the same channel is how the channel stops being believed. See
+   * `UpdateStatus` and src/main/update.ts.
+   */
+  get update(): UpdateStatus {
+    return this.#state.update
+  }
+  get platform(): Platform {
+    return this.#platform
   }
   get version(): string {
     return this.#state.version
@@ -120,16 +170,14 @@ class AppStore {
   }
 
   /**
-   * The feed split by where an update came from, which is what the tabs are.
+   * What the Feed tab leaves out.
    *
    * A status account writing a post and a status page pushing an incident are the same
    * kind of thing — somebody telling you what they have noticed — but a relay that
-   * stopped answering our own requests is not: nobody said it, we measured it. Mixing
-   * the three made one list where scanning for any of them meant reading all of them.
-   *
-   * `alerts` is everything that arrived unasked: pushed deliveries and the network
-   * checks' findings, which share a tab because they share a shape — machine-filed,
-   * terse, and about a service rather than about a plan.
+   * stopped answering our own requests is not: nobody said it, we measured it. Feed is
+   * where you go to read what people wrote, at the length they wrote it, so what a
+   * machine filed stays out of it. The Timeline is where all three meet, which is where
+   * a terse entry about one service belongs anyway.
    */
   #isAlert(post: StatusPost): boolean {
     return isWebhookSource(post.authorDid) || isProbeSource(post.authorDid)
@@ -138,22 +186,17 @@ class AppStore {
   /** Posts polled from AT Protocol status accounts. */
   feedPosts = $derived(this.#state.posts.filter((post) => !this.#isAlert(post)))
 
-  /** Pushed status-page deliveries and the network checks' own entries. */
-  alertPosts = $derived(this.#state.posts.filter((post) => this.#isAlert(post)))
-
-  /** Unread across every source, newest first — what the Unread tab shows. */
+  /** Unread across every source, newest first. */
   unreadPosts = $derived(this.#state.posts.filter((post) => this.#unreadSet.has(post.uri)))
 
-  /** The sources behind each tab, for its filter chips. */
+  /** The sources behind the Feed tab, for its filter chips. */
   feedAccounts = $derived(this.#state.accounts.filter((a) => a.kind === 'atproto'))
-  alertAccounts = $derived(this.#state.accounts.filter((a) => a.kind !== 'atproto'))
 
   #countUnread(posts: StatusPost[]): number {
     return posts.reduce((n, post) => (this.#unreadSet.has(post.uri) ? n + 1 : n), 0)
   }
 
   feedUnreadCount = $derived(this.#countUnread(this.feedPosts))
-  alertUnreadCount = $derived(this.#countUnread(this.alertPosts))
 
   /**
    * Per-account health, keyed by DID. The network checks' source is the exception: its
@@ -172,18 +215,20 @@ class AppStore {
     return map
   })
 
-  /** The status accounts' and the network checks' verdicts, combined into one line. */
-  headline: Headline = $derived.by(() => {
-    const reported = overallHealth(
-      this.#state.accounts
-        .filter((a) => !a.muted && !isProbeSource(a.did))
-        .map((a) => this.healthByAccount.get(a.did) ?? 'unknown')
-    )
-    return headline(reported, networkForHealth(this.#state.accounts, this.#state.network))
-  })
+  /**
+   * The status accounts' and the network checks' verdicts, combined into one line.
+   *
+   * Takes the clock, because half of what the line says is how long ago somebody said
+   * it: the same snapshot reads differently an hour later, and the popover's ticking
+   * `now` is what makes it do so without waiting for another push from main.
+   */
+  headlineAt(now: number = Date.now()): Headline {
+    return reportHeadline(this.#state.accounts, this.#state.posts, this.#state.network, now)
+  }
 
-  get overall(): Health {
-    return this.headline.health
+  /** The worst thing currently believed: the header's dot, and the tray's colour. */
+  overallAt(now: number = Date.now()): Health {
+    return this.headlineAt(now).health
   }
 
   /**
@@ -217,16 +262,22 @@ class AppStore {
   reset(): void {
     this.#state = EMPTY
     this.#snapshot = EMPTY_SNAPSHOT
+    this.#platform = 'darwin'
     this.#ready = false
     this.#busy = false
     this.#actionError = null
   }
 
   async init(): Promise<() => void> {
-    const { State, Network } = bridge()
-    const [state, snapshot] = await Promise.all([State.get(), Network.get()])
+    const { State, Network, Popover, Host } = bridge()
+    const [state, snapshot, platform] = await Promise.all([
+      State.get(),
+      Network.get(),
+      Host.getPlatform()
+    ])
     this.#state = state
     this.#snapshot = snapshot
+    this.#platform = platform
     this.#ready = true
     const stops = [
       State.onChanged((next) => {
@@ -236,7 +287,10 @@ class AppStore {
         this.#snapshot = next
       }),
       // Main asking for the dashboard: a notification or the tray menu was clicked.
-      Network.onReveal((target) => nav.reveal(target.serviceId))
+      Network.onReveal((target) => nav.reveal(target.serviceId)),
+      // Main asking to be caught up, which is what the Timeline is for: the one banner
+      // raised for everything that happened while nobody was at the machine was clicked.
+      Popover.onCatchUp(() => nav.open('timeline'))
     ]
     return () => {
       for (const stop of stops) stop()
@@ -329,6 +383,48 @@ class AppStore {
     if (!this.#state.settings.networkChecks || running) return
     if (finishedAt && now - Date.parse(finishedAt) < maxAgeMs) return
     this.runNetworkChecks()
+  }
+
+  /**
+   * Pass on what Chromium just told this page about the connection.
+   *
+   * The `online`/`offline` window events fire the moment the interface changes, where
+   * the network checks would otherwise sit out their offline retry before noticing.
+   * Main treats it as a hint and confirms it for itself, so there is nothing here to
+   * report back and nothing worth interrupting the user over if the call itself fails —
+   * the popover is not the reason the checks work.
+   */
+  reportOnline(online: boolean): void {
+    void bridge()
+      .Popover.online(online)
+      .catch(() => undefined)
+  }
+
+  /**
+   * Pass on whether the OS has asked for reduced motion.
+   *
+   * Fire-and-forget for the same reason as `reportOnline`: main has a safe default to
+   * fall back on — it assumes reduced motion until told otherwise — so a failed call
+   * leaves the tray quieter than the user asked for rather than louder, and there is
+   * nothing here worth interrupting anybody with. See `$lib/motion.svelte`.
+   */
+  reportReducedMotion(reduce: boolean): void {
+    void bridge()
+      .Popover.reduceMotion(reduce)
+      .catch(() => undefined)
+  }
+
+  /**
+   * Right-click on an update: ask main for a menu the OS drew.
+   *
+   * Only the URI is sent. Main builds every label from the state it already owns, which
+   * is what keeps a context menu from being a way for the page to put words of its own
+   * in front of somebody. Routed through `#run` like any other action, so the one thing
+   * that can go wrong — the update having left the feed between the click and the call —
+   * arrives as a sentence rather than an unhandled rejection.
+   */
+  showPostMenu(uri: string): Promise<void | null> {
+    return this.#run(() => bridge().Popover.postMenu(uri))
   }
 
   openExternal(url: string): void {

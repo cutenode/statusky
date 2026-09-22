@@ -53,7 +53,7 @@ describe('the feed tab', () => {
     expect(getByText('We are investigating a problem')).toBeTruthy()
   })
 
-  it('leaves pushed deliveries and measurements to the alerts tab', async () => {
+  it('leaves pushed deliveries and measurements to the timeline', async () => {
     const { queryByText } = await renderWith(Feed, { now: NOW }, mixed)
 
     expect(queryByText('Pushed from a hosted status page')).toBeNull()

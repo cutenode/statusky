@@ -8,7 +8,9 @@
  *   resources/trayMonitoring.png / @2x coloured variant shown while recovering
  *   resources/trayBeat<n>.png / @2x    one cardiac cycle, played while updates are unread
  *   resources/icon.png                 512px window/Linux icon
- *   build/icon.png                     1024px source icon for electron-builder
+ *   build/icon.png                     1024px source icon, taken as-is by the Linux makers
+ *   build/icon.icns                    macOS app icon, every size Finder and the Dock ask for
+ *   build/icon.ico                     Windows app icon, every size Explorer and the taskbar ask for
  *
  * Rendering is signed-distance-field based: shapes are described analytically and
  * sampled per pixel, which gives clean antialiasing down to 16x16.
@@ -239,7 +241,15 @@ function renderAppIcon(size) {
   // macOS Big Sur proportions: the squircle fills ~82% of the canvas.
   const half = 0.412
   const radius = 0.1845
-  const stroke = size * 0.042
+
+  // The .icns and .ico sets reach down to sizes the window icon never had to survive, and
+  // they run into exactly what the tray does: the four direction changes close up into a
+  // smudge, and a stroke defined as a fraction of the canvas thins below one pixel and
+  // fades to grey. So borrow the tray's single spike and hold the stroke at a pixel.
+  // Neither applies above 32px, which is why the 512 and 1024 icons still render byte for
+  // byte as they did.
+  const pulse = size <= 32 ? TRAY_PULSE : PULSE
+  const stroke = Math.max(size * 0.042, 1.2)
 
   const top = [0x6d, 0x5c, 0xf6] // indigo
   const bottom = [0x38, 0x2c, 0xc4] // deeper indigo
@@ -270,13 +280,105 @@ function renderAppIcon(size) {
       // Pulse glyph, inset inside the squircle.
       const gx = 0.5 + (px - 0.5) / 0.7
       const gy = 0.5 + (py - 0.5) / 0.7
-      const glyph = distToPolyline(gx, gy, PULSE) * 0.7 - stroke / size
+      const glyph = distToPolyline(gx, gy, pulse) * 0.7 - stroke / size
       const glyphA = coverage(glyph, feather) * bodyA
       if (glyphA > 0) blend(rgba, i, 255, 255, 255, glyphA)
     }
   }
   return encodePng(size, size, rgba)
 }
+
+// ------------------------------------------------------------- icon containers
+
+/**
+ * macOS and Windows each want the app icon as one file holding every size at once, and
+ * neither @electron/packager nor the makers will build one: they only swap the extension
+ * on the path they are given. Both formats are thin wrappers around PNG data this script
+ * already has in hand, so both are assembled here rather than by shelling out to
+ * `iconutil` and `sips` — which would make `npm run icons` macOS-only, and leave Linux and
+ * Windows CI unable to rebuild the assets they ship.
+ */
+
+/**
+ * Windows .ico: a 6-byte ICONDIR, one 16-byte ICONDIRENTRY per image, then the payloads
+ * back to back. Every entry here is a PNG, which Vista and later read directly; the older
+ * BMP form would mean a second encoder, bottom-up rows, and a padded 1-bit AND mask for
+ * the transparency the alpha channel already carries.
+ */
+function encodeIco(images) {
+  const header = Buffer.alloc(6)
+  header.writeUInt16LE(0, 0) // reserved
+  header.writeUInt16LE(1, 2) // 1 = icon, 2 = cursor
+  header.writeUInt16LE(images.length, 4)
+
+  const directory = Buffer.alloc(images.length * 16)
+  let offset = header.length + directory.length
+  images.forEach(({ size, png }, index) => {
+    const entry = index * 16
+    // One byte each, so 256 is the largest size the format can name and is spelled 0.
+    // Nothing above it is offered, and `& 0xff` is that rule rather than a truncation.
+    directory[entry] = size & 0xff
+    directory[entry + 1] = size & 0xff
+    directory[entry + 2] = 0 // palette entries: none, this is direct colour
+    directory[entry + 3] = 0 // reserved
+    directory.writeUInt16LE(1, entry + 4) // colour planes
+    directory.writeUInt16LE(32, entry + 6) // bits per pixel
+    directory.writeUInt32LE(png.length, entry + 8)
+    directory.writeUInt32LE(offset, entry + 12)
+    offset += png.length
+  })
+
+  return Buffer.concat([header, directory, ...images.map(({ png }) => png)])
+}
+
+/**
+ * macOS .icns: an 8-byte header — the magic, then the length of the whole file — followed
+ * by typed chunks of [4-byte OSType][4-byte length, counting these 8 bytes][payload], all
+ * big-endian. The ic07–ic14 types take a PNG as their payload verbatim, so there is no
+ * .iconset directory to lay out and no `iconutil` to invoke.
+ */
+function encodeIcns(entries) {
+  const body = Buffer.concat(
+    entries.map(({ type, png }) => {
+      const head = Buffer.alloc(8)
+      head.write(type, 0, 'ascii')
+      head.writeUInt32BE(head.length + png.length, 4)
+      return Buffer.concat([head, png])
+    })
+  )
+  const header = Buffer.alloc(8)
+  header.write('icns', 0, 'ascii')
+  header.writeUInt32BE(header.length + body.length, 4)
+  return Buffer.concat([header, body])
+}
+
+/**
+ * The .icns members, as [OSType, pixel size]. Each is one of the point sizes macOS draws
+ * an app icon at — 16, 32, 128, 256, 512 — at one of the two display scales, which is why
+ * two pairs land on the same number of pixels: ic08 is 256pt@1x and ic13 is 128pt@2x.
+ *
+ * 16pt@1x and 32pt@1x are missing because their types predate PNG in this format — they
+ * are the RLE `is32`/`il32` bitmaps with a separate `s8mk`/`l8mk` alpha mask, which would
+ * mean a second encoder for the two sizes macOS is happy to scale ic11 and ic12 down to.
+ */
+const ICNS_TYPES = [
+  ['ic11', 32], // 16pt @2x
+  ['ic12', 64], // 32pt @2x
+  ['ic07', 128], // 128pt @1x
+  ['ic13', 256], // 128pt @2x
+  ['ic08', 256], // 256pt @1x
+  ['ic14', 512], // 256pt @2x
+  ['ic09', 512], // 512pt @1x
+  ['ic10', 1024] // 512pt @2x
+]
+
+/**
+ * The .ico members. Windows reaches for 16 in the title bar and tree, 32 on the taskbar and
+ * for shortcuts, 48 for "medium icons", and 256 for the jumbo view and the Start menu tile;
+ * 24, 64 and 128 are the in-between display scales, and cost a couple of KB each — cheaper
+ * than letting Windows resample one of its neighbours badly.
+ */
+const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 // --------------------------------------------------------------------- write
 
@@ -285,6 +387,20 @@ function write(path, buffer) {
   mkdirSync(dirname(full), { recursive: true })
   writeFileSync(full, buffer)
   console.log(`  ${path}  (${(buffer.length / 1024).toFixed(1)} KB)`)
+}
+
+/**
+ * The two containers ask for sizes the loose PNGs and each other already want, and a
+ * 1024px render is most of this script's running time. So each size is drawn once and
+ * handed out, which is also how ic08/ic13 and ic09/ic14 come to share one buffer.
+ */
+const APP_ICONS = new Map()
+function appIconAt(size) {
+  const existing = APP_ICONS.get(size)
+  if (existing !== undefined) return existing
+  const png = renderAppIcon(size)
+  APP_ICONS.set(size, png)
+  return png
 }
 
 const INCIDENT = [0xf4, 0x3f, 0x5e] // rose
@@ -312,6 +428,11 @@ for (let frame = 0; frame < BEAT_FRAMES; frame++) {
   write(`resources/trayBeat${frame}.png`, renderTray(16, INCIDENT, scale, alpha))
   write(`resources/trayBeat${frame}@2x.png`, renderTray(32, INCIDENT, scale, alpha))
 }
-write('resources/icon.png', renderAppIcon(512))
-write('build/icon.png', renderAppIcon(1024))
+write('resources/icon.png', appIconAt(512))
+write('build/icon.png', appIconAt(1024))
+write(
+  'build/icon.icns',
+  encodeIcns(ICNS_TYPES.map(([type, size]) => ({ type, png: appIconAt(size) })))
+)
+write('build/icon.ico', encodeIco(ICO_SIZES.map((size) => ({ size, png: appIconAt(size) }))))
 console.log('Done.')

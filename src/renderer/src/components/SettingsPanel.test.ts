@@ -150,6 +150,80 @@ describe('the menu bar settings', () => {
   })
 })
 
+/**
+ * The shortcut that summons the popover from anywhere. Off by default, because a global
+ * shortcut is taken from every other application on the machine — and reported honestly
+ * when the OS hands it to somebody else instead, which is otherwise completely silent.
+ */
+describe('the summoning shortcut', () => {
+  it('starts off, in the platform’s own spelling', async () => {
+    const { getByLabelText } = await renderWith(SettingsPanel)
+
+    expect(getByLabelText('Keyboard shortcut to open Statusky').textContent).toContain('Off')
+  })
+
+  it('writes the combinations the way macOS writes them', async () => {
+    const { getByLabelText } = await renderWith(SettingsPanel)
+    const listbox = await openSelect(getByLabelText('Keyboard shortcut to open Statusky'))
+
+    expect(listbox.textContent).toContain('⌘⇧S')
+    expect(listbox.textContent).toContain('⌥⇧S')
+  })
+
+  it('writes them the way Windows writes them instead', async () => {
+    const { getByLabelText } = await renderWith(SettingsPanel, {}, { platform: 'win32' })
+    const listbox = await openSelect(getByLabelText('Keyboard shortcut to open Statusky'))
+
+    expect(listbox.textContent).toContain('Ctrl+Shift+S')
+  })
+
+  it('asks for the combination the user picked', async () => {
+    const { bridge, getByLabelText } = await renderWith(SettingsPanel)
+
+    await chooseOption(getByLabelText('Keyboard shortcut to open Statusky'), '⌘⇧S')
+
+    expect(bridge.api.Preferences.patch).toHaveBeenCalledWith({
+      globalShortcut: 'CommandOrControl+Shift+S'
+    })
+  })
+
+  /**
+   * The select cannot carry the empty string the setting uses for "none" — an empty
+   * value reads as nothing being selected — so the panel maps a sentinel back to it.
+   * What must never happen is `'off'` reaching the settings as an accelerator.
+   */
+  it('turns the shortcut off with the empty accelerator, not a sentinel', async () => {
+    const { bridge, getByLabelText } = await renderWith(
+      SettingsPanel,
+      {},
+      { settings: makeSettings({ globalShortcut: 'CommandOrControl+Shift+S' }) }
+    )
+
+    await chooseOption(getByLabelText('Keyboard shortcut to open Statusky'), 'Off')
+
+    expect(bridge.api.Preferences.patch).toHaveBeenCalledWith({ globalShortcut: '' })
+  })
+
+  /**
+   * A shortcut belongs to whichever application asked for it first, and losing that race
+   * produces no symptom at all except a key that does somebody else's thing. The setting
+   * keeps saying what the user asked for; this is the sentence that says the machine
+   * disagreed.
+   */
+  it('says when the OS gave the combination to somebody else', async () => {
+    const { getByRole } = await renderWith(
+      SettingsPanel,
+      {},
+      {
+        settings: makeSettings({ globalShortcut: 'CommandOrControl+Shift+S' }),
+        shortcut: { registered: false, error: 'Another application already owns ⌘⇧S.' }
+      }
+    )
+
+    expect(getByRole('alert').textContent).toContain('Another application already owns')
+  })
+})
+
 describe('the application settings', () => {
   it('offers the three theme choices', async () => {
     const { getByText } = await renderWith(SettingsPanel)
@@ -185,6 +259,47 @@ describe('the application settings', () => {
     await fireEvent.click(getByLabelText('Launch at login'))
 
     expect(bridge.api.Preferences.patch).toHaveBeenCalledWith({ launchAtLogin: true })
+  })
+
+  it('says nothing extra when the OS did what it was asked', async () => {
+    const { queryByRole } = await renderWith(
+      SettingsPanel,
+      {},
+      { loginItem: { registered: true, error: null } }
+    )
+    expect(queryByRole('alert')).toBeNull()
+  })
+
+  /**
+   * The refusal is otherwise invisible: macOS registers nothing and says nothing, and
+   * the next thing that would have told the user is the app that did not start. So the
+   * toggle keeps showing what they asked for and this says what the machine did about it.
+   */
+  it('says why the OS refused, under the toggle that still says yes', async () => {
+    const { getByRole, getByLabelText } = await renderWith(
+      SettingsPanel,
+      {},
+      {
+        settings: { ...POLL_DEFAULTS, launchAtLogin: true },
+        loginItem: { registered: false, error: 'macOS would not open Statusky at login.' }
+      }
+    )
+
+    expect(getByLabelText('Launch at login').getAttribute('aria-checked')).toBe('true')
+    expect(getByRole('alert').textContent).toContain('macOS would not open Statusky at login.')
+  })
+
+  it('clears the explanation once a later attempt is accepted', async () => {
+    const { bridge, queryByRole } = await renderWith(
+      SettingsPanel,
+      {},
+      { loginItem: { registered: false, error: 'Could not register.' } }
+    )
+    expect(queryByRole('alert')).not.toBeNull()
+
+    await pushState(bridge, { loginItem: { registered: true, error: null } })
+
+    expect(queryByRole('alert')).toBeNull()
   })
 })
 
@@ -275,5 +390,86 @@ describe('the network checks', () => {
   it('says where confirmed outages go', async () => {
     const { container } = await renderWith(SettingsPanel)
     expect(container.textContent).toContain('filed in the feed as “Network checks”')
+  })
+})
+
+/**
+ * Item 27, from the popover's side. The tray menu carries the same news, and neither of
+ * them is a notification: a banner from this app means the Atmosphere is broken, and
+ * spending that channel on a version number is how it stops meaning that.
+ */
+describe('a newer Statusky', () => {
+  it('says nothing while there is nothing to say', async () => {
+    const { container } = await renderWith(SettingsPanel)
+
+    expect(container.textContent).not.toContain('is available')
+    expect(container.textContent).not.toContain('has been downloaded')
+  })
+
+  /**
+   * The wording is the load-bearing part. These builds are a dmg, a zip, a .deb and an
+   * AppImage from a download page — none of them served from a repository — so there is
+   * no `apt upgrade` to point at and nothing on the machine that will do this for you.
+   */
+  it('says to go and fetch the new build, because nothing else will', async () => {
+    const { container } = await renderWith(
+      SettingsPanel,
+      {},
+      { update: { stage: 'available', version: '0.2.0' } }
+    )
+
+    expect(container.textContent).toContain('Statusky 0.2.0 is available')
+    expect(container.textContent).toContain('Nothing on this machine updates Statusky for you')
+    expect(container.textContent).toContain('replace this copy')
+  })
+
+  it('opens the download page through main, never in the popover', async () => {
+    const { bridge, getByText } = await renderWith(
+      SettingsPanel,
+      {},
+      { update: { stage: 'available', version: '0.2.0' } }
+    )
+
+    await fireEvent.click(getByText('Download'))
+
+    expect(bridge.api.Host.openExternal).toHaveBeenCalledWith(
+      'https://github.com/cutenode/statusky/releases/latest'
+    )
+  })
+
+  /**
+   * macOS and Windows, where Squirrel has already done the work. There is no Download
+   * here because there is nothing to download — the verb is a restart, and it lives in
+   * the menu bar with the rest of this app's verbs.
+   */
+  it('asks for a restart instead when one has already been downloaded', async () => {
+    const { container, queryByText } = await renderWith(
+      SettingsPanel,
+      {},
+      { update: { stage: 'ready', version: '0.5.0' } }
+    )
+
+    expect(container.textContent).toContain('Statusky 0.5.0 has been downloaded')
+    expect(container.textContent).toContain('Restart to update')
+    expect(queryByText('Download')).toBeNull()
+  })
+
+  /** Squirrel.Windows does not always name the version it has fetched. */
+  it('still asks for the restart when the version is not known', async () => {
+    const { container } = await renderWith(
+      SettingsPanel,
+      {},
+      { update: { stage: 'ready', version: null } }
+    )
+
+    expect(container.textContent).toContain('A new version of Statusky has been downloaded')
+  })
+
+  it('appears without a reload when main finds out', async () => {
+    const { bridge, container } = await renderWith(SettingsPanel)
+
+    await pushState(bridge, { update: { stage: 'available', version: '0.3.0' } })
+
+    expect(container.textContent).toContain('Statusky 0.3.0 is available')
   })
 })

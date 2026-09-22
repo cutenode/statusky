@@ -207,3 +207,50 @@ interface Host {
     sendTestNotification()
     getPlatform() -> Platform
 }
+
+// The popover's part in the OS integrations main cannot do alone, in both directions.
+//
+// `online` is Chromium telling main something only a renderer is told. A page gets the
+// `online`/`offline` window events the moment the connection changes, where the network
+// checks would otherwise sit out their offline retry before noticing. It is a hint and
+// not an instruction — a page reporting on the world — so main confirms it against
+// `net.online` before acting, and the retry timer stays as the fallback for the times
+// there is no popover to hear from: before the first `create()`, and while a window
+// whose renderer died waits to be rebuilt.
+//
+// `reduceMotion` is the same shape of thing as `online`: something only a page can be
+// told, handed to the part of the app that needs it and cannot ask. There is no
+// main-process API for the OS's reduced-motion preference — `nativeTheme` covers dark
+// mode and high contrast and stops there — and the thing that needs the answer is the
+// menu bar icon's heartbeat, ten frames a second in peripheral vision all day, which is
+// exactly what that preference is set to stop. So the popover reads
+// `prefers-reduced-motion` and reports it. Unlike `online` it is taken at face value:
+// there is nothing for main to confirm it against, believing it costs at most a
+// heartbeat somebody wanted, and disbelieving it costs somebody a flashing icon they
+// asked the whole system not to show them. Main assumes reduced motion until a page says
+// otherwise, because before the first page there is nobody to ask. See
+// `TrayController.setReducedMotion`.
+//
+// `catchUp` is the other direction: main asking the popover to show the Timeline. It is
+// what the one summary banner raised for everything that happened while nobody was at
+// the machine opens, because the Timeline is the tab that catches you up.
+//
+// `postMenu` is a third of the same kind: only the page knows which update was
+// right-clicked, and only main can draw a menu the OS made. It takes the post's URI and
+// nothing else on purpose — main looks the update up in the state it already owns, so a
+// page cannot describe an update that does not exist, name a source it is not tracking,
+// or put a label of its own choosing in front of the user. The menu pops up at the
+// cursor, which is where a context menu belongs and is something main can ask the OS
+// for directly, so no coordinates cross this boundary either. See
+// src/main/context-menu.ts.
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface Popover {
+    online(up: boolean)
+    reduceMotion(reduce: boolean)
+    postMenu(uri: string)
+
+    [Event]
+    catchUp()
+}

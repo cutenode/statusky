@@ -4,10 +4,10 @@
   import { TooltipProvider } from '$lib/components/ui/tooltip'
   import { app } from '$lib/app-state.svelte'
   import { nav, TAB_ORDER } from '$lib/nav.svelte'
+  import { startReducedMotionSync } from '$lib/motion.svelte'
   import { startThemeSync } from '$lib/theme.svelte'
   import Rss from '@lucide/svelte/icons/rss'
   import AccountsPanel from '@components/AccountsPanel.svelte'
-  import AlertsPanel from '@components/AlertsPanel.svelte'
   import Feed from '@components/Feed.svelte'
   import Header from '@components/Header.svelte'
   import NetworkPanel from '@components/NetworkPanel.svelte'
@@ -22,7 +22,7 @@
 
   /**
    * Esc closes the popover, Cmd/Ctrl-R refreshes whatever is showing, and Cmd/Ctrl-1
-   * through -4 select a tab in the order they are drawn — all expected of a menu bar
+   * through -3 select a tab in the order they are drawn — all expected of a menu bar
    * app.
    */
   function onKey(event: KeyboardEvent): void {
@@ -33,7 +33,7 @@
       event.preventDefault()
       if (nav.view === 'network') app.runNetworkChecks()
       else void app.refresh()
-    } else if (command && event.key >= '1' && event.key <= '4') {
+    } else if (command && event.key >= '1' && event.key <= '3') {
       const tab = TAB_ORDER[Number(event.key) - 1]
       if (!tab) return
       event.preventDefault()
@@ -41,11 +41,27 @@
     }
   }
 
+  /**
+   * Chromium is told the connection changed the instant it happens, and main is not.
+   * Passing it on lets the network checks stop waiting out their offline retry; main
+   * confirms it for itself before believing it. See `Popover` in schemas/statusky.eipc.
+   */
+  function onOnline(): void {
+    app.reportOnline(true)
+  }
+
+  function onOffline(): void {
+    app.reportOnline(false)
+  }
+
   /** Ticks so relative timestamps stay honest without every card holding a timer. */
   let now = $state(Date.now())
 
   onMount(() => {
     const stopTheme = startThemeSync()
+    // The tray's heartbeat is in the main process, which cannot read this; the popover
+    // can. See `Popover` in schemas/statusky.eipc.
+    const stopMotion = startReducedMotionSync((reduce) => app.reportReducedMotion(reduce))
     const ticker = setInterval(() => (now = Date.now()), 30_000)
     let stopState: (() => void) | undefined
 
@@ -63,12 +79,18 @@
     }
     window.addEventListener('focus', onFocus)
 
+    window.addEventListener('online', onOnline)
+    window.addEventListener('offline', onOffline)
+
     return () => {
       stopTheme()
+      stopMotion()
       stopState?.()
       clearInterval(ticker)
       window.removeEventListener('keydown', onKey)
       window.removeEventListener('focus', onFocus)
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
     }
   })
 </script>
@@ -94,8 +116,6 @@
             <NetworkPanel {now} />
           {:else if nav.view === 'feed'}
             <Feed {now} />
-          {:else if nav.view === 'alerts'}
-            <AlertsPanel {now} />
           {:else}
             <TimelinePanel {now} />
           {/if}

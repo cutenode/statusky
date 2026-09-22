@@ -36,6 +36,17 @@ afterEach(() => {
   nav.reset()
 })
 
+/**
+ * A clock the health tests share, and a stamp a few minutes before it.
+ *
+ * What the header says is a statement about a moment now, not just about a snapshot:
+ * the same posts read differently a day later. Tests about the rollup pin both ends,
+ * and the ones about ageing move the clock rather than the posts.
+ */
+const NOW = Date.parse('2026-01-02T12:00:00.000Z')
+const justNow = (minutesAgo = 5): string => new Date(NOW - minutesAgo * 60_000).toISOString()
+const hoursAgo = (hours: number): string => new Date(NOW - hours * 3_600_000).toISOString()
+
 describe('init', () => {
   it('pulls the initial state and reports ready', async () => {
     const account = makeAccount()
@@ -44,6 +55,16 @@ describe('init', () => {
     expect(app.ready).toBe(true)
     expect(app.accounts).toHaveLength(1)
     expect(app.version).toBe('1.2.3')
+  })
+
+  /**
+   * Asked once, from main, rather than guessed from the user agent — and used for the
+   * things whose wording differs rather than whose behaviour does, like writing a
+   * keyboard shortcut `⌘⇧S` or `Ctrl+Shift+S`.
+   */
+  it('learns which platform it is running on', async () => {
+    await connect({ platform: 'win32' })
+    expect(app.platform).toBe('win32')
   })
 
   it('subscribes to pushes and applies them', async () => {
@@ -122,34 +143,34 @@ describe('splitting the feed by source', () => {
     expect(app.feedPosts.map((p) => p.uri)).toEqual([posted.uri])
   })
 
-  it('files pushed deliveries and measurements as alerts', async () => {
+  it('leaves pushed deliveries and measurements to the timeline', async () => {
     await connect(mixed)
-    expect(app.alertPosts.map((p) => p.uri)).toEqual([pushed.uri, measured.uri])
+    expect(app.feedPosts.map((p) => p.uri)).not.toContain(pushed.uri)
+    expect(app.feedPosts.map((p) => p.uri)).not.toContain(measured.uri)
+    expect(app.posts.map((p) => p.uri)).toEqual([posted.uri, pushed.uri, measured.uri])
   })
 
-  it('splits the sources the same way, for each tab’s chips', async () => {
+  it('offers chips for the status accounts only', async () => {
     await connect(mixed)
     expect(app.feedAccounts.map((a) => a.did)).toEqual([status.did])
-    expect(app.alertAccounts.map((a) => a.did)).toEqual([page.did, PROBE_SOURCE_DID])
   })
 
-  it('counts unread per tab, and keeps the whole list for the unread tab', async () => {
+  it('counts unread on the feed, and keeps the whole list for the timeline', async () => {
     await connect({ ...mixed, unread: [posted.uri, measured.uri] })
 
     expect(app.unreadCount).toBe(2)
     expect(app.feedUnreadCount).toBe(1)
-    expect(app.alertUnreadCount).toBe(1)
     expect(app.unreadUris).toEqual([posted.uri, measured.uri])
     expect(app.unreadPosts.map((p) => p.uri)).toEqual([posted.uri, measured.uri])
   })
 
   it('follows a push rather than caching the first split it saw', async () => {
-    const local = await connect(mixed)
-
-    local.push({ posts: [posted] })
-
-    expect(app.alertPosts).toEqual([])
+    const local = await connect({ ...mixed, posts: [posted, pushed, measured] })
     expect(app.feedPosts.map((p) => p.uri)).toEqual([posted.uri])
+
+    local.push({ posts: [pushed] })
+
+    expect(app.feedPosts).toEqual([])
   })
 })
 
@@ -160,8 +181,8 @@ describe('health rollups', () => {
     await connect({
       accounts: [a, b],
       posts: [
-        makePost({ authorDid: a.did, severity: 'outage', createdAt: '2026-01-02T00:00:00Z' }),
-        makePost({ authorDid: b.did, severity: 'resolved', createdAt: '2026-01-02T00:00:00Z' })
+        makePost({ authorDid: a.did, severity: 'outage', createdAt: justNow() }),
+        makePost({ authorDid: b.did, severity: 'resolved', createdAt: justNow() })
       ]
     })
 
@@ -169,25 +190,38 @@ describe('health rollups', () => {
     expect(app.healthByAccount.get(b.did)).toBe('operational')
   })
 
+  it('goes on saying what an account last said, however long ago it said it', async () => {
+    const a = makeAccount({ did: 'did:plc:a' })
+    await connect({
+      accounts: [a],
+      posts: [makePost({ authorDid: a.did, severity: 'outage', createdAt: hoursAgo(300) })]
+    })
+
+    // The account's own row is about the account, not about the world: it reports what
+    // that account last posted. Only the headline asks how long ago.
+    expect(app.healthByAccount.get(a.did)).toBe('incident')
+    expect(app.overallAt(NOW)).toBe('unknown')
+  })
+
   it('reports unknown for an account with no posts', async () => {
     const a = makeAccount({ did: 'did:plc:a' })
     await connect({ accounts: [a] })
     expect(app.healthByAccount.get(a.did)).toBe('unknown')
-    expect(app.overall).toBe('unknown')
+    expect(app.overallAt(NOW)).toBe('unknown')
   })
 
-  it('rolls the worst visible state up into `overall`', async () => {
+  it('rolls the worst visible state up into the headline', async () => {
     const a = makeAccount({ did: 'did:plc:a' })
     const b = makeAccount({ did: 'did:plc:b' })
     await connect({
       accounts: [a, b],
       posts: [
-        makePost({ authorDid: a.did, severity: 'outage' }),
-        makePost({ authorDid: b.did, severity: 'resolved' })
+        makePost({ authorDid: a.did, severity: 'outage', createdAt: justNow() }),
+        makePost({ authorDid: b.did, severity: 'resolved', createdAt: justNow() })
       ]
     })
 
-    expect(app.overall).toBe('incident')
+    expect(app.overallAt(NOW)).toBe('incident')
   })
 
   it('ignores muted accounts in the rollup', async () => {
@@ -196,22 +230,35 @@ describe('health rollups', () => {
     await connect({
       accounts: [muted, fine],
       posts: [
-        makePost({ authorDid: muted.did, severity: 'outage' }),
-        makePost({ authorDid: fine.did, severity: 'resolved' })
+        makePost({ authorDid: muted.did, severity: 'outage', createdAt: justNow() }),
+        makePost({ authorDid: fine.did, severity: 'resolved', createdAt: justNow() })
       ]
     })
 
-    expect(app.overall).toBe('operational')
+    expect(app.overallAt(NOW)).toBe('operational')
   })
 
   it('recomputes when a push arrives', async () => {
     const a = makeAccount({ did: 'did:plc:a' })
     const local = await connect({ accounts: [a] })
-    expect(app.overall).toBe('unknown')
+    expect(app.overallAt(NOW)).toBe('unknown')
 
-    local.push({ posts: [makePost({ authorDid: a.did, severity: 'degraded' })] })
+    local.push({
+      posts: [makePost({ authorDid: a.did, severity: 'degraded', createdAt: justNow() })]
+    })
 
-    expect(app.overall).toBe('incident')
+    expect(app.overallAt(NOW)).toBe('incident')
+  })
+
+  it('recomputes as the clock moves, with no new push', async () => {
+    const a = makeAccount({ did: 'did:plc:a' })
+    await connect({
+      accounts: [a],
+      posts: [makePost({ authorDid: a.did, severity: 'outage', createdAt: hoursAgo(11) })]
+    })
+
+    expect(app.overallAt(NOW)).toBe('incident')
+    expect(app.overallAt(NOW + 2 * 3_600_000)).toBe('unknown')
   })
 })
 
@@ -225,6 +272,7 @@ describe('actions', () => {
     await app.markRead(['at://x'])
     await app.markAllRead()
     await app.testNotification()
+    await app.showPostMenu('at://x')
     app.openExternal('https://bsky.app')
 
     expect(local.api.Feed.refresh).toHaveBeenCalled()
@@ -233,6 +281,7 @@ describe('actions', () => {
     expect(local.api.Feed.markRead).toHaveBeenCalledWith(['at://x'])
     expect(local.api.Feed.markAllRead).toHaveBeenCalled()
     expect(local.api.Host.sendTestNotification).toHaveBeenCalled()
+    expect(local.api.Popover.postMenu).toHaveBeenCalledWith('at://x')
     expect(local.api.Host.openExternal).toHaveBeenCalledWith('https://bsky.app')
   })
 
@@ -346,10 +395,10 @@ describe('the network dashboard', () => {
 
   it('unsubscribes from every channel on the way out', async () => {
     const local = await connect()
-    expect(local.networkListenerCount()).toBe(2)
+    expect(local.pushListenerCount()).toBe(3)
     stop?.()
     stop = null
-    expect(local.networkListenerCount()).toBe(0)
+    expect(local.pushListenerCount()).toBe(0)
   })
 
   it('shows the dashboard when main asks', async () => {
@@ -419,9 +468,83 @@ describe('the network dashboard', () => {
   })
 })
 
+describe('what only the page is told', () => {
+  it('passes a connection coming back on to main', async () => {
+    const local = await connect()
+
+    app.reportOnline(true)
+
+    expect(local.api.Popover.online).toHaveBeenCalledWith(true)
+  })
+
+  it('passes a connection going away on as well, and lets main decide', async () => {
+    const local = await connect()
+
+    app.reportOnline(false)
+
+    expect(local.api.Popover.online).toHaveBeenCalledWith(false)
+  })
+
+  // A hint main is free to ignore is not worth an error banner in the popover: the
+  // checks work whether or not this call gets through.
+  it('says nothing to the user when the hint itself fails', async () => {
+    const local = await connect()
+    app.clearError()
+    vi.mocked(local.api.Popover.online).mockRejectedValueOnce(new Error('refused'))
+
+    app.reportOnline(true)
+    await Promise.resolve()
+
+    expect(app.actionError).toBeNull()
+  })
+
+  /**
+   * Nothing in the main process can read `prefers-reduced-motion`, and the thing that
+   * has to honour it — the tray's heartbeat — lives there. So the page reads it.
+   */
+  it('passes the reduced-motion preference on to main', async () => {
+    const local = await connect()
+
+    app.reportReducedMotion(true)
+
+    expect(local.api.Popover.reduceMotion).toHaveBeenCalledWith(true)
+  })
+
+  it('passes the ordinary case on too, since main assumes the other one', async () => {
+    const local = await connect()
+
+    app.reportReducedMotion(false)
+
+    expect(local.api.Popover.reduceMotion).toHaveBeenCalledWith(false)
+  })
+
+  // Main has a safe default to fall back on, so a failed report leaves the tray quieter
+  // than asked for rather than louder — which is not worth a banner.
+  it('says nothing to the user when the report itself fails', async () => {
+    const local = await connect()
+    app.clearError()
+    vi.mocked(local.api.Popover.reduceMotion).mockRejectedValueOnce(new Error('refused'))
+
+    app.reportReducedMotion(true)
+    await Promise.resolve()
+
+    expect(app.actionError).toBeNull()
+  })
+
+  it('shows the Timeline when main asks to catch the user up', async () => {
+    const local = await connect()
+    nav.open('network')
+
+    local.catchUp()
+
+    expect(nav.view).toBe('timeline')
+    expect(nav.tab).toBe('timeline')
+  })
+})
+
 describe('the headline', () => {
-  const account = makeAccount({ did: 'did:plc:a' })
-  const calm = makePost({ authorDid: account.did, severity: 'resolved' })
+  const account = makeAccount({ did: 'did:plc:a', displayName: 'Bluesky Status' })
+  const calm = makePost({ authorDid: account.did, severity: 'resolved', createdAt: justNow() })
 
   it('names a service the checks found down', async () => {
     await connect({
@@ -429,11 +552,12 @@ describe('the headline', () => {
       posts: [calm],
       network: makeNetworkSummary({ health: 'down', down: ['europe.firehose.network'] })
     })
-    expect(app.headline).toEqual({
+    expect(app.headlineAt(NOW)).toEqual({
       health: 'incident',
-      label: 'europe.firehose.network is unreachable'
+      label: 'europe.firehose.network is unreachable',
+      attribution: null
     })
-    expect(app.overall).toBe('incident')
+    expect(app.overallAt(NOW)).toBe('incident')
   })
 
   it('ignores the checks once their source is hidden', async () => {
@@ -442,22 +566,65 @@ describe('the headline', () => {
       posts: [calm],
       network: makeNetworkSummary({ health: 'down', down: ['europe.firehose.network'] })
     })
-    expect(app.headline.label).toBe(HEALTH_LABEL.operational)
+    expect(app.headlineAt(NOW).label).toBe(HEALTH_LABEL.operational)
   })
 
   it('judges the checks’ source by the measurement, not by its last entry', async () => {
     const source = probeAccount('2026-01-01T00:00:00Z')
     await connect({
       accounts: [account, source],
-      posts: [calm, makePost({ authorDid: PROBE_SOURCE_DID, severity: 'outage' })],
+      posts: [
+        calm,
+        makePost({ authorDid: PROBE_SOURCE_DID, severity: 'outage', createdAt: justNow() })
+      ],
       network: makeNetworkSummary({ health: 'operational' })
     })
     expect(app.healthByAccount.get(PROBE_SOURCE_DID)).toBe('operational')
-    expect(app.overall).toBe('operational')
+    expect(app.overallAt(NOW)).toBe('operational')
   })
 
   it('has no health for the checks’ source before anything is measured', async () => {
     await connect({ accounts: [probeAccount('2026-01-01T00:00:00Z')] })
     expect(app.healthByAccount.get(PROBE_SOURCE_DID)).toBe('unknown')
+  })
+
+  it('names who said it, and when', async () => {
+    await connect({
+      accounts: [account],
+      posts: [makePost({ authorDid: account.did, severity: 'outage', createdAt: hoursAgo(2) })],
+      network: makeNetworkSummary({ health: 'operational' })
+    })
+    expect(app.headlineAt(NOW)).toEqual({
+      health: 'incident',
+      label: HEALTH_LABEL.incident,
+      attribution: {
+        name: 'Bluesky Status',
+        health: 'incident',
+        at: hoursAgo(2),
+        others: 0,
+        stale: false
+      }
+    })
+  })
+
+  it('hands a claim that has gone quiet back to the measurement, and says so', async () => {
+    await connect({
+      accounts: [account],
+      posts: [
+        makePost({ authorDid: account.did, severity: 'maintenance', createdAt: hoursAgo(72) })
+      ],
+      network: makeNetworkSummary({ health: 'operational' })
+    })
+
+    const line = app.headlineAt(NOW)
+    expect(line.health).toBe('operational')
+    expect(line.label).toBe(HEALTH_LABEL.operational)
+    expect(line.attribution).toEqual({
+      name: 'Bluesky Status',
+      health: 'maintenance',
+      at: hoursAgo(72),
+      others: 0,
+      stale: true
+    })
   })
 })

@@ -16,6 +16,12 @@ import { FakeAppView, embeds, rawPost } from './appview'
 import { installBridge } from './bridge'
 import { createHarness, flush, withPlatform } from './harness'
 import { makeAccount, makePost, makeState } from './factories'
+import {
+  lastSelfUpdater,
+  selfUpdateFailure,
+  selfUpdaters,
+  updateElectronApp
+} from './update-electron-app'
 
 /**
  * The doubles are load-bearing: if one of them drifts from the API it stands in
@@ -374,6 +380,67 @@ describe('the harness itself', () => {
 })
 
 const harnessDid = 'did:plc:4dtbz2ivhp5app3sbntcccxc'
+
+/**
+ * The one double here that does not stand in for an Electron API. `update-electron-app`
+ * is CommonJS in node_modules, so Vitest loads it through Node and its own
+ * `require('electron')` escapes the alias that would hand it these doubles — it reads
+ * `isPackaged` off a module that is a path string. Aliasing the package is the only seam,
+ * which makes this file the boundary src/main/update.ts is actually tested against.
+ */
+describe('the update-electron-app double', () => {
+  it('records the options it was handed, call by call', () => {
+    updateElectronApp({ updateInterval: '6 hours' })
+
+    expect(selfUpdaters).toHaveLength(1)
+    expect(lastSelfUpdater().options.updateInterval).toBe('6 hours')
+  })
+
+  /**
+   * The event the whole self-updating branch turns on, and the one a test could not
+   * otherwise reach: in Electron it is minutes of background downloading.
+   */
+  it('delivers a finished download to the caller’s onNotifyUser', () => {
+    const onNotifyUser = vi.fn()
+    updateElectronApp({ onNotifyUser })
+
+    lastSelfUpdater().finishDownload({ releaseName: '0.9.0' })
+
+    expect(onNotifyUser).toHaveBeenCalledWith(expect.objectContaining({ releaseName: '0.9.0' }))
+  })
+
+  /** The macOS shape by default, so a test about Windows has to say it is about Windows. */
+  it('defaults to the macOS arguments rather than Windows’', () => {
+    const onNotifyUser = vi.fn()
+    updateElectronApp({ onNotifyUser })
+
+    lastSelfUpdater().finishDownload()
+
+    expect(onNotifyUser).toHaveBeenCalledWith(
+      expect.objectContaining({ releaseName: '', releaseNotes: '' })
+    )
+  })
+
+  it('can refuse to start, the way a bundle naming no repository does', () => {
+    selfUpdateFailure.error = new Error('repo not found')
+
+    expect(() => updateElectronApp()).toThrow('repo not found')
+    expect(selfUpdaters).toHaveLength(0)
+  })
+
+  it('reports being stopped', () => {
+    const updater = updateElectronApp()
+    expect(updater.stopped).toBe(false)
+
+    updater.stopUpdates()
+
+    expect(updater.stopped).toBe(true)
+  })
+
+  it('refuses to hand back an updater that was never created', () => {
+    expect(() => lastSelfUpdater()).toThrow(/has not been called/)
+  })
+})
 
 describe('withPlatform', () => {
   it('pins and restores process.platform, even when the body throws', async () => {

@@ -192,6 +192,12 @@
         return sweeping
       }
 
+      // `statusky.catchUp()` from the console stands in for the tray's Catch up item.
+      const catchUpListeners = new Set()
+      window.catchUp = () => {
+        for (const listener of catchUpListeners) listener()
+      }
+
       window.statusky = {
         State: {
           get: () => Promise.resolve(structuredClone(state)),
@@ -282,6 +288,23 @@
             }
             push()
             return state.webhook
+          }
+        },
+        Popover: {
+          // The popover's reports to main: in the browser there is no main, so they are
+          // logged and the catch-up route is left open for a console call.
+          online: async (up) => {
+            console.log('[preview] online', up)
+          },
+          reduceMotion: async (reduce) => {
+            console.log('[preview] reduceMotion', reduce)
+          },
+          postMenu: async (uri) => {
+            console.log('[preview] postMenu', uri)
+          },
+          onCatchUp(listener) {
+            catchUpListeners.add(listener)
+            return () => catchUpListeners.delete(listener)
           }
         },
         Host: {

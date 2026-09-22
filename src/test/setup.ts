@@ -8,6 +8,7 @@ import { resetWebFrame } from './electron-renderer'
 import { resetStores } from './electron-store'
 import { resetFactories } from './factories'
 import { resetPage } from './page'
+import { resetUpdateElectronApp } from './update-electron-app'
 
 beforeEach(() => {
   resetElectron()
@@ -15,11 +16,13 @@ beforeEach(() => {
   resetPage()
   resetStores()
   resetFactories()
+  resetUpdateElectronApp()
 })
 
 afterEach(() => {
   resetElectron()
   resetWebFrame()
   resetStores()
+  resetUpdateElectronApp()
   delete (globalThis as Record<string, unknown>).statusky
 })

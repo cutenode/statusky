@@ -6643,297 +6643,6 @@
       "rechecking": false
     },
     {
-      "id": "fleet:bsky.network",
-      "group": "pdses",
-      "kind": "fleet",
-      "label": "Host directory",
-      "host": "bsky.network",
-      "tier": "core",
-      "state": "live",
-      "condition": "up",
-      "since": "2026-09-20T19:32:38.393Z",
-      "checks": [
-        {
-          "label": "listHosts",
-          "target": "https://bsky.network/xrpc/com.atproto.sync.listHosts?limit=200",
-          "kind": "http",
-          "ok": true,
-          "error": null,
-          "durationMs": 145
-        },
-        {
-          "label": "fleet status",
-          "target": null,
-          "kind": "derived",
-          "ok": true,
-          "error": null,
-          "durationMs": null
-        },
-        {
-          "label": "atproto.brid.gy",
-          "target": "https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=atproto.brid.gy",
-          "kind": "http",
-          "ok": true,
-          "error": null,
-          "durationMs": 76
-        },
-        {
-          "label": "pds.wsocial.network",
-          "target": "https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=pds.wsocial.network",
-          "kind": "http",
-          "ok": true,
-          "error": null,
-          "durationMs": 409
-        },
-        {
-          "label": "certified.one",
-          "target": "https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=certified.one",
-          "kind": "http",
-          "ok": true,
-          "error": null,
-          "durationMs": 400
-        },
-        {
-          "label": "haruhwa.com",
-          "target": "https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=haruhwa.com",
-          "kind": "http",
-          "ok": true,
-          "error": null,
-          "durationMs": 408
-        },
-        {
-          "label": "tngl.sh",
-          "target": "https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=tngl.sh",
-          "kind": "http",
-          "ok": true,
-          "error": null,
-          "durationMs": 404
-        },
-        {
-          "label": "keik.info",
-          "target": "https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=keik.info",
-          "kind": "http",
-          "ok": true,
-          "error": null,
-          "durationMs": 398
-        },
-        {
-          "label": "bailey.protobase.at",
-          "target": "https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=bailey.protobase.at",
-          "kind": "http",
-          "ok": true,
-          "error": null,
-          "durationMs": 402
-        }
-      ],
-      "startedAt": "2026-09-20T19:32:37.337Z",
-      "checkedAt": "2026-09-20T19:32:38.393Z",
-      "latencyMs": 401,
-      "history": [
-        {
-          "at": "2026-09-20T13:02:40.808Z",
-          "state": "partial",
-          "latencyMs": 313
-        },
-        {
-          "at": "2026-09-20T13:12:40.808Z",
-          "state": "live",
-          "latencyMs": 422
-        },
-        {
-          "at": "2026-09-20T13:22:40.808Z",
-          "state": "live",
-          "latencyMs": 523
-        },
-        {
-          "at": "2026-09-20T13:32:40.808Z",
-          "state": "live",
-          "latencyMs": 375
-        },
-        {
-          "at": "2026-09-20T13:42:40.808Z",
-          "state": "live",
-          "latencyMs": 460
-        },
-        {
-          "at": "2026-09-20T13:52:40.808Z",
-          "state": "live",
-          "latencyMs": 518
-        },
-        {
-          "at": "2026-09-20T14:02:40.808Z",
-          "state": "live",
-          "latencyMs": 600
-        },
-        {
-          "at": "2026-09-20T14:12:40.808Z",
-          "state": "live",
-          "latencyMs": 453
-        },
-        {
-          "at": "2026-09-20T14:22:40.808Z",
-          "state": "live",
-          "latencyMs": 516
-        },
-        {
-          "at": "2026-09-20T14:32:40.808Z",
-          "state": "live",
-          "latencyMs": 316
-        },
-        {
-          "at": "2026-09-20T14:42:40.808Z",
-          "state": "live",
-          "latencyMs": 464
-        },
-        {
-          "at": "2026-09-20T14:52:40.808Z",
-          "state": "live",
-          "latencyMs": 438
-        },
-        {
-          "at": "2026-09-20T15:02:40.808Z",
-          "state": "live",
-          "latencyMs": 324
-        },
-        {
-          "at": "2026-09-20T15:12:40.808Z",
-          "state": "live",
-          "latencyMs": 557
-        },
-        {
-          "at": "2026-09-20T15:22:40.808Z",
-          "state": "live",
-          "latencyMs": 306
-        },
-        {
-          "at": "2026-09-20T15:32:40.808Z",
-          "state": "live",
-          "latencyMs": 498
-        },
-        {
-          "at": "2026-09-20T15:42:40.808Z",
-          "state": "live",
-          "latencyMs": 320
-        },
-        {
-          "at": "2026-09-20T15:52:40.808Z",
-          "state": "live",
-          "latencyMs": 461
-        },
-        {
-          "at": "2026-09-20T16:02:40.808Z",
-          "state": "live",
-          "latencyMs": 304
-        },
-        {
-          "at": "2026-09-20T16:12:40.808Z",
-          "state": "live",
-          "latencyMs": 313
-        },
-        {
-          "at": "2026-09-20T16:22:40.808Z",
-          "state": "live",
-          "latencyMs": 393
-        },
-        {
-          "at": "2026-09-20T16:32:40.808Z",
-          "state": "live",
-          "latencyMs": 508
-        },
-        {
-          "at": "2026-09-20T16:42:40.808Z",
-          "state": "live",
-          "latencyMs": 492
-        },
-        {
-          "at": "2026-09-20T16:52:40.808Z",
-          "state": "live",
-          "latencyMs": 504
-        },
-        {
-          "at": "2026-09-20T17:02:40.808Z",
-          "state": "live",
-          "latencyMs": 443
-        },
-        {
-          "at": "2026-09-20T17:12:40.808Z",
-          "state": "live",
-          "latencyMs": 479
-        },
-        {
-          "at": "2026-09-20T17:22:40.808Z",
-          "state": "live",
-          "latencyMs": 594
-        },
-        {
-          "at": "2026-09-20T17:32:40.808Z",
-          "state": "live",
-          "latencyMs": 485
-        },
-        {
-          "at": "2026-09-20T17:42:40.808Z",
-          "state": "live",
-          "latencyMs": 546
-        },
-        {
-          "at": "2026-09-20T17:52:40.808Z",
-          "state": "live",
-          "latencyMs": 599
-        },
-        {
-          "at": "2026-09-20T18:02:40.808Z",
-          "state": "live",
-          "latencyMs": 261
-        },
-        {
-          "at": "2026-09-20T18:12:40.808Z",
-          "state": "live",
-          "latencyMs": 282
-        },
-        {
-          "at": "2026-09-20T18:22:40.808Z",
-          "state": "live",
-          "latencyMs": 590
-        },
-        {
-          "at": "2026-09-20T18:32:40.808Z",
-          "state": "live",
-          "latencyMs": 404
-        },
-        {
-          "at": "2026-09-20T18:42:40.808Z",
-          "state": "live",
-          "latencyMs": 468
-        },
-        {
-          "at": "2026-09-20T18:52:40.808Z",
-          "state": "live",
-          "latencyMs": 482
-        },
-        {
-          "at": "2026-09-20T19:02:40.808Z",
-          "state": "live",
-          "latencyMs": 558
-        },
-        {
-          "at": "2026-09-20T19:12:40.808Z",
-          "state": "live",
-          "latencyMs": 579
-        },
-        {
-          "at": "2026-09-20T19:22:40.808Z",
-          "state": "live",
-          "latencyMs": 418
-        },
-        {
-          "at": "2026-09-20T19:32:38.393Z",
-          "state": "live",
-          "latencyMs": 401
-        }
-      ],
-      "rechecking": false
-    },
-    {
       "id": "pds:pds.rip",
       "group": "pdses",
       "kind": "pds",
@@ -8387,6 +8096,257 @@
           "at": "2026-09-20T19:32:38.642Z",
           "state": "live",
           "latencyMs": 456
+        }
+      ],
+      "rechecking": false
+    },
+    {
+      "id": "pds:tngl.sh",
+      "group": "tangled",
+      "kind": "pds",
+      "label": "tngl.sh (Tangled PDS)",
+      "host": "tngl.sh",
+      "tier": "core",
+      "state": "live",
+      "condition": "up",
+      "since": "2026-09-20T19:32:38.317Z",
+      "checks": [
+        {
+          "label": "_health",
+          "target": "https://tngl.sh/xrpc/_health",
+          "kind": "http",
+          "ok": true,
+          "error": null,
+          "durationMs": 814
+        },
+        {
+          "label": "describeServer",
+          "target": "https://tngl.sh/xrpc/com.atproto.server.describeServer",
+          "kind": "http",
+          "ok": true,
+          "error": null,
+          "durationMs": 807
+        },
+        {
+          "label": "listRepos",
+          "target": "https://tngl.sh/xrpc/com.atproto.sync.listRepos?limit=10",
+          "kind": "http",
+          "ok": true,
+          "error": null,
+          "durationMs": 847
+        },
+        {
+          "label": "listRecords",
+          "target": "https://tngl.sh/xrpc/com.atproto.repo.listRecords?repo=did%3Aplc%3Atpcmwsn52lc5qzksb5wph4rd&collection=app.bsky.feed.post&limit=1",
+          "kind": "http",
+          "ok": true,
+          "error": null,
+          "durationMs": 107
+        }
+      ],
+      "startedAt": "2026-09-20T19:32:37.337Z",
+      "checkedAt": "2026-09-20T19:32:38.317Z",
+      "latencyMs": 811,
+      "history": [
+        {
+          "at": "2026-09-20T13:02:40.808Z",
+          "state": "live",
+          "latencyMs": 506
+        },
+        {
+          "at": "2026-09-20T13:12:40.808Z",
+          "state": "live",
+          "latencyMs": 973
+        },
+        {
+          "at": "2026-09-20T13:22:40.808Z",
+          "state": "live",
+          "latencyMs": 488
+        },
+        {
+          "at": "2026-09-20T13:32:40.808Z",
+          "state": "live",
+          "latencyMs": 1035
+        },
+        {
+          "at": "2026-09-20T13:42:40.808Z",
+          "state": "live",
+          "latencyMs": 1153
+        },
+        {
+          "at": "2026-09-20T13:52:40.808Z",
+          "state": "live",
+          "latencyMs": 723
+        },
+        {
+          "at": "2026-09-20T14:02:40.808Z",
+          "state": "live",
+          "latencyMs": 639
+        },
+        {
+          "at": "2026-09-20T14:12:40.808Z",
+          "state": "live",
+          "latencyMs": 1085
+        },
+        {
+          "at": "2026-09-20T14:22:40.808Z",
+          "state": "live",
+          "latencyMs": 1135
+        },
+        {
+          "at": "2026-09-20T14:32:40.808Z",
+          "state": "live",
+          "latencyMs": 707
+        },
+        {
+          "at": "2026-09-20T14:42:40.808Z",
+          "state": "live",
+          "latencyMs": 704
+        },
+        {
+          "at": "2026-09-20T14:52:40.808Z",
+          "state": "live",
+          "latencyMs": 689
+        },
+        {
+          "at": "2026-09-20T15:02:40.808Z",
+          "state": "live",
+          "latencyMs": 782
+        },
+        {
+          "at": "2026-09-20T15:12:40.808Z",
+          "state": "live",
+          "latencyMs": 632
+        },
+        {
+          "at": "2026-09-20T15:22:40.808Z",
+          "state": "live",
+          "latencyMs": 1192
+        },
+        {
+          "at": "2026-09-20T15:32:40.808Z",
+          "state": "slow",
+          "latencyMs": 2275
+        },
+        {
+          "at": "2026-09-20T15:42:40.808Z",
+          "state": "live",
+          "latencyMs": 895
+        },
+        {
+          "at": "2026-09-20T15:52:40.808Z",
+          "state": "live",
+          "latencyMs": 929
+        },
+        {
+          "at": "2026-09-20T16:02:40.808Z",
+          "state": "live",
+          "latencyMs": 1163
+        },
+        {
+          "at": "2026-09-20T16:12:40.808Z",
+          "state": "live",
+          "latencyMs": 689
+        },
+        {
+          "at": "2026-09-20T16:22:40.808Z",
+          "state": "live",
+          "latencyMs": 1178
+        },
+        {
+          "at": "2026-09-20T16:32:40.808Z",
+          "state": "live",
+          "latencyMs": 1014
+        },
+        {
+          "at": "2026-09-20T16:42:40.808Z",
+          "state": "live",
+          "latencyMs": 794
+        },
+        {
+          "at": "2026-09-20T16:52:40.808Z",
+          "state": "live",
+          "latencyMs": 1049
+        },
+        {
+          "at": "2026-09-20T17:02:40.808Z",
+          "state": "live",
+          "latencyMs": 1105
+        },
+        {
+          "at": "2026-09-20T17:12:40.808Z",
+          "state": "live",
+          "latencyMs": 1137
+        },
+        {
+          "at": "2026-09-20T17:22:40.808Z",
+          "state": "live",
+          "latencyMs": 790
+        },
+        {
+          "at": "2026-09-20T17:32:40.808Z",
+          "state": "live",
+          "latencyMs": 797
+        },
+        {
+          "at": "2026-09-20T17:42:40.808Z",
+          "state": "live",
+          "latencyMs": 494
+        },
+        {
+          "at": "2026-09-20T17:52:40.808Z",
+          "state": "slow",
+          "latencyMs": 4414
+        },
+        {
+          "at": "2026-09-20T18:02:40.808Z",
+          "state": "live",
+          "latencyMs": 1161
+        },
+        {
+          "at": "2026-09-20T18:12:40.808Z",
+          "state": "live",
+          "latencyMs": 961
+        },
+        {
+          "at": "2026-09-20T18:22:40.808Z",
+          "state": "live",
+          "latencyMs": 1080
+        },
+        {
+          "at": "2026-09-20T18:32:40.808Z",
+          "state": "live",
+          "latencyMs": 571
+        },
+        {
+          "at": "2026-09-20T18:42:40.808Z",
+          "state": "slow",
+          "latencyMs": 4817
+        },
+        {
+          "at": "2026-09-20T18:52:40.808Z",
+          "state": "live",
+          "latencyMs": 622
+        },
+        {
+          "at": "2026-09-20T19:02:40.808Z",
+          "state": "live",
+          "latencyMs": 808
+        },
+        {
+          "at": "2026-09-20T19:12:40.808Z",
+          "state": "live",
+          "latencyMs": 958
+        },
+        {
+          "at": "2026-09-20T19:22:40.808Z",
+          "state": "live",
+          "latencyMs": 1199
+        },
+        {
+          "at": "2026-09-20T19:32:38.317Z",
+          "state": "live",
+          "latencyMs": 811
         }
       ],
       "rechecking": false

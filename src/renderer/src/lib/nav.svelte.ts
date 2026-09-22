@@ -1,24 +1,22 @@
 /**
  * Which panel the popover is showing.
  *
- * Four tabs, and the popover remembers which one was last open. **Timeline** is what it
- * opens on: the menu bar asked you to look at something, so the first thing shown is
+ * Three tabs, and the popover remembers which one was last open. **Timeline** is what
+ * it opens on: the menu bar asked you to look at something, so the first thing shown is
  * that something, with everything already read continuing below it. **Feed** is the AT
- * Protocol status accounts,
- * **Alerts** is everything that arrived on its own — pushed status pages and the
- * network checks' own findings — and **Network** is the dashboard behind them.
- * Accounts and Settings are detours: their header icons toggle them, and closing one
- * goes back to whichever tab it came from.
+ * Protocol status accounts, and **Network** is the dashboard behind the checks the app
+ * runs for itself. Accounts and Settings are detours: their header icons toggle them,
+ * and closing one goes back to whichever tab it came from.
  *
  * It is a module singleton rather than state owned by `App`, because a feed entry, an
  * account row, a notification and the tray menu can all ask to land on the network
  * dashboard, and none of them sits anywhere near `App`.
  */
-export type Tab = 'timeline' | 'feed' | 'alerts' | 'network'
+export type Tab = 'timeline' | 'feed' | 'network'
 export type View = Tab | 'accounts' | 'settings'
 
-/** Left to right, which is also the order Cmd-1…4 select them in. */
-export const TAB_ORDER: readonly Tab[] = ['timeline', 'feed', 'alerts', 'network']
+/** Left to right, which is also the order Cmd-1…3 select them in. */
+export const TAB_ORDER: readonly Tab[] = ['timeline', 'feed', 'network']
 
 class Navigation {
   view = $state<View>('timeline')

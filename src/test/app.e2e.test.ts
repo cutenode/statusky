@@ -17,6 +17,23 @@ afterEach(() => {
   harness?.dispose()
 })
 
+/**
+ * A fixture timestamp counted back from now.
+ *
+ * These journeys are about what the app is showing at this moment, and the tray only
+ * takes its colour from a claim recent enough to still be a report of the present — so
+ * a post standing for the current state of the world has to be stamped like one. Tests
+ * that only care about ordering keep their fixed dates.
+ *
+ * Counted from one instant fixed at import, not from the call: a post re-seeded under
+ * the same name has to come back with the same timestamp, or the second sync sees it
+ * as new and files it unread.
+ */
+const STARTED = Date.now()
+function ago(minutes: number): string {
+  return new Date(STARTED - minutes * 60_000).toISOString()
+}
+
 /** The latest snapshot the renderer would be holding. */
 function rendered(h: Harness): AppState {
   return h.pushes.at(-1) ?? h.state()
@@ -50,13 +67,16 @@ describe('a first launch', () => {
 describe('an incident arriving while the app is running', () => {
   it('notifies, badges the tray, and clears once the user reads it', async () => {
     harness = await createHarness()
-    seedFeed(harness.appview, BSKY, [{ text: 'All good', createdAt: '2026-01-01T09:00:00Z' }])
+    // What the popover does on mount. The tray assumes reduced motion until a page says
+    // otherwise, so without this the heartbeat below would correctly be a badge instead.
+    await harness.api.Popover.reduceMotion(false)
+    seedFeed(harness.appview, BSKY, [{ text: 'All good', createdAt: ago(30) }])
     await harness.api.Feed.refresh()
     await flush()
 
     seedFeed(harness.appview, BSKY, [
-      { text: 'All good', createdAt: '2026-01-01T09:00:00Z' },
-      { text: 'We are investigating elevated error rates.', createdAt: '2026-01-01T10:00:00Z' }
+      { text: 'All good', createdAt: ago(30) },
+      { text: 'We are investigating elevated error rates.', createdAt: ago(20) }
     ])
     await harness.api.Feed.refresh()
     await flush()
@@ -88,19 +108,19 @@ describe('an incident arriving while the app is running', () => {
       return trays[0]?.image.path ?? ''
     }
 
-    seedFeed(harness.appview, BSKY, [{ text: 'Outage', createdAt: '2026-01-01T09:00:00Z' }])
+    seedFeed(harness.appview, BSKY, [{ text: 'Outage', createdAt: ago(30) }])
     expect(await settle()).toContain('trayIncident.png')
 
     seedFeed(harness.appview, BSKY, [
-      { text: 'Outage', createdAt: '2026-01-01T09:00:00Z' },
-      { text: 'A fix is deployed and we are monitoring.', createdAt: '2026-01-01T10:00:00Z' }
+      { text: 'Outage', createdAt: ago(30) },
+      { text: 'A fix is deployed and we are monitoring.', createdAt: ago(20) }
     ])
     expect(await settle()).toContain('trayMonitoring.png')
 
     seedFeed(harness.appview, BSKY, [
-      { text: 'Outage', createdAt: '2026-01-01T09:00:00Z' },
-      { text: 'A fix is deployed and we are monitoring.', createdAt: '2026-01-01T10:00:00Z' },
-      { text: 'This incident has been resolved.', createdAt: '2026-01-01T11:00:00Z' }
+      { text: 'Outage', createdAt: ago(30) },
+      { text: 'A fix is deployed and we are monitoring.', createdAt: ago(20) },
+      { text: 'This incident has been resolved.', createdAt: ago(10) }
     ])
     expect(await settle()).toContain('trayTemplate.png')
   })
@@ -109,13 +129,13 @@ describe('an incident arriving while the app is running', () => {
 describe('reading the feed', () => {
   it('stays read when the post cache is trimmed out from under it', async () => {
     harness = await createHarness()
-    seedFeed(harness.appview, BSKY, [{ text: 'All good', createdAt: '2026-01-01T09:00:00Z' }])
+    seedFeed(harness.appview, BSKY, [{ text: 'All good', createdAt: ago(30) }])
     await harness.api.Feed.refresh()
     await flush()
 
     seedFeed(harness.appview, BSKY, [
-      { text: 'All good', createdAt: '2026-01-01T09:00:00Z' },
-      { text: 'We are investigating elevated error rates.', createdAt: '2026-01-01T10:00:00Z' }
+      { text: 'All good', createdAt: ago(30) },
+      { text: 'We are investigating elevated error rates.', createdAt: ago(20) }
     ])
     await harness.api.Feed.refresh()
     await flush()

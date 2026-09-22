@@ -63,8 +63,23 @@
   )
 </script>
 
+<!--
+  Right-click is answered by a real menu, built in the main process — see
+  `showPostMenu` in src/main/context-menu.ts. Everything in it already exists here as a
+  hover button or a keystroke; what it adds is the place a hand actually goes to look
+  for them, and the fact that it looks and behaves like every other menu on the machine
+  rather than like a web page's idea of one. Only the URI is sent: main reads the update
+  out of its own state and writes the labels itself.
+
+  `preventDefault` because Chromium would otherwise be free to answer first.
+-->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <article
   use:seen={post.uri}
+  oncontextmenu={(event) => {
+    event.preventDefault()
+    void app.showPostMenu(post.uri)
+  }}
   class={cn(
     'group relative flex gap-2.5 rounded-lg py-2.5 pr-2 pl-3 transition-colors',
     'hover:bg-accent/45',

@@ -3,6 +3,7 @@ import {
   makeAccount,
   makeCheck,
   makeNetworkSummary,
+  makePost,
   makeService,
   makeSnapshot
 } from '../test/factories'
@@ -31,12 +32,13 @@ import {
   probePost,
   probeServiceId,
   probeState,
+  reportHeadline,
   splitHost,
   summarizeNetwork,
   uptimePercent,
   type ProbeEvent
 } from './network'
-import { HEALTH_LABEL } from './status'
+import { HEALTH_LABEL, type Health } from './status'
 import type { ProbeState } from './types'
 
 const relay = SERVICES.find((s) => s.id === 'relay:europe.firehose.network')!
@@ -53,9 +55,9 @@ const sample = (state: ProbeState): { state: ProbeState } => ({ state })
 describe('the catalogue', () => {
   it('covers every service status.feeds.blue measures', () => {
     expect(count('relays')).toBe(CATALOGUE.relays.length)
-    expect(count('appviews')).toBe(CATALOGUE.appViews.length)
-    // The hand-kept PDSes, the community ones, and the relay's view of everybody else.
-    expect(count('pdses')).toBe(CATALOGUE.pdses.length + CATALOGUE.communityPdses.length + 1)
+    expect(count('appviews')).toBe(CATALOGUE.appViews.length + CATALOGUE.communityAppViews.length)
+    // The hand-kept PDSes and the community ones.
+    expect(count('pdses')).toBe(CATALOGUE.pdses.length + CATALOGUE.communityPdses.length)
     // Discover feed, For You, Constellation, UFOs, Slingshot and the CDN.
     expect(count('infrastructure')).toBe(6)
     expect(count('internet')).toBe(4)
@@ -63,17 +65,17 @@ describe('the catalogue', () => {
 
   it('covers the services beyond that page', () => {
     expect(count('streams')).toBe(CATALOGUE.jetstreams.length + 1)
-    // Appview, Bobbin, Hydrant, the default knot and the default spindle.
+    // Appview, Bobbin, Hydrant, the PDS, the default knot and the default spindle.
     expect(count('tangled')).toBe(
-      3 + CATALOGUE.tangled.knots.length + CATALOGUE.tangled.spindles.length
+      4 + CATALOGUE.tangled.knots.length + CATALOGUE.tangled.spindles.length
     )
     expect(count('apps')).toBe(3)
-    expect(SERVICES.map((s) => s.id)).toContain('fleet:bsky.network')
+    expect(SERVICES.find((s) => s.id === 'pds:tngl.sh')?.group).toBe('tangled')
   })
 
   it('grades hobby infrastructure below the network proper', () => {
     const community = SERVICES.filter((s) => s.tier === 'community').map((s) => s.host)
-    expect(community).toEqual([...CATALOGUE.communityPdses])
+    expect(community).toEqual([...CATALOGUE.communityAppViews, ...CATALOGUE.communityPdses])
     expect(SERVICES.filter(isCore).every((s) => s.tier === 'core')).toBe(true)
     expect(SERVICES.filter(isControl).some(isCore)).toBe(false)
   })
@@ -251,7 +253,8 @@ describe('summarizeNetwork', () => {
       degraded: ['eurosky.social'],
       community: [],
       running: false,
-      lastSweepAt: '2026-01-01T00:00:00Z'
+      lastSweepAt: '2026-01-01T00:00:00Z',
+      restraint: null
     })
   })
 
@@ -314,29 +317,34 @@ describe('networkAsHealth', () => {
 
 describe('headline', () => {
   const quiet = makeNetworkSummary({ health: 'operational', total: 26, reachable: 26 })
+  const NOW_ISO = '2026-01-02T12:00:00.000Z'
 
   it('keeps the accounts’ wording when nothing is measured', () => {
     expect(headline('monitoring', null)).toEqual({
       health: 'monitoring',
-      label: HEALTH_LABEL.monitoring
+      label: HEALTH_LABEL.monitoring,
+      attribution: null
     })
     expect(headline('incident', makeNetworkSummary({ health: 'off' }))).toEqual({
       health: 'incident',
-      label: HEALTH_LABEL.incident
+      label: HEALTH_LABEL.incident,
+      attribution: null
     })
   })
 
   it('agrees with the accounts when both say all is well', () => {
     expect(headline('operational', quiet)).toEqual({
       health: 'operational',
-      label: HEALTH_LABEL.operational
+      label: HEALTH_LABEL.operational,
+      attribution: null
     })
   })
 
   it('lets a clean measurement stand in for accounts that have not posted', () => {
     expect(headline('unknown', quiet)).toEqual({
       health: 'operational',
-      label: HEALTH_LABEL.operational
+      label: HEALTH_LABEL.operational,
+      attribution: null
     })
   })
 
@@ -344,7 +352,8 @@ describe('headline', () => {
     const network = makeNetworkSummary({ health: 'down', down: ['europe.firehose.network'] })
     expect(headline('operational', network)).toEqual({
       health: 'incident',
-      label: 'europe.firehose.network is unreachable'
+      label: 'europe.firehose.network is unreachable',
+      attribution: null
     })
   })
 
@@ -356,7 +365,7 @@ describe('headline', () => {
   it('names one degraded service, and counts several', () => {
     expect(
       headline('operational', makeNetworkSummary({ health: 'degraded', degraded: ['a.test'] }))
-    ).toEqual({ health: 'degraded', label: 'a.test is degraded' })
+    ).toEqual({ health: 'degraded', label: 'a.test is degraded', attribution: null })
     expect(
       headline('maintenance', makeNetworkSummary({ health: 'degraded', degraded: ['a', 'b'] }))
         .label
@@ -367,7 +376,8 @@ describe('headline', () => {
     const network = makeNetworkSummary({ health: 'down', down: ['europe.firehose.network'] })
     expect(headline('incident', network)).toEqual({
       health: 'incident',
-      label: HEALTH_LABEL.incident
+      label: HEALTH_LABEL.incident,
+      attribution: null
     })
   })
 
@@ -379,8 +389,201 @@ describe('headline', () => {
   it('says offline above everything else', () => {
     expect(headline('incident', makeNetworkSummary({ health: 'offline' }))).toEqual({
       health: 'offline',
-      label: HEALTH_LABEL.offline
+      label: HEALTH_LABEL.offline,
+      attribution: null
     })
+  })
+
+  it('drops the attribution when the measurement is what made it worse', () => {
+    const network = makeNetworkSummary({ health: 'down', down: ['a.test'] })
+    const said = {
+      name: 'Somebody',
+      health: 'operational' as const,
+      at: NOW_ISO,
+      others: 0,
+      stale: false
+    }
+    expect(headline('operational', network, said).attribution).toBeNull()
+    expect(
+      headline('incident', makeNetworkSummary({ health: 'offline' }), said).attribution
+    ).toBeNull()
+  })
+
+  it('will not say “no data yet” over a claim it has only just withdrawn', () => {
+    const withdrawn = {
+      name: 'Blacksky Status',
+      health: 'maintenance' as const,
+      at: NOW_ISO,
+      others: 0,
+      stale: true
+    }
+    expect(headline('unknown', null, withdrawn).label).toBe('Nothing reported recently')
+    expect(headline('unknown', null, null).label).toBe(HEALTH_LABEL.unknown)
+  })
+})
+
+describe('reportHeadline', () => {
+  const NOW = Date.parse('2026-01-02T12:00:00.000Z')
+  const hoursAgo = (hours: number): string => new Date(NOW - hours * 3_600_000).toISOString()
+  const quiet = makeNetworkSummary({ health: 'operational', total: 26, reachable: 26 })
+
+  const bsky = makeAccount({ did: 'did:plc:bsky', displayName: 'Bluesky Status' })
+  const black = makeAccount({ did: 'did:plc:black', displayName: 'Blacksky Status' })
+
+  it('names the source a current claim came from, and when', () => {
+    const line = reportHeadline(
+      [bsky],
+      [makePost({ authorDid: bsky.did, severity: 'outage', createdAt: hoursAgo(3) })],
+      quiet,
+      NOW
+    )
+    expect(line).toEqual({
+      health: 'incident',
+      label: HEALTH_LABEL.incident,
+      attribution: {
+        name: 'Bluesky Status',
+        health: 'incident',
+        at: hoursAgo(3),
+        others: 0,
+        stale: false
+      }
+    })
+  })
+
+  it('stops a claim setting the verdict once its author has gone quiet', () => {
+    const posts = [
+      makePost({ authorDid: black.did, severity: 'maintenance', createdAt: hoursAgo(72) })
+    ]
+    expect(reportHeadline([black], posts, quiet, NOW)).toEqual({
+      health: 'operational',
+      label: HEALTH_LABEL.operational,
+      attribution: {
+        name: 'Blacksky Status',
+        health: 'maintenance',
+        at: hoursAgo(72),
+        others: 0,
+        stale: true
+      }
+    })
+  })
+
+  it('keeps a maintenance window for a day and an incident for half of one', () => {
+    const maintenance = (hours: number): Health =>
+      reportHeadline(
+        [black],
+        [makePost({ authorDid: black.did, severity: 'maintenance', createdAt: hoursAgo(hours) })],
+        quiet,
+        NOW
+      ).health
+    const incident = (hours: number): Health =>
+      reportHeadline(
+        [bsky],
+        [makePost({ authorDid: bsky.did, severity: 'outage', createdAt: hoursAgo(hours) })],
+        quiet,
+        NOW
+      ).health
+
+    expect(maintenance(23)).toBe('maintenance')
+    expect(maintenance(25)).toBe('operational')
+    expect(incident(11)).toBe('incident')
+    expect(incident(13)).toBe('operational')
+  })
+
+  it('never lets a resolved post go stale', () => {
+    const line = reportHeadline(
+      [bsky],
+      [makePost({ authorDid: bsky.did, severity: 'resolved', createdAt: hoursAgo(5000) })],
+      quiet,
+      NOW
+    )
+    expect(line.health).toBe('operational')
+    expect(line.attribution).toBeNull()
+  })
+
+  it('lets a source that is still speaking outrank one that has gone quiet', () => {
+    const line = reportHeadline(
+      [bsky, black],
+      [
+        makePost({ authorDid: bsky.did, severity: 'outage', createdAt: hoursAgo(1) }),
+        makePost({ authorDid: black.did, severity: 'maintenance', createdAt: hoursAgo(72) })
+      ],
+      quiet,
+      NOW
+    )
+    expect(line.health).toBe('incident')
+    expect(line.attribution?.name).toBe('Bluesky Status')
+    expect(line.attribution?.stale).toBe(false)
+  })
+
+  it('counts the others saying the same thing', () => {
+    const line = reportHeadline(
+      [bsky, black],
+      [
+        makePost({ authorDid: bsky.did, severity: 'outage', createdAt: hoursAgo(3) }),
+        makePost({ authorDid: black.did, severity: 'outage', createdAt: hoursAgo(1) })
+      ],
+      quiet,
+      NOW
+    )
+    // The newest of the two speaks for both, and the count says it is not alone.
+    expect(line.attribution?.name).toBe('Blacksky Status')
+    expect(line.attribution?.others).toBe(1)
+  })
+
+  it('counts only the withdrawn claims that agree with the one it names', () => {
+    const line = reportHeadline(
+      [bsky, black],
+      [
+        makePost({ authorDid: bsky.did, severity: 'outage', createdAt: hoursAgo(40) }),
+        makePost({ authorDid: black.did, severity: 'maintenance', createdAt: hoursAgo(30) })
+      ],
+      quiet,
+      NOW
+    )
+    // Both have gone quiet, but they were not saying the same thing, so neither speaks
+    // for the other.
+    expect(line.attribution).toEqual({
+      name: 'Blacksky Status',
+      health: 'maintenance',
+      at: hoursAgo(30),
+      others: 0,
+      stale: true
+    })
+  })
+
+  it('takes no notice of a muted source, however loudly it is claiming', () => {
+    const line = reportHeadline(
+      [{ ...black, muted: true }],
+      [makePost({ authorDid: black.did, severity: 'outage', createdAt: hoursAgo(1) })],
+      quiet,
+      NOW
+    )
+    expect(line.health).toBe('operational')
+    expect(line.attribution).toBeNull()
+  })
+
+  it('leaves the checks’ own entries to the live measurement', () => {
+    const source = probeAccount('2026-01-01T00:00:00Z')
+    const line = reportHeadline(
+      [source],
+      [makePost({ authorDid: PROBE_SOURCE_DID, severity: 'outage', createdAt: hoursAgo(1) })],
+      quiet,
+      NOW
+    )
+    expect(line.health).toBe('operational')
+    expect(line.attribution).toBeNull()
+  })
+
+  it('says nothing was reported recently when the checks are off as well', () => {
+    const line = reportHeadline(
+      [black],
+      [makePost({ authorDid: black.did, severity: 'maintenance', createdAt: hoursAgo(72) })],
+      makeNetworkSummary({ health: 'off' }),
+      NOW
+    )
+    expect(line.health).toBe('unknown')
+    expect(line.label).toBe('Nothing reported recently')
+    expect(line.attribution?.stale).toBe(true)
   })
 })
 

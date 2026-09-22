@@ -33,9 +33,12 @@ export interface FakeDisplay {
 export interface MenuItemTemplate {
   label?: string
   type?: string
+  /** A built-in Electron role (`paste`, `quit`, …), which supplies its own behaviour. */
+  role?: string
   accelerator?: string
   enabled?: boolean
   click?: () => void
+  submenu?: MenuItemTemplate[]
 }
 
 // ------------------------------------------------------------------------ app
@@ -45,7 +48,12 @@ class FakeApp extends EventEmitter {
   /** Flip to false to exercise the "another copy is already running" path. */
   singleInstanceLock = true
   version = '0.1.0-test'
-  name = 'statusky'
+  /**
+   * What `app.getName()` answers, which is `productName` from package.json — not the
+   * lowercase `name` beside it, and not the bundle. Electron prefers `productName` when
+   * it is there, so a real run says `Statusky` in dev and in a packaged build alike.
+   */
+  name = 'Statusky'
   userModelId: string | null = null
   loginItem = { openAtLogin: false, openAsHidden: false }
   /** Set to null to simulate a platform with no dock (Windows, Linux). */
@@ -55,6 +63,16 @@ class FakeApp extends EventEmitter {
   }
   /** Throw from `setLoginItemSettings`, the way an unbundled dev binary does. */
   loginItemThrows: Error | null = null
+  /**
+   * Accept `setLoginItemSettings` and register nothing, which is the macOS 13+ failure.
+   *
+   * There it goes through `SMAppService`, which refuses a bundle that is not properly
+   * signed or is not in /Applications — and refuses it *quietly*: the call returns,
+   * nothing throws, and the only trace is that reading the setting straight back gives
+   * the old answer. Unreachable any other way from a test, and the whole reason the app
+   * reads it back.
+   */
+  loginItemRefuses = false
 
   readonly quit = vi.fn(() => {
     this.emit('quit')
@@ -73,8 +91,42 @@ class FakeApp extends EventEmitter {
   readonly getLoginItemSettings = vi.fn(() => ({ ...this.loginItem }))
   readonly setLoginItemSettings = vi.fn((settings: { openAtLogin?: boolean }) => {
     if (this.loginItemThrows) throw this.loginItemThrows
+    if (this.loginItemRefuses) return
     this.loginItem = { ...this.loginItem, ...settings }
   })
+
+  /**
+   * Schemes this app has claimed from the OS, in order, with the command line it asked
+   * to be launched with. On Windows that command line is written into the registry, so
+   * the arguments are the whole of the mitigation for the protocol-handler injection
+   * class of bug and are worth being able to assert on. See src/main/deep-link.ts.
+   */
+  readonly protocolClients: { scheme: string; path?: string; args?: string[] }[] = []
+
+  readonly setAsDefaultProtocolClient = vi.fn(
+    (scheme: string, path?: string, args?: string[]): boolean => {
+      this.protocolClients.push({ scheme, path, args })
+      return true
+    }
+  )
+
+  readonly removeAsDefaultProtocolClient = vi.fn((scheme: string): boolean => {
+    const index = this.protocolClients.findIndex((entry) => entry.scheme === scheme)
+    if (index === -1) return false
+    this.protocolClients.splice(index, 1)
+    return true
+  })
+
+  readonly isDefaultProtocolClient = vi.fn((scheme: string): boolean =>
+    this.protocolClients.some((entry) => entry.scheme === scheme)
+  )
+
+  /** What the native About panel has been told to say; null until it is configured. */
+  aboutPanel: Record<string, unknown> | null = null
+  readonly setAboutPanelOptions = vi.fn((options: Record<string, unknown>) => {
+    this.aboutPanel = options
+  })
+  readonly showAboutPanel = vi.fn()
 }
 
 export const app = new FakeApp()
@@ -312,17 +364,41 @@ export class FakeNetWebSocket extends EventTarget {
   }
 }
 
+/**
+ * The default `net.fetch`: `servedFiles` and nothing else, 404 for everything else.
+ *
+ * Named so `resetElectron` can put it back after a test has replaced it. A 404 is a
+ * useful default beyond the renderer bundle, too — it is exactly what the GitHub
+ * releases API answers for a repository that has not published one yet.
+ *
+ * The `init` is declared and ignored: nothing here varies on it, but the real
+ * `net.fetch` takes one and both callers pass one — the probes their abort signal, the
+ * release check its headers — so a test that wraps this one has to be able to pass it on.
+ */
+const serveFromDisk = async (input: string, _init?: RequestInit): Promise<Response> => {
+  const path = input.startsWith('file://') ? fileURLToPath(input) : input
+  const body = servedFiles.get(path)
+  if (body === undefined) return new Response('Not found', { status: 404 })
+  return new Response(body, { status: 200 })
+}
+
 export const net = {
-  fetch: vi.fn(async (input: string) => {
-    const path = input.startsWith('file://') ? fileURLToPath(input) : input
-    const body = servedFiles.get(path)
-    if (body === undefined) return new Response('Not found', { status: 404 })
-    return new Response(body, { status: 200 })
-  }),
+  /**
+   * Chromium's own read on whether this machine has a connection, which main puts a
+   * renderer's `online` claim to before acting on it. True by default: a test that
+   * cares about main disbelieving the page sets it false.
+   */
+  online: true,
+  fetch: vi.fn(serveFromDisk),
   WebSocket: FakeNetWebSocket
 }
 
 // --------------------------------------------------------------- notifications
+
+export interface FakeNotificationAction {
+  type: string
+  text?: string
+}
 
 export interface FakeNotificationOptions {
   title?: string
@@ -330,6 +406,12 @@ export interface FakeNotificationOptions {
   body?: string
   silent?: boolean
   timeoutType?: string
+  /** Buttons on the banner (darwin, win32). See `Notification.act`. */
+  actions?: FakeNotificationAction[]
+  /** macOS: the request identifier. Windows: the toast's `Tag`. */
+  id?: string
+  /** macOS: the thread identifier. Windows: the toast's `Group`. */
+  groupId?: string
 }
 
 export class Notification extends EventEmitter {
@@ -365,6 +447,22 @@ export class Notification extends EventEmitter {
   /** Simulate the user clicking the notification banner. */
   click(): void {
     this.emit('click', {})
+  }
+
+  /**
+   * Simulate the user pressing one of the banner's action buttons.
+   *
+   * Electron passes the index inside the event object and, deprecated, as a positional
+   * argument as well; only the object is reproduced here, because that is the one the
+   * app is allowed to read. A button the banner does not have throws rather than
+   * silently doing nothing, so a test that renumbers the actions fails loudly.
+   */
+  act(index: number): void {
+    const actions = this.options.actions ?? []
+    if (index < 0 || index >= actions.length) {
+      throw new Error(`This notification has no action at index ${index}.`)
+    }
+    this.emit('action', { actionIndex: index, selectionIndex: -1 })
   }
 }
 
@@ -402,12 +500,73 @@ export const nativeImage = {
 
 // ----------------------------------------------------------------------- menu
 
+function collectRoles(entries: MenuItemTemplate[]): string[] {
+  return entries.flatMap((entry) => [
+    ...(entry.role ? [entry.role] : []),
+    ...collectRoles(entry.submenu ?? [])
+  ])
+}
+
+export interface MenuPopupOptions {
+  window?: unknown
+  x?: number
+  y?: number
+  /** Run when the menu closes, however it closed. */
+  callback?: () => void
+}
+
 export class FakeMenu {
+  /** Every `popup`, in order; the last one is the menu currently on screen. */
+  readonly popups: MenuPopupOptions[] = []
+
   constructor(readonly template: MenuItemTemplate[]) {}
+
+  /**
+   * Put the menu on screen. Electron's `popup` returns immediately and reports the
+   * dismissal through `callback`, which is the only notice an app gets that a menu it
+   * opened is gone — and therefore the only place anything held open for it can be
+   * let go. See `closePopup`.
+   */
+  popup(options: MenuPopupOptions = {}): void {
+    this.popups.push(options)
+    poppedUp.push(this)
+  }
+
+  /** Whether this menu is on screen right now. */
+  isOpen(): boolean {
+    return this.popups.length > 0
+  }
+
+  /**
+   * Dismiss the menu, running the close callback Electron would run.
+   *
+   * Called by `click` as well, because selecting an item is one of the ways a menu
+   * closes: an app that only released what it was holding on an explicit dismissal
+   * would hold it forever the moment somebody actually used the menu. Electron does
+   * not promise which of the two arrives first, so nothing here should depend on it.
+   */
+  closePopup(): void {
+    const options = this.popups.pop()
+    options?.callback?.()
+  }
 
   /** Find a menu entry by its label, so tests can assert on and invoke it. */
   item(label: string): MenuItemTemplate | undefined {
     return this.template.find((entry) => entry.label === label)
+  }
+
+  /**
+   * The entries of the submenu hanging off `label`, or `undefined` if there is no
+   * such entry. An application menu is entirely submenus, so a test that never
+   * descends into one can only assert that the menu bar exists.
+   */
+  submenu(label: string): MenuItemTemplate[] | undefined {
+    return this.item(label)?.submenu
+  }
+
+  /** Every role in the menu, submenus included, depth first and in drawing order. */
+  roles(): string[] {
+    return collectRoles(this.template)
   }
 
   /** Click a menu entry by label. Throws if it is missing, so typos fail loudly. */
@@ -415,8 +574,57 @@ export class FakeMenu {
     const entry = this.item(label)
     if (!entry) throw new Error(`No menu item labelled ${JSON.stringify(label)}`)
     entry.click?.()
+    if (this.isOpen()) this.closePopup()
   }
 }
+
+/** The macOS share sheet's payload: what is being shared, by kind. */
+export interface FakeSharingItem {
+  texts?: string[]
+  urls?: string[]
+  filePaths?: string[]
+}
+
+/**
+ * `ShareMenu`: the system share sheet, which is a menu the OS fills in.
+ *
+ * Deliberately not a `FakeMenu`: the app never writes its entries — Messages, Mail and
+ * whatever share extensions are installed are the OS's business — so the only thing
+ * worth recording is what was handed over and whether it was put on screen.
+ */
+export class FakeShareMenu {
+  readonly popups: MenuPopupOptions[] = []
+
+  constructor(readonly sharingItem: FakeSharingItem) {
+    shareMenus.push(this)
+  }
+
+  popup(options: MenuPopupOptions = {}): void {
+    this.popups.push(options)
+  }
+
+  isOpen(): boolean {
+    return this.popups.length > 0
+  }
+
+  closePopup(): void {
+    const options = this.popups.pop()
+    options?.callback?.()
+  }
+}
+
+/** Every share sheet constructed, in order. */
+export const shareMenus: FakeShareMenu[] = []
+
+/** Every menu put on screen with `popup`, in order. */
+export const poppedUp: FakeMenu[] = []
+
+/**
+ * The menu Electron would install over the whole application, or null where the app
+ * has explicitly asked for none. It stays `undefined` until something sets it, which
+ * is the state that lets Electron install its own default menu instead.
+ */
+export const applicationMenu: { current: FakeMenu | null | undefined } = { current: undefined }
 
 export const Menu = {
   buildFromTemplate: vi.fn((template: MenuItemTemplate[]) => {
@@ -424,10 +632,97 @@ export const Menu = {
     menus.push(menu)
     return menu
   }),
-  setApplicationMenu: vi.fn()
+  setApplicationMenu: vi.fn((menu: FakeMenu | null) => {
+    applicationMenu.current = menu
+  })
 }
 
 export const menus: FakeMenu[] = []
+export const ShareMenu = FakeShareMenu
+
+// ------------------------------------------------------------ globalShortcut
+
+/**
+ * `globalShortcut`: key combinations claimed from the whole machine.
+ *
+ * `taken` is the knob that matters. A global shortcut belongs to whichever application
+ * asked for it first, and the only sign of losing that race is `register` answering
+ * false — there is no error, no event, and no second chance until the winner exits. It
+ * is unreachable from a test any other way, and it is the entire reason the app reads
+ * the return value instead of assuming the key now works.
+ */
+class FakeGlobalShortcut {
+  /** Accelerators another application already owns, so `register` refuses them. */
+  readonly taken = new Set<string>()
+  /**
+   * Set to throw from `register`, the way Electron does on a malformed accelerator.
+   * Typed as `unknown` because a throw crossing out of native code is not obliged to be
+   * an `Error`, and the app has to survive one that is not.
+   */
+  registerThrows: unknown = null
+  /** What is currently registered to this app, and what each one runs. */
+  readonly registrations = new Map<string, () => void>()
+
+  readonly register = vi.fn((accelerator: string, callback: () => void): boolean => {
+    if (this.registerThrows) throw this.registerThrows
+    if (this.taken.has(accelerator)) return false
+    this.registrations.set(accelerator, callback)
+    return true
+  })
+
+  readonly unregister = vi.fn((accelerator: string) => {
+    this.registrations.delete(accelerator)
+  })
+
+  readonly unregisterAll = vi.fn(() => {
+    this.registrations.clear()
+  })
+
+  readonly isRegistered = vi.fn((accelerator: string) => this.registrations.has(accelerator))
+
+  /** Press the combination, the way somebody in another application would. */
+  press(accelerator: string): boolean {
+    const callback = this.registrations.get(accelerator)
+    if (!callback) return false
+    callback()
+    return true
+  }
+}
+
+export const globalShortcut = new FakeGlobalShortcut()
+
+// ----------------------------------------------------------------- autoUpdater
+
+/**
+ * `autoUpdater`: Electron's wrapper around Squirrel.Mac and Squirrel.Windows.
+ *
+ * Only the two things this app touches, and it touches neither directly in the ordinary
+ * case — `update-electron-app` drives the feed and the checks, and src/main/update.ts
+ * listens in on one event and offers one action.
+ *
+ * `error` is the interesting one. It is Squirrel's single channel for every reason an
+ * install cannot update itself: a code signature that does not match the running app
+ * (which is every ad-hoc signed local build), a Windows install with no `Update.exe`
+ * beside it, a feed that answers 404 because nothing has been released yet. The app
+ * treats all of them the same way and falls back to merely telling the user, so a test
+ * needs to be able to raise one.
+ *
+ * `quitAndInstall` never returns in Electron — Squirrel swaps the bundle and relaunches —
+ * so here it only records that it was reached. Anything asserting on it is asserting that
+ * the process was about to go, which is the whole of what the app can promise.
+ */
+class FakeAutoUpdater extends EventEmitter {
+  readonly setFeedURL = vi.fn()
+  readonly checkForUpdates = vi.fn()
+  readonly quitAndInstall = vi.fn()
+
+  /** Squirrel refusing, in whatever way it is refusing today. */
+  fail(reason: string): void {
+    this.emit('error', new Error(reason))
+  }
+}
+
+export const autoUpdater = new FakeAutoUpdater()
 
 // ----------------------------------------------------------------------- tray
 
@@ -435,10 +730,26 @@ export class Tray extends EventEmitter {
   image: FakeNativeImage
   tooltip = ''
   title = ''
+  /**
+   * The options `setTitle` was last given. macOS renders the title in the menu bar's
+   * proportional font unless asked for `monospacedDigit`, and a count that changes width
+   * shoves everything left of the icon sideways — so this is worth being able to assert.
+   */
+  titleOptions: { fontType?: string } | null = null
   destroyed = false
   ignoresDoubleClick = false
   bounds: FakeRect = { x: 900, y: 0, width: 24, height: 24 }
   readonly poppedUpMenus: FakeMenu[] = []
+  /**
+   * The menu attached to the icon, as opposed to one popped up on demand.
+   *
+   * These are two different things on the real platforms, which is the whole reason the
+   * app cares: under StatusNotifierItem — GNOME, KDE, most Linux desktops — the host asks
+   * the item for this menu, and never delivers a left click to the application at all, so
+   * an item that has not set one can end up with no way in. On macOS, setting it replaces
+   * the left-click toggle, which for this app would be wrong. Null until set.
+   */
+  contextMenu: FakeMenu | null = null
 
   constructor(image: FakeNativeImage) {
     super()
@@ -454,8 +765,13 @@ export class Tray extends EventEmitter {
     this.tooltip = tooltip
   }
 
-  setTitle(title: string): void {
+  setTitle(title: string, options?: { fontType?: string }): void {
     this.title = title
+    this.titleOptions = options ?? null
+  }
+
+  setContextMenu(menu: FakeMenu | null): void {
+    this.contextMenu = menu
   }
 
   setIgnoreDoubleClickEvents(value: boolean): void {
@@ -468,6 +784,23 @@ export class Tray extends EventEmitter {
 
   popUpContextMenu(menu: FakeMenu): void {
     this.poppedUpMenus.push(menu)
+  }
+
+  /**
+   * Drag text over the icon and let go of it, the way a handle selected in a browser
+   * arrives. macOS only in Electron, and there is no way to reach any of the three from
+   * a test but to emit them, so they are spelled out here rather than left to callers.
+   */
+  dragEnter(): void {
+    this.emit('drag-enter', {})
+  }
+
+  dragLeave(): void {
+    this.emit('drag-leave', {})
+  }
+
+  dropText(text: string): void {
+    this.emit('drop-text', {}, text)
   }
 
   destroy(): void {
@@ -501,6 +834,7 @@ export class FakeWebFrameMain {
 
 class FakeWebContents extends EventEmitter {
   devToolsOpen = false
+  destroyed = false
   url = ''
   windowOpenHandler: ((details: { url: string }) => unknown) | null = null
   /** Every `send` this window made: the renderer-facing push stream. */
@@ -510,6 +844,9 @@ class FakeWebContents extends EventEmitter {
   readonly mainFrame: FakeWebFrameMain = new FakeWebFrameMain(this)
 
   send(channel: string, ...args: unknown[]): void {
+    // Electron throws rather than quietly dropping the message when the page is gone,
+    // which is the whole reason anything holding a dispatcher has to ask first.
+    if (this.destroyed) throw new TypeError('Object has been destroyed')
     const payload = args.length > 1 ? args : args[0]
     this.sent.push({ channel, payload })
     rendererBus.emit(channel, { sender: this }, ...args)
@@ -525,6 +862,14 @@ class FakeWebContents extends EventEmitter {
 
   isDevToolsOpened(): boolean {
     return this.devToolsOpen
+  }
+
+  /**
+   * Electron throws from `send` on a destroyed page rather than dropping the message,
+   * so anything holding a dispatcher has to ask first. See src/main/ipc.ts.
+   */
+  isDestroyed(): boolean {
+    return this.destroyed
   }
 
   openDevTools(): void {
@@ -588,6 +933,7 @@ export class BrowserWindow extends EventEmitter {
 
   close(): void {
     this.destroyed = true
+    this.webContents.destroyed = true
     this.emit('closed')
   }
 
@@ -692,10 +1038,47 @@ export const screen = new FakeScreen()
 
 export const nativeTheme = Object.assign(new EventEmitter(), {
   themeSource: 'system' as 'system' | 'light' | 'dark',
-  shouldUseDarkColors: false
+  shouldUseDarkColors: false,
+  /**
+   * Windows high contrast, which is an axis of its own rather than a darker dark. Set it
+   * and emit `updated` to turn the mode on the way the OS does — there is no way to reach
+   * this from a Mac otherwise, and the app's response to it is a real branch.
+   */
+  shouldUseHighContrastColors: false
 })
 
-export const powerMonitor = new EventEmitter()
+export type FakeThermalState = 'unknown' | 'nominal' | 'fair' | 'serious' | 'critical'
+export type FakeIdleState = 'active' | 'idle' | 'locked' | 'unknown'
+
+/**
+ * `powerMonitor`: an event emitter with three questions it can also be asked.
+ *
+ * The events are the point — `emit('on-battery')` is how a test unplugs a laptop — but
+ * the three readable states matter just as much, because the app reads all of them at
+ * startup rather than waiting for a transition that may never come. They are plain
+ * fields so that a test sets the machine up and then boots the app into it, which is
+ * the only way round that models "this laptop has been on battery since breakfast".
+ */
+class FakePowerMonitor extends EventEmitter {
+  onBattery = false
+  thermalState: FakeThermalState = 'nominal'
+  /** What `getSystemIdleState` answers, whatever threshold it is asked about. */
+  idleState: FakeIdleState = 'active'
+
+  isOnBatteryPower(): boolean {
+    return this.onBattery
+  }
+
+  getCurrentThermalState(): FakeThermalState {
+    return this.thermalState
+  }
+
+  getSystemIdleState(_idleThreshold: number): FakeIdleState {
+    return this.idleState
+  }
+}
+
+export const powerMonitor = new FakePowerMonitor()
 powerMonitor.setMaxListeners(0)
 
 export const dialog = {
@@ -706,6 +1089,103 @@ export const dialog = {
 
 export const systemPreferences = {
   getMediaAccessStatus: vi.fn(() => 'granted')
+}
+
+// ----------------------------------------------------------------- safeStorage
+
+/** What a sealed value starts with, so a test can recognise one on sight. */
+export const SEALED_PREFIX = 'sealed:'
+
+/**
+ * `safeStorage`: the OS credential store, as far as anything keeping a secret can tell.
+ *
+ * The sealing is a visible envelope rather than a cipher. What a test needs to prove is
+ * that the plaintext left the config file, that the value survives a round trip, and
+ * that a buffer this machine cannot open is refused — none of which needs real crypto,
+ * and all of which is easier to read when the envelope is legible.
+ *
+ * `available` is the knob that matters: it models a Linux desktop with no secret
+ * service running, where `isEncryptionAvailable()` is honestly false and the app has
+ * to carry on anyway.
+ */
+class FakeSafeStorage {
+  /** Set to false for a machine with nowhere to keep a secret. */
+  available = true
+  /** Set to make a store that claims to be available refuse the write anyway. */
+  encryptThrows: Error | null = null
+
+  readonly isEncryptionAvailable = vi.fn(() => this.available)
+
+  readonly encryptString = vi.fn((plaintext: string) => {
+    if (this.encryptThrows) throw this.encryptThrows
+    if (!this.available) throw new Error('Encryption is not available on this system')
+    return Buffer.from(`${SEALED_PREFIX}${plaintext}`, 'utf8')
+  })
+
+  readonly decryptString = vi.fn((sealed: Buffer) => {
+    if (!this.available) throw new Error('Encryption is not available on this system')
+    const text = sealed.toString('utf8')
+    // What the real one does with a buffer it did not seal, or sealed under a key
+    // this machine no longer has.
+    if (!text.startsWith(SEALED_PREFIX)) throw new Error('Could not decrypt the buffer')
+    return text.slice(SEALED_PREFIX.length)
+  })
+}
+
+export const safeStorage = new FakeSafeStorage()
+
+// --------------------------------------------------------------------- session
+
+export type PermissionRequestHandler = (
+  contents: unknown,
+  permission: string,
+  callback: (granted: boolean) => void,
+  details?: unknown
+) => void
+
+export type PermissionCheckHandler = (
+  contents: unknown,
+  permission: string,
+  origin: string,
+  details?: unknown
+) => boolean
+
+/**
+ * One browsing session, and the two questions Chromium asks it about permissions.
+ *
+ * `request` and `check` answer the way Chromium would if nothing had been configured
+ * — granted — so a test that forgets to install the handlers sees a permission being
+ * allowed rather than a mock that was never called. Denial has to be the app's doing.
+ */
+class FakeSession {
+  requestHandler: PermissionRequestHandler | null = null
+  checkHandler: PermissionCheckHandler | null = null
+
+  readonly setPermissionRequestHandler = vi.fn((handler: PermissionRequestHandler | null) => {
+    this.requestHandler = handler
+  })
+
+  readonly setPermissionCheckHandler = vi.fn((handler: PermissionCheckHandler | null) => {
+    this.checkHandler = handler
+  })
+
+  /** Ask for a permission the way a page would, and report the answer. */
+  request(permission: string, contents: unknown = null): boolean {
+    let granted = true
+    this.requestHandler?.(contents, permission, (value) => {
+      granted = value
+    })
+    return granted
+  }
+
+  /** Ask whether a permission is already held, which Chromium does without a prompt. */
+  check(permission: string, origin = 'app://statusky'): boolean {
+    return this.checkHandler?.(null, permission, origin) ?? true
+  }
+}
+
+export const session = {
+  defaultSession: new FakeSession()
 }
 
 // ---------------------------------------------------------------------- reset
@@ -721,6 +1201,7 @@ export function resetElectron(): void {
   app.version = '0.1.0-test'
   app.loginItem = { openAtLogin: false, openAsHidden: false }
   app.loginItemThrows = null
+  app.loginItemRefuses = false
   app.dock = { hide: vi.fn(), show: vi.fn() }
   app.userModelId = null
   app.quit.mockClear()
@@ -753,7 +1234,14 @@ export function resetElectron(): void {
   servedFiles.clear()
   protocol.registerSchemesAsPrivileged.mockClear()
   protocol.handle.mockClear()
-  net.fetch.mockClear()
+  // Put the default implementation back, not just the call list. A test that pointed
+  // `net.fetch` somewhere of its own — the release check's GitHub answers, a probe's
+  // response — must not leave it pointed there for the next one, which would then be
+  // asserting against a neighbour's fixture. Same reasoning as `dialog.showMessageBox`
+  // at the bottom of this function.
+  net.fetch.mockReset()
+  net.fetch.mockImplementation(serveFromDisk)
+  net.online = true
   FakeNetWebSocket.instances.length = 0
 
   Notification.supported = true
@@ -764,8 +1252,45 @@ export function resetElectron(): void {
 
   nativeImage.createFromPath.mockClear()
   Menu.buildFromTemplate.mockClear()
+  Menu.setApplicationMenu.mockClear()
+  applicationMenu.current = undefined
   menus.length = 0
+  poppedUp.length = 0
+  shareMenus.length = 0
   trays.length = 0
+
+  app.protocolClients.length = 0
+  app.setAsDefaultProtocolClient.mockClear()
+  app.removeAsDefaultProtocolClient.mockClear()
+  app.isDefaultProtocolClient.mockClear()
+
+  globalShortcut.taken.clear()
+  globalShortcut.registrations.clear()
+  globalShortcut.registerThrows = null
+  globalShortcut.register.mockClear()
+  globalShortcut.unregister.mockClear()
+  globalShortcut.unregisterAll.mockClear()
+  globalShortcut.isRegistered.mockClear()
+
+  autoUpdater.removeAllListeners()
+  autoUpdater.setFeedURL.mockClear()
+  autoUpdater.checkForUpdates.mockClear()
+  autoUpdater.quitAndInstall.mockClear()
+
+  app.aboutPanel = null
+  app.setAboutPanelOptions.mockClear()
+  app.showAboutPanel.mockClear()
+
+  safeStorage.available = true
+  safeStorage.encryptThrows = null
+  safeStorage.isEncryptionAvailable.mockClear()
+  safeStorage.encryptString.mockClear()
+  safeStorage.decryptString.mockClear()
+
+  session.defaultSession.requestHandler = null
+  session.defaultSession.checkHandler = null
+  session.defaultSession.setPermissionRequestHandler.mockClear()
+  session.defaultSession.setPermissionCheckHandler.mockClear()
 
   BrowserWindow.instances.length = 0
   BrowserWindow.getAllWindows.mockClear()
@@ -775,11 +1300,19 @@ export function resetElectron(): void {
 
   nativeTheme.themeSource = 'system'
   nativeTheme.shouldUseDarkColors = false
+  nativeTheme.shouldUseHighContrastColors = false
   nativeTheme.removeAllListeners()
 
   powerMonitor.removeAllListeners()
+  powerMonitor.onBattery = false
+  powerMonitor.thermalState = 'nominal'
+  powerMonitor.idleState = 'active'
 
   dialog.showErrorBox.mockClear()
+  dialog.showMessageBox.mockClear()
+  // A test that made the dialog never answer must not leave it that way for the next
+  // one: `mockClear` forgets the calls but keeps the implementation.
+  dialog.showMessageBox.mockImplementation(async () => ({ response: 0 }))
 }
 
 export default {
@@ -793,11 +1326,16 @@ export default {
   Notification,
   nativeImage,
   Menu,
+  ShareMenu,
+  globalShortcut,
+  autoUpdater,
   Tray,
   BrowserWindow,
   screen,
   nativeTheme,
   powerMonitor,
   dialog,
-  systemPreferences
+  systemPreferences,
+  safeStorage,
+  session
 }

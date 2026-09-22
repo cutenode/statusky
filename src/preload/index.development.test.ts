@@ -25,6 +25,7 @@ const INTERFACES = [
   'Feed',
   'Host',
   'Network',
+  'Popover',
   'Preferences',
   'State',
   'Webhook'

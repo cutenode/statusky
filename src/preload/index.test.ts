@@ -53,6 +53,7 @@ describe('the bridge', () => {
         'Feed',
         'Host',
         'Network',
+        'Popover',
         'Preferences',
         'State',
         'Webhook'
@@ -73,6 +74,9 @@ describe('the bridge', () => {
     ])
     expect(Object.keys(api!.Actors).toSorted()).toEqual(['resolve'])
     expect(Object.keys(api!.Webhook).toSorted()).toEqual(['regenerateSecret'])
+    expect(Object.keys(api!.Popover).toSorted()).toEqual(
+      ['onCatchUp', 'online', 'postMenu', 'reduceMotion'].toSorted()
+    )
     expect(Object.keys(api!.Host).toSorted()).toEqual(
       [
         'copyText',

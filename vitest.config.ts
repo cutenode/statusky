@@ -15,7 +15,12 @@ const alias = {
   // specific entry has to come first.
   'electron/renderer': resolve('src/test/electron-renderer.ts'),
   electron: resolve('src/test/electron.ts'),
-  'electron-store': resolve('src/test/electron-store.ts')
+  'electron-store': resolve('src/test/electron-store.ts'),
+  // Not for want of an Electron process, unlike the three above: the real package is
+  // CommonJS in node_modules, so Vitest loads it through Node and its own
+  // `require('electron')` escapes the alias above and reaches the real one. See the
+  // header of src/test/update-electron-app.ts.
+  'update-electron-app': resolve('src/test/update-electron-app.ts')
 }
 
 const setup = resolve('src/test/setup.ts')

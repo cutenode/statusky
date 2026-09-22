@@ -17,6 +17,7 @@ import type {
   Account,
   AccountPatch,
   AppState,
+  LoginItemStatus,
   NetworkHealth,
   NetworkReveal,
   NetworkSnapshot,
@@ -37,11 +38,15 @@ import type {
   ServiceProbe,
   Settings,
   Severity,
+  ShortcutStatus,
   SourceKind,
   StatusPost,
+  SweepRestraint,
   SyncStatus,
   ThemePreference,
   TrayUnreadStyle,
+  UpdateStage,
+  UpdateStatus,
   WebhookState,
   WebhookStatus
 } from './types'
@@ -52,6 +57,7 @@ export type {
   Account,
   AccountPatch,
   AppState,
+  LoginItemStatus,
   MarkReadTrigger,
   NetworkReveal,
   NetworkSnapshot,
@@ -63,9 +69,12 @@ export type {
   Severity,
   SourceKind,
   StatusPost,
+  SweepRestraint,
   SyncStatus,
   ThemePreference,
   TrayUnreadStyle,
+  UpdateStage,
+  UpdateStatus,
   WebhookState,
   WebhookStatus
 } from './types'
@@ -100,6 +109,23 @@ export const webhookStatusSchema = z.object({
   error: z.string().nullable(),
   deliveries: z.number(),
   lastDeliveryAt: z.string().nullable()
+})
+
+export const loginItemStatusSchema = z.object({
+  registered: z.boolean(),
+  error: z.string().nullable()
+})
+
+export const shortcutStatusSchema = z.object({
+  registered: z.boolean(),
+  error: z.string().nullable()
+})
+
+export const updateStageSchema = z.enum(['current', 'available', 'ready'])
+
+export const updateStatusSchema = z.object({
+  stage: updateStageSchema,
+  version: z.string().nullable()
 })
 
 export const platformSchema = z.enum([
@@ -194,7 +220,8 @@ export const settingsSchema = z.object({
   webhookEnabled: z.boolean(),
   webhookPort: z.number(),
   networkChecks: z.boolean(),
-  networkIntervalSec: z.number()
+  networkIntervalSec: z.number(),
+  globalShortcut: z.string()
 })
 
 /** Every field optional: the renderer sends only what the user actually changed. */
@@ -227,7 +254,6 @@ export const probeKindSchema = z.enum([
   'ufos',
   'slingshot',
   'foryou',
-  'fleet',
   'tangled-appview',
   'bobbin',
   'hydrant',
@@ -279,11 +305,14 @@ export const serviceProbeSchema = z.object({
   rechecking: z.boolean()
 })
 
+export const sweepRestraintSchema = z.enum(['battery', 'thermal'])
+
 export const networkSnapshotSchema = z.object({
   running: z.boolean(),
   startedAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
   offline: z.boolean(),
+  restraint: sweepRestraintSchema.nullable(),
   services: z.array(serviceProbeSchema)
 })
 
@@ -304,7 +333,8 @@ export const networkSummarySchema = z.object({
   degraded: z.array(z.string()),
   community: z.array(z.string()),
   running: z.boolean(),
-  lastSweepAt: z.string().nullable()
+  lastSweepAt: z.string().nullable(),
+  restraint: sweepRestraintSchema.nullable()
 })
 
 export const networkRevealSchema = z.object({
@@ -323,6 +353,9 @@ export const appStateSchema = z.object({
   }),
   webhook: webhookStatusSchema,
   network: networkSummarySchema,
+  loginItem: loginItemStatusSchema,
+  shortcut: shortcutStatusSchema,
+  update: updateStatusSchema,
   version: z.string()
 })
 
@@ -357,6 +390,14 @@ export type _WebhookStateMatches = Assert<Exact<z.infer<typeof webhookStateSchem
 export type _WebhookStatusMatches = Assert<
   Exact<z.infer<typeof webhookStatusSchema>, WebhookStatus>
 >
+export type _LoginItemStatusMatches = Assert<
+  Exact<z.infer<typeof loginItemStatusSchema>, LoginItemStatus>
+>
+export type _ShortcutStatusMatches = Assert<
+  Exact<z.infer<typeof shortcutStatusSchema>, ShortcutStatus>
+>
+export type _UpdateStageMatches = Assert<Exact<z.infer<typeof updateStageSchema>, UpdateStage>>
+export type _UpdateStatusMatches = Assert<Exact<z.infer<typeof updateStatusSchema>, UpdateStatus>>
 export type _PlatformMatches = Assert<Exact<z.infer<typeof platformSchema>, Platform>>
 export type _AccountMatches = Assert<Exact<z.infer<typeof accountSchema>, Account>>
 export type _AccountPatchMatches = Assert<Exact<z.infer<typeof accountPatchSchema>, AccountPatch>>
@@ -380,6 +421,9 @@ export type _ProbeConditionMatches = Assert<
 export type _ProbeCheckMatches = Assert<Exact<z.infer<typeof probeCheckSchema>, ProbeCheck>>
 export type _ProbeSampleMatches = Assert<Exact<z.infer<typeof probeSampleSchema>, ProbeSample>>
 export type _ServiceProbeMatches = Assert<Exact<z.infer<typeof serviceProbeSchema>, ServiceProbe>>
+export type _SweepRestraintMatches = Assert<
+  Exact<z.infer<typeof sweepRestraintSchema>, SweepRestraint>
+>
 export type _NetworkSnapshotMatches = Assert<
   Exact<z.infer<typeof networkSnapshotSchema>, NetworkSnapshot>
 >

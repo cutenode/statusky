@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   HEALTH_LABEL,
+  HEALTH_NOUN,
   SEVERITY_LABEL,
   classifySeverity,
+  deriveClaim,
   deriveHealth,
   isActiveIncident,
   overallHealth,
@@ -178,6 +180,50 @@ describe('deriveHealth', () => {
   })
 })
 
+describe('deriveClaim', () => {
+  const NOW = Date.parse('2026-09-05T12:00:00.000Z')
+  const hoursAgo = (hours: number): string => new Date(NOW - hours * 3_600_000).toISOString()
+
+  it('dates the claim to the post it rests on', () => {
+    expect(deriveClaim([post('outage', hoursAgo(2))], NOW)).toEqual({
+      health: 'incident',
+      at: hoursAgo(2),
+      stale: false
+    })
+  })
+
+  it('has nothing to date when the source has posted nothing', () => {
+    expect(deriveClaim([], NOW)).toEqual({ health: 'unknown', at: null, stale: false })
+  })
+
+  it('keeps an incident for twelve hours and a maintenance window for a day', () => {
+    expect(deriveClaim([post('outage', hoursAgo(11))], NOW).stale).toBe(false)
+    expect(deriveClaim([post('outage', hoursAgo(13))], NOW).stale).toBe(true)
+    expect(deriveClaim([post('monitoring', hoursAgo(13))], NOW).stale).toBe(true)
+    expect(deriveClaim([post('maintenance', hoursAgo(23))], NOW).stale).toBe(false)
+    expect(deriveClaim([post('maintenance', hoursAgo(25))], NOW).stale).toBe(true)
+  })
+
+  it('goes stale without changing what was claimed', () => {
+    // The verdict is withdrawn from the rollup, not replaced by its opposite: an app
+    // that flips to "all clear" on a timer is asserting something it knows no better.
+    expect(deriveClaim([post('maintenance', hoursAgo(400))], NOW)).toEqual({
+      health: 'maintenance',
+      at: hoursAgo(400),
+      stale: true
+    })
+  })
+
+  it('never ages out an all-clear, which has nothing to withdraw', () => {
+    expect(deriveClaim([post('resolved', hoursAgo(5000))], NOW).stale).toBe(false)
+    expect(deriveClaim([post('update', hoursAgo(5000))], NOW).stale).toBe(false)
+  })
+
+  it('treats an undated post as current rather than dropping it', () => {
+    expect(deriveClaim([post('outage', 'not a date')], NOW).stale).toBe(false)
+  })
+})
+
 describe('overallHealth', () => {
   it('reports the worst state across accounts', () => {
     expect(overallHealth(['operational', 'incident', 'monitoring'])).toBe('incident')
@@ -214,6 +260,21 @@ describe('deriveHealth, per severity', () => {
     ['degraded', 'incident']
   ] as const)('maps %s to %s', (severity, health) => {
     expect(deriveHealth([post(severity, '2026-09-05T00:00:00Z')])).toBe(health)
+  })
+})
+
+describe('HEALTH_NOUN', () => {
+  it('reads inside a sentence, where HEALTH_LABEL would not', () => {
+    expect(`Blacksky Status reported ${HEALTH_NOUN.maintenance} 3 days ago`).toBe(
+      'Blacksky Status reported maintenance 3 days ago'
+    )
+    expect(`Bluesky Status reported ${HEALTH_NOUN.incident} 2 hours ago`).toBe(
+      'Bluesky Status reported an incident 2 hours ago'
+    )
+  })
+
+  it('names every health, as the label table does', () => {
+    expect(Object.keys(HEALTH_NOUN).toSorted()).toEqual(Object.keys(HEALTH_LABEL).toSorted())
   })
 })
 

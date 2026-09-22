@@ -145,9 +145,68 @@ export type Health =
   'operational' | 'monitoring' | 'degraded' | 'incident' | 'maintenance' | 'offline' | 'unknown'
 
 /**
+ * What a source is saying, and whether it has said it recently enough to still be a
+ * report of the present rather than a piece of history.
+ */
+export interface Claim {
+  health: Health
+  /** When the post behind it was written, or null when the source has posted nothing. */
+  at: string | null
+  /** The claim has outlived the window its author would have updated it in. */
+  stale: boolean
+}
+
+/**
+ * How long a claim stays the present tense, in hours, by what it claims.
+ *
+ * Status accounts announce a problem and then, very often, announce nothing more. A
+ * maintenance window's end is in the sentence that opened it; an incident's resolution
+ * sometimes goes to a hosted status page rather than back to the feed. The post is not
+ * wrong — it has stopped being news — but a header that reads the newest post as the
+ * state of the world will report a four-hour window for a fortnight, and a menu bar
+ * icon that is coloured most of the time has stopped carrying any signal at all.
+ *
+ * These are fixed rather than derived from each source's own cadence, on purpose: the
+ * sample that would calibrate a per-source window is the same sample that contains the
+ * silences being corrected for, so it calibrates towards tolerating them. Twelve hours
+ * is already past the longest `status.bsky.app` has ever taken to follow up on an active
+ * post; maintenance gets a day, because a window legitimately outlives a shift.
+ *
+ * `operational` and `unknown` are absent on purpose: there is nothing to withdraw.
+ */
+const CLAIM_LIFE_HOURS: Partial<Record<Health, number>> = {
+  incident: 12,
+  monitoring: 12,
+  maintenance: 24
+}
+
+/**
+ * `deriveHealth` judged against the clock.
+ *
+ * Going stale never flips the verdict to its opposite — that would trade a claim the
+ * app cannot support for the opposite claim it cannot support either. It withdraws the
+ * claim from the rollup and hands it back with its age on it, for the header to show
+ * as what it now is: something somebody said, a while ago.
+ */
+export function deriveClaim(posts: StatusPost[], now: number): Claim {
+  const health = deriveHealth(posts)
+  const latest = posts[0]
+  if (!latest) return { health, at: null, stale: false }
+
+  const life = CLAIM_LIFE_HOURS[health]
+  const at = Date.parse(latest.createdAt)
+  const stale = life !== undefined && !Number.isNaN(at) && now - at > life * 3_600_000
+  return { health, at: latest.createdAt, stale }
+}
+
+/**
  * Roll an account's recent posts up into a single at-a-glance health state,
  * based on the most recent post — status accounts post chronologically, so the
  * latest message is the current state of the world.
+ *
+ * This is what a source last *said*, which is the right thing for its own row in the
+ * accounts list. Anything reporting the state of the world — the header, the tray —
+ * wants `deriveClaim`, which also asks how long ago it said it.
  */
 export function deriveHealth(posts: StatusPost[]): Health {
   const latest = posts[0]
@@ -186,6 +245,20 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
   degraded: 'Degraded',
   maintenance: 'Maintenance',
   update: 'Update'
+}
+
+/**
+ * The same states as a noun, for reading inside a sentence: "Blacksky Status reported
+ * maintenance 3 days ago". `HEALTH_LABEL` is the verdict; this is the reported claim.
+ */
+export const HEALTH_NOUN: Record<Health, string> = {
+  operational: 'all clear',
+  monitoring: 'a recovery',
+  degraded: 'degraded service',
+  incident: 'an incident',
+  maintenance: 'maintenance',
+  offline: 'no connection',
+  unknown: 'nothing'
 }
 
 export const HEALTH_LABEL: Record<Health, string> = {

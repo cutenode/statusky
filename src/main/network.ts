@@ -16,6 +16,11 @@
  *   an outage of the Atmosphere apart from an outage of the user's Wi-Fi; when every
  *   control check fails, the sweep changes nothing, and a cheap control-only retry runs
  *   until the connection is back, followed by a full sweep.
+ *
+ * The schedule itself answers to the machine as well as to the settings. `pause` puts it
+ * down for a suspend and `resume` picks it back up; `restrain` widens it on battery and
+ * stops it altogether under thermal pressure. All three leave everything measured so far
+ * alone — they are about when to ask again, never about what the answers meant.
  */
 import {
   HISTORY_LENGTH,
@@ -30,7 +35,7 @@ import {
   type ProbeEvent,
   type ServiceDefinition
 } from '../shared/network'
-import type { NetworkSnapshot, NetworkSummary, ServiceProbe } from '../shared/types'
+import type { NetworkSnapshot, NetworkSummary, ServiceProbe, SweepRestraint } from '../shared/types'
 import {
   DEFAULT_PROBE_TIMINGS,
   FreshnessPeers,
@@ -43,8 +48,28 @@ import {
 export interface MonitorTimings extends ProbeTimings {
   /** Delay before re-checking a service that just failed. */
   recheckDelayMs: number
-  /** How often to look for the connection coming back while offline. */
+  /**
+   * How often to look for the connection coming back while offline.
+   *
+   * The popover's renderer normally beats this to it: Chromium raises `online` the
+   * instant the interface is back and `connectionRestored()` retries there and then, so
+   * this is the fallback for the times there is no renderer to hear from — before the
+   * first window exists, and while one whose renderer died waits to be rebuilt. It is
+   * deliberately slower than the thirty seconds it used to be, because polling a
+   * connection that is down is the one thing in here with nothing at all to show for it.
+   */
   offlineRetryMs: number
+  /**
+   * Least time between scheduled sweeps while the machine is on battery.
+   *
+   * A floor rather than a multiplier, and deliberately: the user's `networkIntervalSec`
+   * is a preference about how current they want the dashboard, not a promise about how
+   * much of their battery the app may spend. Multiplying would punish the considerate —
+   * somebody who already asked for hourly sweeps would get three-hourly ones — where a
+   * floor only ever touches the settings that are more eager than this, and leaves
+   * anybody already gentler than it exactly where they put themselves.
+   */
+  batteryIntervalMs: number
   /** Least time between two dashboard pushes while a sweep is filling in. */
   throttleMs: number
   /** Consecutive failing observations before a failure is believed. */
@@ -63,7 +88,8 @@ export interface MonitorTimings extends ProbeTimings {
 export const DEFAULT_MONITOR_TIMINGS: MonitorTimings = {
   ...DEFAULT_PROBE_TIMINGS,
   recheckDelayMs: 20_000,
-  offlineRetryMs: 30_000,
+  offlineRetryMs: 120_000,
+  batteryIntervalMs: 30 * 60_000,
   throttleMs: 150,
   confirmations: 2,
   concurrency: 16
@@ -167,6 +193,10 @@ export class NetworkMonitor {
   private intervalMs = 0
   private running = false
   private offline = false
+  /** The machine is asleep or locked away; the schedule is down until it is back. */
+  private paused = false
+  /** What the machine's own condition is doing to the schedule. See `SweepRestraint`. */
+  private restraint: SweepRestraint | null = null
   private startedAt: string | null = null
   private finishedAt: string | null = null
   /** Freshest newest-post time any AppView has returned, for judging the laggards. */
@@ -211,6 +241,7 @@ export class NetworkMonitor {
       startedAt: this.startedAt,
       finishedAt: this.finishedAt,
       offline: this.offline,
+      restraint: this.restraint,
       services: this.catalogue.map((definition) => {
         const service = this.services.get(definition.id)!
         return {
@@ -234,7 +265,9 @@ export class NetworkMonitor {
    */
   configure({ enabled, intervalSec }: { enabled: boolean; intervalSec: number }): void {
     const intervalMs = Math.max(1, intervalSec) * 1000
-    const scheduled = this.interval !== null || !this.transport
+    // A paused monitor counts as scheduled: it has a schedule, it is just not running
+    // it, and re-arming the interval here would quietly undo the pause.
+    const scheduled = this.interval !== null || this.paused || !this.transport
     if (enabled === this.enabled && intervalMs === this.intervalMs && (scheduled || !enabled)) {
       return
     }
@@ -242,18 +275,81 @@ export class NetworkMonitor {
     const wasEnabled = this.enabled
     this.enabled = enabled
     this.intervalMs = intervalMs
-    this.clearInterval()
 
     if (!enabled) {
+      this.clearInterval()
       this.reset()
       return
     }
-    if (!this.transport) return
 
-    this.interval = setInterval(() => void this.run(), intervalMs)
-    // A schedule should never be the reason the process stays alive.
-    this.interval.unref?.()
-    if (!wasEnabled || this.finishedAt === null) void this.run()
+    this.schedule()
+    // Turning the checks on is the user asking for an answer now — unless the machine is
+    // asleep, or too hot to be asked, in which case the schedule will get to it.
+    if (
+      this.interval &&
+      (!wasEnabled || this.finishedAt === null) &&
+      this.restraint !== 'thermal'
+    ) {
+      void this.run()
+    }
+  }
+
+  /**
+   * Put the schedule down while the machine is away, keeping everything else up.
+   *
+   * This is not `stop()` with a nicer name, even though it does the same work: `stop()`
+   * is teardown and the model's own `stop()` takes the webhook receiver down with it,
+   * which is exactly wrong for a lid closing. What has to go is the *schedule*, because
+   * `setInterval` does not sleep with the machine — a lid shut for eight hours wakes to
+   * a queue of missed fires landing at once, on a laptop whose Wi-Fi has not come back,
+   * which is a burst of failures followed by a burst of recoveries on the Timeline,
+   * none of which describe anything that happened to the Atmosphere.
+   */
+  pause(): void {
+    if (this.paused) return
+    this.paused = true
+    this.stop()
+  }
+
+  /**
+   * Put the schedule back. Catching up on what was missed is the caller's to ask for:
+   * a machine that has just woken wants a sweep now, and `src/main/index.ts` runs one.
+   */
+  resume(): void {
+    if (!this.paused) return
+    this.paused = false
+    this.schedule()
+  }
+
+  /**
+   * Tell the schedule what the machine's own condition is; see `SweepRestraint`.
+   *
+   * Nothing is swept the moment a restraint lifts. The next scheduled sweep is soon
+   * enough, and a machine that has just come out of thermal trouble is the last one to
+   * hand a hundred fresh connections to.
+   */
+  restrain(restraint: SweepRestraint | null): void {
+    if (restraint === this.restraint) return
+    this.restraint = restraint
+    // The interval's length depends on it, and `setInterval` cannot be re-timed.
+    this.schedule()
+    this.flushSnapshot()
+    this.options.onSummaryChange()
+  }
+
+  /**
+   * Somebody claims the connection is back. Look now rather than at the retry.
+   *
+   * Only meaningful while the control checks say we are offline: at any other time there
+   * is nothing to confirm and the ordinary schedule is already doing the right thing. It
+   * runs the same control-only sweep the offline retry would have, which is the cheap
+   * question — five requests, not a hundred — and a full sweep follows it if the answer
+   * is yes.
+   */
+  connectionRestored(): void {
+    if (!this.enabled || !this.transport || this.paused || !this.offline) return
+    this.clearFollowUp()
+    this.retryControls()
   }
 
   /** Sweep everything now. Calls made while a sweep is queued or running share it. */
@@ -473,16 +569,53 @@ export class NetworkMonitor {
     }
   }
 
+  /**
+   * (Re)arm the interval to match the settings, the restraint and whether we are paused.
+   *
+   * One place decides, because three things can change the answer independently and an
+   * interval cannot be re-timed once it is running.
+   */
+  private schedule(): void {
+    this.clearInterval()
+    if (!this.enabled || !this.transport || this.paused) return
+
+    this.interval = setInterval(() => this.tick(), this.scheduledIntervalMs())
+    // A schedule should never be the reason the process stays alive.
+    this.interval.unref?.()
+  }
+
+  /** How long the schedule actually waits, which is not always what the settings say. */
+  private scheduledIntervalMs(): number {
+    return this.restraint === 'battery'
+      ? Math.max(this.intervalMs, this.timings.batteryIntervalMs)
+      : this.intervalMs
+  }
+
+  /**
+   * The schedule came round. Under thermal pressure it goes away again without sweeping:
+   * whatever it measured would be this machine's throttling read as the services' own
+   * latency, and measuring honestly is the whole of this app's claim.
+   */
+  private tick(): void {
+    if (this.restraint === 'thermal') return
+    void this.run()
+  }
+
+  /** The cheap question — is anything reachable at all — and a full sweep if it is. */
+  private retryControls(): void {
+    void this.enqueue(() => this.sweep(this.controls, false)).then(() => {
+      // Back online: everything else is stale, so measure it all again now.
+      if (!this.offline) void this.run()
+    })
+  }
+
   /** Book the next look: a control-only retry while offline, or a failure's re-check. */
   private scheduleFollowUp(recheck: ServiceDefinition[]): void {
     this.clearFollowUp()
     if (this.offline) {
       this.followUp = setTimeout(() => {
         this.followUp = null
-        void this.enqueue(() => this.sweep(this.controls, false)).then(() => {
-          // Back online: everything else is stale, so measure it all again now.
-          if (!this.offline) void this.run()
-        })
+        this.retryControls()
       }, this.timings.offlineRetryMs)
     } else if (recheck.length) {
       this.followUp = setTimeout(() => {

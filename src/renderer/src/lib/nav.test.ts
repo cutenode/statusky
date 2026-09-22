@@ -11,7 +11,7 @@ describe('navigation', () => {
   })
 
   it('draws the tabs in the order the shortcuts select them', () => {
-    expect(TAB_ORDER).toEqual(['timeline', 'feed', 'alerts', 'network'])
+    expect(TAB_ORDER).toEqual(['timeline', 'feed', 'network'])
   })
 
   it.each(TAB_ORDER)('switches to the %s tab', (tab) => {
@@ -31,12 +31,12 @@ describe('navigation', () => {
   })
 
   it('goes from one detour straight to another', () => {
-    nav.open('alerts')
+    nav.open('feed')
     nav.toggle('accounts')
     nav.toggle('settings')
     expect(nav.view).toBe('settings')
     nav.toggle('settings')
-    expect(nav.view).toBe('alerts')
+    expect(nav.view).toBe('feed')
   })
 
   it('reveals the dashboard, and hands the reveal over exactly once', () => {

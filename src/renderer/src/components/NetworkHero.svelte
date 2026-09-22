@@ -6,7 +6,6 @@
   import { sinceTime } from '@shared/time'
   import type { ProbeGroup } from '@shared/types'
   import Power from '@lucide/svelte/icons/power'
-  import RefreshCw from '@lucide/svelte/icons/refresh-cw'
   import WifiOff from '@lucide/svelte/icons/wifi-off'
   import ReachabilityRing from './ReachabilityRing.svelte'
 
@@ -17,6 +16,15 @@
   const enabled = $derived(app.settings.networkChecks)
   const atmosphere = $derived(snapshot.services.filter((service) => !isControl(service)))
   const measured = $derived(snapshot.finishedAt !== null)
+
+  /**
+   * How many of the Atmosphere are answering, counted from the snapshot rather than
+   * taken from the rollup. The rollup is only recomputed when a sweep starts and
+   * finishes, so a ring reading off it would sit at the starting zero for the whole
+   * sweep and then jump — while the rows and the group tallies below, which are counted
+   * this way, are already lighting up one by one. The ring has to agree with them.
+   */
+  const reachable = $derived(atmosphere.filter((service) => isReachable(service.state)).length)
 
   /** Requests settled out of those started, for the progress bar while a sweep runs. */
   const progress = $derived.by(() => {
@@ -81,7 +89,7 @@
       return 'Turn them on to measure relays, PDSes and AppViews from this computer.'
     }
     if (snapshot.offline) {
-      return 'None of the control checks got through, so nothing else can be judged. Checking again every 30 seconds.'
+      return 'None of the control checks got through, so nothing else can be judged. Checking again as soon as the connection is back.'
     }
     if (snapshot.running) {
       return progress.total
@@ -89,8 +97,38 @@
         : 'Starting…'
     }
     if (!measured) return 'Measures every service from this computer.'
-    const parts = [`${summary.reachable} of ${summary.total} answering`]
+    const parts = [`${reachable} of ${atmosphere.length} answering`]
     if (medianLatency !== null) parts.push(`median ${formatLatency(medianLatency)}`)
+    return parts.join(' · ')
+  })
+
+  /**
+   * What the machine's own condition is doing to the sweep schedule, in a few words.
+   *
+   * Without it, a dashboard last measured forty minutes ago under a ten-minute setting
+   * reads as the app having quietly stopped working, rather than as it deliberately
+   * staying out of the way of a laptop on battery or a machine that is too hot to
+   * measure anything honestly from.
+   */
+  const restraint = $derived.by((): string | null => {
+    switch (snapshot.restraint) {
+      case 'battery':
+        return 'Checking less often on battery'
+      case 'thermal':
+        return 'Paused while this machine is under load'
+      default:
+        return null
+    }
+  })
+
+  /**
+   * The quiet line under the detail: when the sweep last finished, and why it may not be
+   * running as often as the setting says. Joined, so no separator is ever left dangling.
+   */
+  const meta = $derived.by((): string => {
+    const parts: string[] = []
+    if (snapshot.finishedAt) parts.push(`Checked ${sinceTime(snapshot.finishedAt, now)}`)
+    if (restraint) parts.push(restraint)
     return parts.join(' · ')
   })
 
@@ -140,7 +178,7 @@
   <div class="flex items-center gap-3.5">
     <ReachabilityRing
       states={atmosphere.map((service) => service.state)}
-      reachable={measured || snapshot.running ? summary.reachable : 0}
+      reachable={measured || snapshot.running ? reachable : 0}
       total={atmosphere.length}
       dim={!enabled || snapshot.offline}
     />
@@ -157,23 +195,16 @@
       <p class="mt-1 text-[11.5px] leading-snug text-muted-foreground" aria-live="polite">
         {detail}
       </p>
-      {#if enabled && !snapshot.running && !snapshot.offline}
-        <p class="mt-0.5 flex items-center gap-1 text-[10.5px] text-muted-foreground/80">
-          {#if snapshot.finishedAt}
-            Checked {sinceTime(snapshot.finishedAt, now)} ·
-          {/if}
-          <button
-            type="button"
-            class="inline-flex items-center gap-1 font-medium text-primary transition-opacity hover:opacity-80"
-            onclick={() => app.runNetworkChecks()}
-          >
-            <RefreshCw class="size-2.5" />
-            Check now
-          </button>
-        </p>
+      {#if enabled && !snapshot.running && !snapshot.offline && meta}
+        <p class="mt-0.5 truncate text-[10.5px] text-muted-foreground/80">{meta}</p>
       {/if}
     </div>
 
+    <!--
+      The only action here is switching the checks back on. Measuring again is the
+      header's refresh button, which means exactly that while this tab is open — a
+      second control for it would sit a few pixels below the first.
+    -->
     {#if !enabled}
       <Button
         size="sm"

@@ -32,7 +32,7 @@ const EMPTY = {
   emptyDescription: 'Statusky is fetching posts from your tracked accounts.'
 }
 
-/** The tab's own slice, handed in the way `Feed` and `AlertsPanel` hand it in. */
+/** The tab's own slice, handed in the way `Feed` hands it in. */
 function props(
   posts = [today, yesterday],
   accounts = [accountA, accountB]

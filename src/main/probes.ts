@@ -36,6 +36,7 @@ interface ListenerOptions {
 /** The part of a WebSocket the firehose check uses: Electron's `net.WebSocket` and Node's both fit. */
 export interface ProbeSocket {
   binaryType: string
+  addEventListener(type: 'open', listener: () => void, options: ListenerOptions): void
   addEventListener(
     type: 'message',
     listener: (event: { data: unknown }) => void,
@@ -536,6 +537,8 @@ function watchStream(ctx: ProbeContext, check: Check, watch: StreamWatch): Promi
     const { signal } = listening
     let socket: ProbeSocket | null = null
     let newestLag: number | null = null
+    /** Whether the handshake ever finished. See the timeout below for why it is kept. */
+    let connected = false
 
     const finish = (error: string | null, options?: { timed: boolean }): void => {
       if (signal.aborted) return
@@ -552,7 +555,15 @@ function watchStream(ctx: ProbeContext, check: Check, watch: StreamWatch): Promi
     }
 
     const timer = setTimeout(() => {
-      if (newestLag === null) finish(`No ${watch.noun}s received`)
+      // A handshake that never finished is this machine's news, not the service's, and
+      // saying "no commits received" about it accuses a relay that was talking the whole
+      // time. They fail the same check for different reasons and have to read
+      // differently: a stalled opening request is how a packaged build appeared to find
+      // every firehose in the Atmosphere silent at once, while its HTTP checks — which
+      // send `credentials: 'omit'` and so never wait on the cookie store the handshake
+      // was stuck behind — all passed. See the cookie encryption fuse in forge.config.ts.
+      if (!connected) finish(`${watch.subject} connection timed out`)
+      else if (newestLag === null) finish(`No ${watch.noun}s received`)
       // A duration here would only restate the wait, so the page hides it and so do we.
       else finish(`Newest ${watch.noun} is ${humanDuration(newestLag)} old`, { timed: false })
     }, firehoseWindowMs)
@@ -569,6 +580,7 @@ function watchStream(ctx: ProbeContext, check: Check, watch: StreamWatch): Promi
     }
 
     socket.binaryType = 'arraybuffer'
+    socket.addEventListener('open', () => (connected = true), { signal })
     socket.addEventListener('error', () => finish(`${watch.subject} connection failed`), { signal })
     socket.addEventListener(
       'close',
@@ -578,6 +590,8 @@ function watchStream(ctx: ProbeContext, check: Check, watch: StreamWatch): Promi
     socket.addEventListener(
       'message',
       (event) => {
+        // Anything arriving is proof of a connection, whatever the `open` event did.
+        connected = true
         const message = watch.read(event.data)
         if (message.kind === 'undecodable') return finish(watch.undecodable)
         if (message.kind === 'error') return finish(message.message)
@@ -824,6 +838,12 @@ function probePds(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promis
   ])
 }
 
+/** AppViews that answer their health check with an empty object rather than a version. */
+const VERSIONLESS_APPVIEWS: ReadonlySet<string> = new Set([
+  'api.blacksky.community',
+  'appview.wsocial.eu'
+])
+
 function probeAppView(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
   const health = addCheck(checks, ctx, '_health', xrpc(host, '_health'))
   const profiles = CATALOGUE.profileDids.map((actor) =>
@@ -871,8 +891,7 @@ function probeAppView(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
 
   return Promise.all([
     request(ctx, health, (body) =>
-      // Blacksky's AppView answers its health check with an empty object.
-      host === 'api.blacksky.community'
+      VERSIONLESS_APPVIEWS.has(host)
         ? isObject(body)
         : isObject(body) && typeof body.version === 'string'
     ),
@@ -1168,79 +1187,6 @@ function probeForYou(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pro
       return true
     })
   ])
-}
-
-// ------------------------------------------------------------------ host directory
-
-/** A sanity floor, not a count: the fleet grows, and this only has to notice it gone. */
-const FLEET_MINIMUM = 50
-
-/**
- * What the relay knows about everybody else.
- *
- * Two readings, both second-hand and both cheap. A single page of `listHosts` stands in
- * for probing all eighty-nine hosts of Bluesky's fleet — and is the better check, since
- * a host the relay has stopped hearing from is down whether or not it still answers
- * HTTP. Then `getHostStatus` gives a verdict on seven more hosts for seventy-two bytes
- * each, none of which this machine has to touch.
- *
- * It is one row rather than two so that a relay going down is one piece of news. It is
- * not folded into the relay's own row because a PDS the relay calls offline says nothing
- * about the relay, and would otherwise mark it partly failing.
- */
-function probeFleet(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
-  const { fleetSuffix } = CATALOGUE.directory
-  const hosts = addCheck(
-    checks,
-    ctx,
-    'listHosts',
-    xrpc(host, 'com.atproto.sync.listHosts', { limit: 200 })
-  )
-  const fleet = addCheck(checks, ctx, 'fleet status', null, 'derived')
-
-  const fleetPage = request(ctx, hosts, (b) => Array.isArray(field(b, 'hosts'))).then((body) => {
-    if (!hosts.passed) return fleet.fail('Skipped because listHosts failed', { timed: false })
-    const entries = (field(body, 'hosts') as unknown[]).filter(
-      (entry): entry is { hostname: string; status?: unknown } =>
-        isObject(entry) &&
-        typeof entry.hostname === 'string' &&
-        entry.hostname.endsWith(fleetSuffix)
-    )
-    if (entries.length < FLEET_MINIMUM) {
-      return fleet.fail(`Only ${entries.length} fleet hosts listed`, { timed: false })
-    }
-    const ailing = entries.filter((entry) => entry.status !== 'active')
-    if (!ailing.length) return fleet.pass()
-    const named = ailing
-      .slice(0, 3)
-      .map((entry) => entry.hostname.slice(0, entry.hostname.indexOf('.')))
-      .join(', ')
-    fleet.fail(
-      `${ailing.length} of ${entries.length} fleet hosts not active: ${named}` +
-        (ailing.length > 3 ? '…' : ''),
-      { timed: false }
-    )
-  })
-
-  // One relay called a Protobase instance active while another called it offline, so
-  // this reads as the relay's opinion rather than the host's: only the hosts probed
-  // directly get the last word on themselves.
-  const watched = CATALOGUE.directory.watched.map((hostname) => {
-    const check = addCheck(
-      checks,
-      ctx,
-      hostname,
-      xrpc(host, 'com.atproto.sync.getHostStatus', { hostname })
-    )
-    return request(ctx, check, (body) => {
-      const status = field(body, 'status')
-      if (typeof status !== 'string') return 'No status returned'
-      // A quiet PDS is idle, not broken.
-      return status === 'active' || status === 'idle' ? true : `Relay reports it ${status}`
-    })
-  })
-
-  return Promise.all([fleetPage, ...watched])
 }
 
 // ------------------------------------------------------------------ Tangled
@@ -1630,9 +1576,6 @@ export async function probeService(
       break
     case 'foryou':
       await probeForYou(service.host, checks, ctx)
-      break
-    case 'fleet':
-      await probeFleet(service.host, checks, ctx)
       break
     case 'tangled-appview':
       await probeTangledAppview(service.host, checks, ctx)

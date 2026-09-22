@@ -15,61 +15,80 @@ No account, no login, no API key: everything comes from the public AppView.
 
 - **Lives in the menu bar.** No dock icon, no window management. Click the tray icon
   for a popover; press `Esc` to dismiss it.
-- **Opens on what you have not read.** The popover has four tabs — **Timeline**,
-  **Feed**, **Alerts** and **Network** — and lands on Timeline: every source merged into
+- **Opens on what you have not read.** The popover has three tabs — **Timeline**,
+  **Feed** and **Network** — and lands on Timeline: every source merged into
   one one-line-per-update chronology, with everything outstanding above the line and
   everything you have already seen continuing below it. The top is read the moment it is
-  shown. Feed is what the AT Protocol status accounts posted; Alerts is what arrived on
-  its own, pushed by a hosted status page or filed by the network checks. See
-  [The four tabs](#the-four-tabs).
+  shown. Feed is what the AT Protocol status accounts posted, at the length they posted
+  it; what a machine filed — a hosted status page's pushed delivery, a network check's
+  own finding — is terse enough that the Timeline is the whole of it. See
+  [The three tabs](#the-three-tabs).
 - **Classifies posts** as `investigating` → `identified` → `monitoring` → `resolved`,
   plus `outage`, `degraded`, `maintenance` and plain `update`. Status accounts announce
   the stage in prose rather than a structured field, so Statusky recovers it from the
   text. Each post gets a coloured rail and badge.
 - **Rolls that up into a single health state** shown in the header and reflected in the
-  tray icon, which turns amber while recovering and red during an active incident.
+  tray icon, which turns amber while recovering and red during an active incident — and
+  says whose report it is and how long ago they filed it, because a claim nobody has
+  renewed for three days is not the present tense. See
+  [Claims have an age](#claims-have-an-age).
 - **Per-account notification toggles**, with a master switch, an optional sound, and a
   test button — a notification the OS refuses is invisible otherwise.
+- **Says nothing to an empty chair.** Banners raised while the screen is locked, the
+  machine is asleep or nobody has touched the keyboard for five minutes are held, and
+  arrive as a single summary when you come back — with anything you dealt with in the
+  meantime dropped from it. See [Reading and unreading](#reading-and-unreading).
 - **Tracks any AT Protocol account** — paste a handle, a DID, or a `bsky.app` profile
   link. The two accounts above ship built in and can be muted but not removed.
 - **Unread updates get the menu bar's attention**, in whichever of four ways you ask
   for under Settings › Menu bar: the icon beats red at 150 bpm — the rate of a heart in
   trouble — over the top of the health colour, or wears a quiet badge, or shows the
-  number beside it, or does nothing at all and goes on reporting only health. What
-  counts as read is a cursor per source, so trimming the post cache can never bring
-  back an incident you have already dealt with. Feed and Alerts each have an unread
-  filter and per-account filter chips, every update offers **mark this and everything
-  older as read**, and opening a tab catches you up — or, if you would rather it did
-  not, nothing is read there until you say so. See
+  number beside it, or does nothing at all and goes on reporting only health. The beat
+  stands down to the badge when the OS has been asked for reduced motion, without
+  touching what you chose. What counts as read is a cursor per source, so trimming the
+  post cache can never bring back an incident you have already dealt with. Feed has an
+  unread filter and per-account filter chips, every update there offers
+  **mark this and everything older as read**, and opening the tab catches you up — or, if
+  you would rather it did not, nothing is read there until you say so. See
   [Reading and unreading](#reading-and-unreading).
 - Renders post rich text properly: facet-accurate links, mentions and tags, plus link
   cards, images and quoted posts.
 - **Accepts pushed updates from hosted status pages** as well as polled AT Protocol
   accounts. See [Pushed status updates](#pushed-status-updates).
+- **Has the ways in and out a desktop app should have**: notification buttons that deal
+  with an update where it stands, `statusky://` links that open a particular view, a
+  handle dragged onto the menu bar icon to start watching it, a native right-click menu
+  in the popover with the macOS share sheet behind it, an optional global shortcut that
+  summons the popover from anywhere, and a login item that says so when the OS refuses
+  it. See [Ways in and out](#ways-in-and-out).
+- **Keeps itself current, or says plainly that it cannot.** macOS and Windows update
+  themselves in the background and offer the restart in the menu bar; Linux, and any
+  build Squirrel will not touch, are told that a newer release exists and where to get
+  it. See [Staying up to date](#staying-up-to-date).
 - **Measures the network itself**, rather than only reading what operators say about it:
   relays, Jetstreams, PDSes, AppViews, Tangled, the publishing apps and the infrastructure
   around them are probed from your own machine, on a schedule — including asking the
   services that publish a consumer cursor how far behind they are. See
   [Network checks](#network-checks).
 
-## The four tabs
+## The three tabs
 
 | Tab          | What is in it                                                                                                                                                    |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Timeline** | Every source merged into one chronology, one line each, **Unread** above the line and **Read** below it. The tab the popover opens on. Showing it reads the top. |
 | **Feed**     | What the tracked AT Protocol status accounts posted: full cards, rich text, link cards, images, quoted posts.                                                    |
-| **Alerts**   | What arrived without being asked for — a hosted status page's pushed deliveries, and the entries the network checks file when a service moves.                   |
 | **Network**  | The dashboard: every service in the catalogue, measured from this machine. See [Network checks](#network-checks).                                                |
 
-`Cmd`/`Ctrl`-`1` through `-4` select them in that order.
+`Cmd`/`Ctrl`-`1` through `-3` select them in that order.
 
 **Why Bluesky's posts are on their own.** A status account writing a post and a status
 page pushing an incident are the same kind of thing — somebody telling you what they
 have noticed. A relay that stopped answering our own requests is not: nobody said it, we
-measured it. Merged into one list, scanning for any of the three meant reading all of
-them, and the two machine-filed sources — terse, about a named service, arriving in
-pairs as things break and recover — drowned out the prose. Split, each tab is scannable
-for what it is.
+measured it. Feed is where you go to read what people wrote, at the length they wrote
+it, so the machine-filed sources — terse, about a named service, arriving in pairs as
+things break and recover — stay out of it rather than drowning out the prose. They are
+not hidden: the Timeline lists everything, and one line is the whole of what a
+measurement has to say.
 
 **Why Timeline is first, and why unread is at the top of it.** You clicked the tray icon
 because it was beating at you. What you want first is the thing that was beating, not an
@@ -78,6 +97,47 @@ own heading, with nothing to filter or decide. What you often want next is conte
 it, so the same list reads on downwards into what you had already seen. Either way the
 rows stay austere: no filters, no avatars, no embeds, two lines of text per update and a
 colour down the side.
+
+## Claims have an age
+
+A status account writes that it is working on something and then, very often, writes
+nothing else. The window's end was in the sentence that opened it; the resolution went to
+a hosted status page instead of back to the feed; the work simply finished and saying so
+did not seem worth a post. None of that makes the post wrong. It makes it old.
+
+**So a claim stops being the present tense.** Twelve hours after an active incident or a
+recovery, and a day after a maintenance window, the post stops counting towards the
+header and the tray goes back to neutral. The thresholds are per state and fixed —
+deliberately not calibrated from each source's own cadence, because the history that
+would calibrate it is the same history that contains the silences, so it would calibrate
+towards tolerating them. Twelve hours is already longer than `status.bsky.app` has ever
+taken to follow up on an active post.
+
+**Nothing is deleted, and nothing flips to green.** A withdrawn claim is not replaced by
+its opposite: saying "all clear" on a timer would swap a claim the app cannot support for
+one it cannot support either. It is moved out of the verdict and into the line underneath
+it, with its age on it — `Blacksky Status reported maintenance 3 days ago` — so the reader
+can weigh it, which is the judgement the app used to make badly on their behalf. The
+header above it goes back to reporting what this machine has actually measured. In the
+feed and on the timeline the post keeps its colour and its badge, because there it is a
+post rather than a verdict, and the accounts list goes on showing what each source last
+said however long ago it said it.
+
+**The line underneath names the source either way.** While a claim is current it reads
+`Bluesky Status · 6 minutes ago`, because the headline above it already names the stage
+and what it was missing was who and when. Several sources saying the same thing get a
+`+1`. When nobody is being quoted — everything calm, or the verdict coming from the
+network checks — the line goes back to saying when the feed was last checked.
+
+**The one new wording** is `Nothing reported recently`, for the case where the only thing
+on file has gone stale and the network checks are off as well. `No data yet` would be
+false: there is data, it is just old, and the line underneath says how old.
+
+Over the fifty days to 22 September 2026, the two built-in accounts between them left the
+header reporting something other than "All systems operational" 63% of the time — nearly
+all of it maintenance, including one four-hour window that stayed the app's present tense
+for eighteen days. Replaying the same posts through the current code puts that at 15%,
+with a source named under the headline for 63% of the window, so none of it is hidden.
 
 ## Reading and unreading
 
@@ -108,12 +168,25 @@ that lands while you are watching joins it wearing an unread dot.
 
 Leaving for another tab and coming back drops that batch into **Read** and leaves the top
 saying you are caught up, because by then you have read it. **Mark all as read** in the header is still there, and so is the
-per-update **mark this and everything older as read** on every card in Feed and Alerts.
+per-update **mark this and everything older as read** on every card in Feed.
 
-**Feed and Alerts do what you tell them.** Under Settings › Feed, _Mark as read_ governs
-those two: showing a tab reads that tab's own updates and leaves the other's alone, or it
-can be set to _Only when I say_, which leaves the count meaning exactly what you have
-clicked — or to mark each update once it has actually been on screen, watched with an
+**Nothing is announced to an empty chair.** A banner raised while the screen is locked,
+the machine is asleep, another user is switched in, or nobody has touched the keyboard for
+five minutes is held rather than shown, and everything held arrives as one summary when
+you come back. Holding changes nothing about what an update _is_: no cursor moves, nothing
+is marked read, and the icon goes on beating the whole time — so the incident is still
+unread when you sit back down, and opening the Timeline still catches you up on it in the
+ordinary way. That is also what makes the summary safe to filter: anything you already
+dealt with in the popover while its banner waited is dropped from it, because a
+notification that resurrects something you have finished with is worse than no
+notification at all. A single held update is shown as itself rather than summarised —
+"1 update from Bluesky" throws away the sentence the operator wrote, and the ordinary
+banner already opens the right thing.
+
+**Feed does what you tell it.** Under Settings › Feed, _Mark as read_ governs that tab:
+showing it reads the posts in it and leaves everything else alone, or it can be set to
+_Only when I say_, which leaves the count meaning exactly what you have clicked — or to
+mark each update once it has actually been on screen, watched with an
 `IntersectionObserver`, because a popover is short and an update below the fold has not
 been read however long the window was open.
 
@@ -122,16 +195,30 @@ run before has its choice on disk, and keeps it.
 
 **The menu bar has four voices**, under Settings › Menu bar:
 
-| Style          | What the icon does                                                                                                 |
-| -------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Beat the icon  | One cardiac cycle on a loop, in red, over the top of the health colour. The default.                               |
-| Badge the icon | A dot on whichever health icon is showing — the same statement, quietly.                                           |
-| Show a count   | The number beside the plain health icon. macOS only; `Tray.setTitle` does nothing elsewhere, so it badges instead. |
-| Leave it alone | The icon reports health and nothing else.                                                                          |
+| Style          | What the icon does                                                                                                                      |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Beat the icon  | One cardiac cycle on a loop, in red, over the top of the health colour. The default, and the one that stands down under reduced motion. |
+| Badge the icon | A dot on whichever health icon is showing — the same statement, quietly.                                                                |
+| Show a count   | The number beside the plain health icon. macOS only; `Tray.setTitle` does nothing elsewhere, so it badges instead.                      |
+| Leave it alone | The icon reports health and nothing else.                                                                                               |
 
 Health is reported either way: neutral when everything is operational, amber while
 recovering, red during an active incident. The setting only decides how the icon asks
 you to look at something.
+
+**The styles degrade rather than fail.** _Show a count_ needs `Tray.setTitle`, which
+exists on macOS and nowhere else, so elsewhere it badges the icon instead. _Beat the icon_
+becomes _Badge the icon_ whenever the OS has been asked for reduced motion: ten icon swaps
+a second, in the corner of the screen, all day, is close to the top of the list of things
+that setting exists to stop — an accessibility and photosensitivity concern rather than a
+matter of taste — and since beating is the _default_, most of the people it would reach
+never chose it. The popover is the only part of Statusky that can read that preference;
+`nativeTheme` covers dark mode and high contrast and stops there. So the answer arrives
+over IPC, and until some page has reported in the app assumes reduced motion. Being wrong
+in that direction costs somebody a badge for the second before the page loads; being wrong
+in the other flashes an icon at ten hertz at somebody who asked the entire system not to.
+Neither degradation edits your setting, which starts working again the moment the machine
+can honour it.
 
 ## Pushed status updates
 
@@ -162,6 +249,19 @@ mints another one and invalidates the URL already handed out. Bodies are capped 
 must be declared as JSON, and are never trusted: unknown shapes are accepted and ignored,
 because a provider that sees failures eventually stops delivering.
 
+**The secret is sealed in the OS credential store**, rather than written into
+`statusky.json` beside everything else, where anything running as you could read the one
+string protecting the endpoint. It goes through Electron's `safeStorage` — Keychain on
+macOS, libsecret or KWallet on Linux, DPAPI on Windows — and is held as base64, because
+the config file is JSON and the ciphertext is bytes; exactly one of the two keys ever
+holds the value. A Linux desktop with no secret service running is a real configuration
+rather than a mistake, so there is an explicit plaintext fallback instead of a refusal to
+start. A secret already in the clear from an older version is re-sealed carrying its value
+across rather than regenerated, because regenerating would silently break whatever tunnel
+you had already pointed at your endpoint, with nothing to tell you why. The read is
+deliberately lazy, so the default settings — where pushed updates are off — never open the
+credential store at all.
+
 A page registers itself the first time it delivers, appearing in the accounts panel as an
 ordinary source that can be muted, silenced or removed — the only thing its `kind` changes
 is that nothing tries to poll it. Registration is capped at 25 pages. Each update becomes
@@ -179,25 +279,24 @@ what your computer can actually reach. Statusky asks each service in the catalog
 same real questions [status.feeds.blue](https://status.feeds.blue) asks — Kuba Suder's
 page, which this is a port of, down to the checks and their wording:
 
-| Service        | What it is asked                                                                                                                                                              |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Relay          | `_health`, `com.atproto.sync.listHosts`, and a live `subscribeRepos` connection that must deliver a commit stamped within the last minute                                     |
-| Jetstream      | Its greeting, and a live `subscribe` connection whose newest event must be stamped within the last minute                                                                     |
-| Spacedust      | A live link stream, each link dated by the TID of the record that made it                                                                                                     |
-| PDS            | `_health`, `describeServer`, `listRepos`, and a real `listRecords` read of the first active repository it names                                                               |
-| Host directory | One page of the relay's `listHosts`, which checks Bluesky's whole PDS fleet at once, and `getHostStatus` for seven more hosts this machine never touches                      |
-| AppView        | `_health`, two `getProfile`s, three `resolveHandle`s, four `getAuthorFeed`s, and how far its index lags                                                                       |
-| Tangled        | The appview's static route and a real repository page; Bobbin's coverage, its event cursor and a record lookup; Hydrant; each knot's version and owner; each spindle's health |
-| pckt           | `/up`: database, cache, search index, queue worker, failed jobs, nine queue depths, and how far its consumer has fallen behind                                                |
-| Leaflet        | A published document's well-known route, a full-text search, and hourly, the newest document in a busy publication                                                            |
-| Offprint       | `/up`, a custom-domain publication lookup, and hourly, the newest article published anywhere on the platform                                                                  |
-| UFOs           | `/meta`, which is its own consumer cursor against the clock, and one collection's statistics                                                                                  |
-| Constellation  | `blue.microcosm.links.getBacklinks`, and whether the number of links it holds is still climbing                                                                               |
-| Slingshot      | `resolveHandle`, `getRecord` and `resolveMiniDoc`                                                                                                                             |
-| Discover feed  | `getFeedSkeleton`                                                                                                                                                             |
-| For You        | Its `did:web` document, `getFeedSkeleton`, the site itself, and what Bluesky's AppView makes of the generator                                                                 |
-| CDN            | Three real images, of which the first chunk is read                                                                                                                           |
-| Internet       | GitHub's API, Cloudflare and Google DNS, and Amazon's echo endpoint                                                                                                           |
+| Service       | What it is asked                                                                                                                                                                                  |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Relay         | `_health`, `com.atproto.sync.listHosts`, and a live `subscribeRepos` connection that must deliver a commit stamped within the last minute                                                         |
+| Jetstream     | Its greeting, and a live `subscribe` connection whose newest event must be stamped within the last minute                                                                                         |
+| Spacedust     | A live link stream, each link dated by the TID of the record that made it                                                                                                                         |
+| PDS           | `_health`, `describeServer`, `listRepos`, and a real `listRecords` read of the first active repository it names                                                                                   |
+| AppView       | `_health`, two `getProfile`s, three `resolveHandle`s, four `getAuthorFeed`s, and how far its index lags                                                                                           |
+| Tangled       | The appview's static route and a real repository page; Bobbin's coverage, its event cursor and a record lookup; Hydrant; `tngl.sh` as a PDS; each knot's version and owner; each spindle's health |
+| pckt          | `/up`: database, cache, search index, queue worker, failed jobs, nine queue depths, and how far its consumer has fallen behind                                                                    |
+| Leaflet       | A published document's well-known route, a full-text search, and hourly, the newest document in a busy publication                                                                                |
+| Offprint      | `/up`, a custom-domain publication lookup, and hourly, the newest article published anywhere on the platform                                                                                      |
+| UFOs          | `/meta`, which is its own consumer cursor against the clock, and one collection's statistics                                                                                                      |
+| Constellation | `blue.microcosm.links.getBacklinks`, and whether the number of links it holds is still climbing                                                                                                   |
+| Slingshot     | `resolveHandle`, `getRecord` and `resolveMiniDoc`                                                                                                                                                 |
+| Discover feed | `getFeedSkeleton`                                                                                                                                                                                 |
+| For You       | Its `did:web` document, `getFeedSkeleton`, the site itself, and what Bluesky's AppView makes of the generator                                                                                     |
+| CDN           | Three real images, of which the first chunk is read                                                                                                                                               |
+| Internet      | GitHub's API, Cloudflare and Google DNS, and Amazon's echo endpoint                                                                                                                               |
 
 Each service reads as **live**, **slow** (something took 15 seconds or more), **partial**
 or **down**, exactly as the page grades them, with the failing request's own words
@@ -205,12 +304,14 @@ against it. Every request leaves from this machine and goes through Chromium's n
 stack, so it takes the same route a browser tab would — system proxy, certificate store
 and all — and measures your connection to each service rather than somebody else's.
 
-Six things make that fit a program that runs all day rather than a page you open:
+Seven things make that fit a program that runs all day rather than a page you open:
 
 **The Internet group is a control.** When every one of those checks fails too, the
 problem is this machine's connection: Statusky says you are offline, judges nothing,
-records nothing, and retries the control checks every thirty seconds until they answer —
-then measures everything again.
+records nothing, and retries the control checks every couple of minutes until they
+answer — and hears about it sooner than that whenever a popover is open, because a page is
+told the instant the interface comes back where a timer would sit out its wait first.
+Then it measures everything again.
 
 **A failure has to be seen twice.** The first sighting books a re-check of that service
 alone twenty seconds later, so a real outage is confirmed in seconds while a single
@@ -234,15 +335,29 @@ sweeps standing still, because one quiet ten minutes proves nothing.
 uptime promise at all; `pds.rip` says "uptime: no guarantee, backups: none" on its own
 homepage. Those services are probed, shown and filed in the feed like any other, marked
 **community** on the dashboard — and left out of the header and the tray, because one
-abandoned sandbox should not speak for the network.
+abandoned sandbox should not speak for the network. W Social's AppView is graded the same
+way for now: it is in public beta, missing most of the authors the freshness check reads,
+and hours behind its peers, which is worth seeing but not worth an amber tray.
 
 **The dashboard shows the same rows every sweep.** Bluesky's PDS fleet is eighty-nine
-hosts and growing, and the relay's `com.atproto.sync.listHosts` is the only authoritative
-enumeration of anything in the Atmosphere — 6,312 hosts, just under half a megabyte of
-them. Rather than rank that list and probe whoever is on top, the **Host directory** row
-reads one page of it and grades Bluesky's whole fleet at once, second-hand and for a
-single request. Every row beside it is named in the catalogue, which is what lets an
-uptime strip mean something: it always measures the same service.
+hosts and growing. Rather than rank that list and probe whoever is on top, the catalogue
+names a fixed sample, which is what lets an uptime strip mean something: it always
+measures the same service.
+
+**The machine itself gets a say in the schedule.** A sweep is defensible every ten minutes
+on a desk and indefensible on a laptop at 9%, so the OS is asked rather than assumed. On
+battery, scheduled sweeps take a floor of thirty minutes — a floor rather than a
+multiplier, and deliberately: the interval you chose is a preference about how current you
+want the dashboard, not a promise about how much battery the app may spend, and
+multiplying would punish the considerate, turning somebody's hourly sweeps into
+three-hourly ones while leaving the eager where they were. Under thermal pressure, or with
+the CPU ceiling cut below half, scheduled sweeps stand aside entirely — which is a
+correctness argument before it is a polite one, since latency measured through a machine
+that is being throttled reads as latency the services do not have, and measuring honestly
+is the whole of what this tab claims to do. Both schedules go down with the lid and come
+back with it. And a dashboard older than the setting says why, in the tray tooltip and in
+the header, because a sweep that never ran is otherwise indistinguishable from the app
+being broken.
 
 Confirmed outages and recoveries are filed in the feed under a source called **Network
 checks**, so they sit in the timeline beside what the status accounts posted — often
@@ -266,6 +381,260 @@ Pi in its author's house. It runs every ten minutes by default (2 minutes to an 
 under Settings), when the machine wakes, and when the popover is opened on a dashboard
 older than two minutes.
 
+## Ways in and out
+
+The tray icon is not the only way into the app, and a notification is not the only way
+out of it. Everything here is a route a native app of this shape has and this one did
+not.
+
+### The banner can finish the job
+
+An OS notification carries two buttons rather than being a thing you can only click or
+ignore: **Mark as read**, which deals with the update and opens nothing at all, and
+**Show on dashboard**, which is offered for the entries the network checks filed and
+takes you to that service's row. Clicking the banner itself still opens the status page
+behind the update, as it always did.
+
+On macOS the buttons need the same thing notifications themselves need and fail the same
+way without it — a properly signed build. An unsigned development build is never offered
+notification authorisation at all, so there is no banner for the buttons to be missing
+from; `NSUserNotificationAlertStyle: 'alert'` in `forge.config.ts` is what makes them
+visible outright rather than hidden under a hover-revealed chevron.
+
+The one summary banner raised for everything that happened while nobody was at the
+machine carries no buttons, deliberately: its body is a count and a list of sources, so
+_Mark as read_ there would be answering for updates it has shown nobody.
+
+On Windows, the checks' own entries take one Action Center slot per service rather than
+one per transition — a relay that flaps nine times in an afternoon leaves nine rows, and
+eight of them are already wrong. The banner carries the service id as the toast's `Tag`
+and a shared `Group`, and Windows replaces rather than stacks a toast whose pair matches
+one already showing. A status page posting _investigating_, then _identified_, then
+_resolved_ is telling a story, so those are left to stack.
+
+### `statusky://` deep links
+
+Statusky registers an OS-level URL scheme. Opening one of these — from a browser, a
+script, `open` on macOS, `xdg-open` on Linux — brings the popover up on what it names:
+
+| Link                                     | What it opens                             |
+| ---------------------------------------- | ----------------------------------------- |
+| `statusky://open`, or bare `statusky://` | The popover, wherever it was left         |
+| `statusky://timeline`                    | The Timeline, the tab that catches you up |
+| `statusky://network`                     | The network dashboard                     |
+| `statusky://service/<id>`                | The dashboard, scrolled to one service    |
+
+`<id>` is a probe id — `relay:bsky.network`, `pds:bsky.social`, `appview:api.bsky.app` —
+and is checked against the services this build actually measures before it reaches the
+popover; an unknown one opens the dashboard itself.
+
+**`statusky://` is not `app://statusky`.** The similarity of the names is the one thing
+to be careful about here. `app://statusky` is the private scheme the popover's own page
+is served from, and `origin is "app://statusky"` in `schemas/statusky.eipc` is what tells
+the IPC layer that a call came from our own UI. A `statusky://` link is the opposite: it
+is an external, untrusted string that anything on the machine can hand to the OS. Nothing
+arriving through it is ever loaded, navigated to, or forwarded to the renderer as a URL —
+it is parsed into one of the four intentions above and nothing else crosses. See
+`src/main/deep-link.ts`.
+
+Registration differs per platform, which is why it appears in three places:
+`packagerConfig.protocols` writes the macOS `Info.plist` entry Launch Services reads;
+`MimeType=x-scheme-handler/statusky` in the `.desktop` file is what `xdg-open` uses; and
+on Windows the running app claims the scheme itself on every launch, because Forge writes
+no registry entries and a Squirrel installer has nowhere to put them. That last call
+passes a trailing `--`, which is the documented mitigation for the Electron
+protocol-handler command-line injection class of bug (CVE-2018-1000006 and its bypass):
+Windows appends the clicked URL to the registered command line verbatim, and without a
+terminator a crafted link is read as Chromium switches rather than as a URL.
+
+### Dragging a handle onto the icon
+
+Select `status.blacksky.community` in a browser and drag it to the menu bar icon. A `+`
+appears beside the icon while the text is over it, and letting go watches that source —
+the same three things the Accounts panel accepts (a handle, a DID, a `bsky.app` profile
+link), parsed by the same code. The popover opens on success; a drop that cannot be
+resolved says why in a dialog rather than doing nothing, which would be
+indistinguishable from the feature not existing. macOS only: `drop-text` is not emitted
+anywhere else.
+
+### Right-click in the popover
+
+Every update has a context menu, built in the main process with `Menu.buildFromTemplate`
+rather than drawn in HTML: **Copy link**, **Open in browser**, **Show on the network
+dashboard** for a measured entry, **Mark as read**, **Mark this and everything older as
+read**, **Mute <source>**, and — on macOS — **Share…**, which opens the system share
+sheet with the incident's text and link in it, so "the relay is down, here" is one
+gesture rather than copy, switch app, paste.
+
+The page sends the update's URI and nothing else; every label is built from the state the
+main process already holds. The popover is pinned open for as long as the menu (or the
+share sheet opened from it) is up, because it otherwise hides the moment it loses focus.
+
+### A shortcut that summons the popover
+
+Under Settings › Menu bar, and **off by default** — a global shortcut is taken from every
+other application on the machine for as long as this one runs. The combinations offered
+are written the way the platform writes them (`⌘⇧S` on macOS, `Ctrl+Shift+S` elsewhere).
+Pressing it opens the popover from whatever you are in; pressing it again puts it away.
+
+A global shortcut belongs to whichever application asked for it first, and losing that
+race is otherwise completely silent — the key simply does somebody else's thing. When the
+OS refuses the registration, the panel says so underneath the control, the same way a
+refused login item does.
+
+### The menu bar icon on Linux
+
+On macOS and Windows the icon is a toggle — click for the popover, right-click for the
+menu — and on most Linux desktops neither of those is guaranteed to happen. GNOME through
+the AppIndicator extension, KDE natively and most of the rest now speak
+StatusNotifierItem rather than the old XEmbed tray, and under it a left click is never
+delivered to the application at all; an item that has never set a menu through
+`setContextMenu` may show nothing on right-click either, because the host asks the item
+for its menu rather than waiting to be told to pop one up. Between the two, the app can
+end up in the menu bar with no way in. So on Linux the menu is attached to the icon, which
+makes **Open Statusky** always reachable — the one thing that must never stop working. It
+is deliberately not done on macOS, where attaching a menu replaces the left-click toggle
+that is this app's entire interaction. The click handlers stay registered on Linux
+regardless, because a session still running an XEmbed tray does deliver them.
+
+### The application menu
+
+Statusky is `LSUIElement`, so it draws no menu bar of its own. That never meant it had no
+menu: nothing was calling `Menu.setApplicationMenu`, so Electron installed its own default
+one — and a menu does not have to be drawn for its key equivalents to fire. That default
+claims `Cmd+R` for View → Reload, which was silently eating the popover's own `Cmd+R`:
+refresh the feed, or run the network checks when the Network tab is showing. Owning the
+menu is how that key comes back.
+
+What is left in it is small on purpose: the app roles, and an Edit submenu that is
+load-bearing rather than decorative, because on macOS the editing key equivalents live in
+the menu and nowhere else. Without it `Cmd+V` does nothing at all, and the Add-account
+field exists to have a handle pasted into it. A frameless, always-on-top popover has no
+business being minimised, zoomed, closed or taken fullscreen, so none of those entries
+exist to be triggered by accident. Windows and Linux get no application menu whatsoever,
+since there it would be drawn _inside_ the window and a frameless popover must not
+suddenly grow a menu bar — and nothing is lost, because Chromium handles the editing keys
+in the renderer on those platforms anyway.
+
+### Opening at login
+
+Off by default, under Settings › Application. A status monitor that does not come back
+after a reboot has failed at the one thing it is for, and it fails silently: there is no
+moment at which you find out, because the app that would have told you is the one that did
+not start. So nothing here reports success merely because a call returned.
+
+On macOS and Windows `app.setLoginItemSettings` is the documented path, and the setting is
+read straight back out of the OS afterwards. Since macOS 13 this goes through
+`SMAppService`, which registers a _bundle_ and refuses one that is not properly code
+signed or is not in the Applications folder — and refuses it quietly. The call returns,
+nothing throws, and only reading it back reveals that nothing was registered.
+
+On Linux that API is documented `darwin,win32` and does nothing at all, which is why the
+toggle used to report success for something that was never going to happen. Statusky
+writes an XDG autostart entry into `~/.config/autostart`, or wherever `$XDG_CONFIG_HOME`
+points, instead. It names the AppImage through `$APPIMAGE` — the path you actually
+launched, since an AppImage runs from a mount that is gone by the next login — or an
+installed build through an absolute `execPath`. A source checkout cannot honestly name a
+command for the session to run, and says so rather than guessing at one.
+
+Whichever of them refuses, the toggle goes on showing what you asked for — that is your
+intention and it stays yours — and a line underneath says what the machine did about it,
+which is the same arrangement a refused global shortcut gets.
+
+## Staying up to date
+
+A menu bar app with no window and no dock icon, whose whole design goal is being forgotten
+about until something breaks, is the worst possible candidate for updates you are expected
+to go and fetch. Nobody opens it. Nobody has a reason to wonder what version it is. And it
+is the app whose job is telling you the network broke, so a build left behind long enough
+stops being able to answer that question at all: the catalogue of measured services, the
+requests each is measured with and the status accounts being watched all move. A stale
+probe catalogue is a correctness problem wearing a staleness problem's clothes.
+
+There are two mechanisms, and exactly one of them is ever running.
+
+**macOS and Windows update themselves.** `update-electron-app` points Electron's
+`autoUpdater` at `update.electronjs.org`, which serves a Squirrel feed straight from this
+repository's GitHub releases — it is public, so there is no server to run and no
+credentials involved. The download happens in the background, and the restart is offered
+in the menu bar as **Restart to update**. A menu entry rather than the package's own
+default, which is a modal dialog: this app has no parent window to put one on, so a
+message box here runs application-modal over whatever you were actually doing, to say
+something that could not be less urgent. The menu entry waits as long as you like.
+
+macOS takes the update from the `.zip` and never from the `.dmg` — Squirrel.Mac reads the
+zip, which is why `maker-zip` is in the matrix at all — and **it only works on a properly
+signed build**. Squirrel.Mac refuses to apply an update whose code signature does not
+match the running application, so the ad-hoc signed build a certificate-less checkout
+produces can fetch an update and then decline to install it, every time.
+
+**Everywhere else is told, and nothing more.** Linux never self-updates: Electron's
+`autoUpdater` is a wrapper around Squirrel.Mac and Squirrel.Windows and there is no third
+implementation, so `update-electron-app` no-ops there by design. Those installs — and any
+macOS or Windows one Squirrel turns out not to be able to help — ask GitHub's API what the
+newest release is instead, at launch and every six hours after, and compare its tag with
+this build's version.
+
+**The switch between the two is not a guess** about whether this build is signed, or
+installed the way Squirrel expects. It is Squirrel saying so: the self-updater is started,
+and the first time it reports an error — a signature mismatch, a missing `Update.exe`, an
+unreachable feed — the release check takes over and starts saying what the app cannot do
+for you.
+
+Four things about that check are deliberate:
+
+- **It goes through `net.fetch`**, not Node's, so it takes the system proxy and the system
+  certificate store with it. Same reason the network checks do, and on a corporate laptop
+  it is the difference between a request that works and one that fails somewhere nobody
+  will ever look.
+- **It is slow on purpose.** Unauthenticated GitHub API calls are capped at 60 an hour for
+  the whole IP address, shared with everything else on it. Four requests a day is a
+  reasonable neighbour on a shared connection, and this app ships occasionally — checking
+  more often than it ships only finds out the same thing more times. One check is
+  abandoned after fifteen seconds, so a stalled request cannot pile up behind the next.
+- **Anything that goes wrong is silence.** Rate limited, no releases published yet, a body
+  that is not JSON, a tag that is not a version, a connection that never completes: none
+  of those are evidence about what version is current, and reporting a state we do not
+  know is the one thing worth avoiding. A wrong "you are out of date" sends somebody to a
+  download page to look for a build that is not there.
+- **The comparison is a few lines rather than a dependency**, and it is written down where
+  those lines stop. They handle a `v` prefix, a dotted run of numbers compared as numbers,
+  a missing component as zero, and a pre-release suffix that correctly precedes the
+  release it led up to. They do not understand build metadata after a `+`, they order two
+  pre-releases as plain text, and a tag that does not begin with digits is passed over
+  entirely.
+
+**It surfaces in the menu bar and in Settings, and never as a notification.** Every banner
+this app raises means _the Atmosphere is broken_. Spend that channel on a version number
+and you have taught people that the thing which pages them is sometimes routine, and that
+is the one channel here worth protecting.
+
+**The wording is careful about what it is asking for.** These builds are a dmg, a zip, a
+Squirrel installer, a `.deb` and an AppImage from a download page — none of them served
+from a package repository. There is no `apt upgrade` that will do this, so the panel says
+to download the new one and replace this copy, because that is the only true instruction
+available. Nothing here downloads or installs anything on Linux; an AppImage that updates
+itself is possible and is not done, because it would need releases to be signed and they
+are not yet.
+
+## What does not work where
+
+Everything above argues its own case. This is the index.
+
+| Thing                                    | Where it does not work                                                                                                                                                                                                                   |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Self-update                              | Never on Linux: Electron's `autoUpdater` is Squirrel, and there is no Linux Squirrel. Never on an ad-hoc signed macOS build either, since Squirrel.Mac needs the update's signature to match the running app. Both get a notice instead. |
+| Notification action buttons              | macOS needs a properly signed build. An unsigned one is never granted notification authorisation at all, so there is no banner for the buttons to be missing from.                                                                       |
+| A count beside the menu bar icon         | macOS only. `Tray.setTitle` does nothing elsewhere, so the setting badges the icon there instead.                                                                                                                                        |
+| The beating icon                         | Stands down to the badge wherever the OS has been asked for reduced motion.                                                                                                                                                              |
+| Dragging a handle onto the icon          | macOS only. Electron emits `drop-text` nowhere else.                                                                                                                                                                                     |
+| The share sheet                          | macOS only. The rest of the right-click menu works everywhere.                                                                                                                                                                           |
+| The application menu                     | macOS only, deliberately: elsewhere it would draw a menu bar inside a frameless popover.                                                                                                                                                 |
+| Clicking the tray icon                   | Not delivered at all on StatusNotifierItem desktops, which is most of Linux now — hence the menu attached to the icon there.                                                                                                             |
+| A setup wizard, or a chosen install path | Squirrel.Windows has neither. The installer is one-click and always installs to `%LOCALAPPDATA%`.                                                                                                                                        |
+| Launch at login                          | Needs a packaged build on every platform. A source checkout cannot name a command for the session to run, and says so rather than guessing.                                                                                              |
+| A signed Linux package                   | The `.deb` and the AppImage are not signed.                                                                                                                                                                                              |
+
 ## Running it
 
 ```bash
@@ -281,55 +650,258 @@ install, run `node node_modules/electron/install.js`.
 npm run dist:mac
 ```
 
-`dist:win` and `dist:linux` are also available. Output lands in `release/`. The build
-runs typechecking and linting first via `npm run check`.
+`dist:win` and `dist:linux` are also available, and `npm run dist` builds for whatever
+platform you are on. Output lands in `release/`: the app bundle under
+`release/Statusky-<platform>-<arch>/`, the installers under `release/make/`. Each of
+these runs `npm run build` first, which typechecks, lints, and — the part that matters —
+regenerates production IPC wiring before rebuilding `out/`.
 
-Build configuration lives in `electron-builder.ts` (the name matters — that is what
-electron-builder discovers automatically; `electron-builder.config.ts` is not).
+`npm run package` stops at the app bundle and makes no installers. `npm run publish`
+makes them and uploads them to a **draft** GitHub release, so a mistaken publish is
+retractable rather than already downloaded. A draft is also invisible to
+`update.electronjs.org` and to the release check, both of which ask only for the latest
+_published_ release — so nothing in the field updates itself, or is told to, until the
+release is deliberately published. See [Staying up to date](#staying-up-to-date).
+
+Packaging is Electron Forge; building is still electron-vite. Forge compiles nothing
+here — it packs `out/` exactly as `npm run build` left it, signs it, and turns it into
+installers. Configuration lives in `forge.config.ts` (the name matters — that is what
+Forge discovers), and `electron.vite.config.ts` is untouched by any of it. Before the
+bundle is sealed, a hook re-reads the copied `out/` and refuses to go on if it holds
+development IPC wiring; see "Packaging refuses development wiring" below.
+
+| Platform | Targets                                              |
+| -------- | ---------------------------------------------------- |
+| macOS    | `.dmg`, `.zip`                                       |
+| Windows  | Squirrel.Windows (`Setup.exe`, `.nupkg`, `RELEASES`) |
+| Linux    | `.deb`, `.AppImage`                                  |
+
+Only the host architecture is built by default; pass `--arch` for the rest, as in
+`npx electron-forge make --platform=darwin --arch=x64,arm64`. electron-builder used to
+build both macOS architectures without being asked.
+
+Each maker needs its own tools, and says so when they are missing:
+
+| Maker            | Needs                                                                                                                                                                         |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| dmg              | `appdmg`, an optional dependency of `electron-installer-dmg` that compiles a native module — so macOS with the Xcode command line tools installed and their licence agreed to |
+| Squirrel.Windows | Windows, or mono and wine elsewhere                                                                                                                                           |
+| deb              | `dpkg` and `fakeroot`                                                                                                                                                         |
+| AppImage         | `mksquashfs`, plus network access to fetch the AppImage runtime                                                                                                               |
+
+### What the app is called
+
+Two files decide, and they decide different things.
+
+`forge.config.ts` sets `packagerConfig.name`, which names the bundle: `Statusky.app`, the
+executable inside it, `CFBundleName`, `Statusky.exe`. `package.json` sets `productName`,
+which is what Electron answers from `app.getName()` while the app is running, and which
+the application menu, the About panel and `app.getPath('userData')` are built out of.
+Electron prefers `productName` over the lowercase `name` beside it, and falls back to
+that `name` when there is no `productName` — which is how a bundle called Statusky came
+to label its own menu `statusky` and write `~/Library/Application Support/statusky`. The
+two are held together by a test in `src/test/packaging.test.ts`, along with the third
+copy of the name in `src/main/login-item.ts`.
+
+A development run is still called Electron, and nothing in this repository can change
+that: `npm run dev` runs `node_modules/electron/dist/Electron.app`, and the bundle's own
+name is what macOS shows for anything it registers — notifications, and the login item
+above all. That last one used to be registered anyway, which produced a real "Electron
+will open automatically when you log in" entry pointing inside `node_modules`; the login
+item now declines a source checkout on macOS and Windows as it always has on Linux. See
+[What does not work where](#what-does-not-work-where).
+
+### What the move off electron-builder cost
+
+Two NSIS options have no Squirrel.Windows equivalent and are simply gone: the installer
+is one-click, and it always installs to `%LOCALAPPDATA%`. The old config asked for the
+opposite of both; nothing here pretends it still does.
+
+The third — `createDesktopShortcut: false` — is honoured after all, but not by
+configuration: `MakerSquirrel` has no shortcut options at all. Squirrel installs by
+running the application itself with `--squirrel-install`, `--squirrel-updated`,
+`--squirrel-uninstall` or `--squirrel-obsolete`, and `src/main/squirrel.ts` answers those
+by asking Squirrel's `Update.exe` for a Start Menu shortcut and only a Start Menu
+shortcut, then quitting before anything reaches the menu bar. That shortcut is not
+optional in the other direction: Windows refuses to show a toast from an application that
+has no Start Menu shortcut carrying its AppUserModelID, so it is the prerequisite for
+every notification the app raises there. It is hand-rolled rather than taken from
+`electron-squirrel-startup`, which is two years stale, CommonJS inside an ESM package,
+and pulls in `debug@^2` from 2016.
+
+The `.desktop` entry's `StartupNotify=false` did survive, but only by vendoring
+`electron-installer-debian`'s template into `build/desktop.ejs` — `maker-deb` has no
+per-key override of the desktop entry. That copy has to be re-checked against upstream
+whenever the dependency moves.
+
+The app icon had to be rebuilt. electron-builder rendered `.icns` and `.ico` from
+`build/icon.png`; `@electron/packager` only swaps the extension on the path it is given
+and converts nothing, so a build found neither file, warned, and shipped Electron's own
+icon. `scripts/gen-icons.mjs` now writes both containers itself — it already has the
+icon as pixels, and an `.icns` and an `.ico` are each little more than an index in front
+of PNG data. Nothing shells out to `iconutil`, so `npm run icons` still runs on Linux
+and Windows CI. The Linux makers take the PNG and were never affected.
+
+Note that `@electron/packager` copies the `.icns` over the bundle's existing
+`Contents/Resources/electron.icns` rather than renaming it — that name is
+`CFBundleIconFile` and packager never rewrites it, so the stock filename with our bytes
+inside it is the expected result, not a sign the icon was ignored.
+
+`resources/` is also packaged under its own name now rather than as `assets/`, because
+`@electron/packager` copies each extra resource to its basename and offers no way to
+rename it. `src/main/tray.ts` looks for it there; the two have to agree or the menu bar
+comes up empty.
 
 ### Code signing
 
-Signing is decided at build time in `electron-builder.ts`, so a checkout with no
+Signing is decided at build time in `forge.config.ts`, so a checkout with no
 certificates still builds.
 
-**macOS.** With no certificate available the app is ad-hoc signed (`identity: '-'`)
-under the hardened runtime. That is enough to launch on Apple silicon but not enough
-for Gatekeeper on any other machine — and not enough for macOS to grant notification
-permission, which is why notifications are refused in local builds.
+**macOS.** With no certificate available the build signs itself ad-hoc, the way
+electron-builder's `identity: '-'` did. `@electron/osx-sign` documents no ad-hoc mode,
+but that same `-` with `identityValidation: false` skips the keychain lookup and reaches
+`codesign --sign` unchanged. An ad-hoc signature is not enough for Gatekeeper on another
+machine, and not enough for macOS to grant notification permission — which is why
+notifications are refused in local builds — but it is a valid seal, and that turns out
+to matter.
 
-With a Developer ID Application certificate the build signs and notarizes instead.
-The certificate can come from the login keychain, or from the environment:
+It is tempting to leave `osxSign` off entirely instead and let something later in the
+pipeline seal the bundle. Nothing does, and anything that tried would be signing too
+early: `@electron/packager` renames the bundle and writes `ElectronAsarIntegrity` into
+`Info.plist` near the end of packaging, and a signature applied before that comes out
+stale — a bundle reporting `Identifier=com.github.Electron` and `Info.plist=not bound`,
+failing `codesign --verify --strict` with
+`invalid Info.plist (plist or signature have been modified)`.
 
-| Variable                                                | Purpose                                     |
-| ------------------------------------------------------- | ------------------------------------------- |
-| `CSC_LINK`                                              | base64 of the `.p12`, or a path to it       |
-| `CSC_KEY_PASSWORD`                                      | its passphrase                              |
-| `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | App Store Connect key used to notarize      |
-| `APPLE_TEAM_ID`                                         | pins the designated requirement to the team |
+Which would break more than appearances. macOS refuses Keychain access to a bundle whose
+signature does not verify, so `safeStorage.isEncryptionAvailable()` was false in every
+locally packaged build, and `src/main/store.ts` took its documented fallback of writing
+the webhook endpoint secret to `statusky.json` in the clear. packager runs `osxSign`
+last, after every rewrite it makes, so signing from `forge.config.ts` is the placement
+that survives packaging — and the secret is sealed in a local build again.
 
-electron-builder imports `CSC_LINK` into a throwaway keychain itself, so no keychain
-setup script is needed in CI. `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` +
-`APPLE_TEAM_ID` works for notarization as well, but an API key is preferred.
+One consequence to expect: the Keychain item Chromium creates for `safeStorage` is
+bound to the signature that created it, and an ad-hoc signature changes with every
+build. macOS therefore asks for permission the first time each freshly packaged build
+reads it. A Developer ID build has a stable identity and does not.
+
+That prompt is why `EnableCookieEncryption` must stay off — see "Electron fuses" below,
+which is also why no fuse is flipped at all.
+
+With a Developer ID Application certificate the build signs and notarizes instead. The
+certificate has to already be in a keychain:
+
+| Variable                                                | Purpose                                              |
+| ------------------------------------------------------- | ---------------------------------------------------- |
+| `CSC_LINK`, `CSC_KEY_PASSWORD`                          | taken only as "a signed build is wanted" — see below |
+| `CSC_NAME` or `CSC_IDENTITY`                            | sign with this identity instead of searching         |
+| `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | App Store Connect key used to notarize               |
+| `APPLE_TEAM_ID`                                         | pins the designated requirement to the team          |
+
+electron-builder imported `CSC_LINK` into a throwaway keychain itself. Nothing in the
+Forge stack does, and there is no equivalent to reach for, so CI has to import the
+certificate before the build — `apple-actions/import-codesign-certs`, or a `security
+import` into a keychain of its own. `CSC_LINK` is still read, but only as a statement of
+intent: if the keychain has not been prepared, signing fails loudly rather than quietly
+producing an ad-hoc build and calling it a release.
+
+`APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` notarizes too, as does
+`APPLE_KEYCHAIN` + `APPLE_KEYCHAIN_PROFILE`, but an API key is preferred.
 
 Entitlements are `build/entitlements.mac.plist` (app) and
 `build/entitlements.mac.inherit.plist` (helpers). Both allow JIT and unsigned
-executable memory, which V8 needs under the hardened runtime.
+executable memory, which V8 needs under the hardened runtime. Forge finds neither by
+convention the way electron-builder did, so `forge.config.ts` picks between them itself,
+per file signed.
 
 Check what a build actually produced with:
 
 ```bash
-codesign -dv --verbose=4 release/mac-arm64/Statusky.app
+codesign -dv --verbose=4 release/Statusky-darwin-arm64/Statusky.app
 ```
 
-**Windows.** Signing goes through Azure Trusted Signing when all four of
+A local build should report `flags=0x10002(adhoc,runtime)` and the bundle's own
+`Identifier=community.statusky.app`, and pass:
+
+```bash
+codesign --verify --deep --strict release/Statusky-darwin-arm64/Statusky.app
+```
+
+**Windows.** Signing goes through Azure Trusted Signing when all five of
 `AZURE_CODE_SIGNING_ENDPOINT`, `AZURE_CODE_SIGNING_ACCOUNT_NAME`,
-`AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME` and `AZURE_CODE_SIGNING_PUBLISHER_NAME`
-are set; setting only some of them is an error rather than a silently unsigned build.
-Authentication is separate — electron-builder's TrustedSigning module reads
-`AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`. Signing runs through
-PowerShell, so it only works on a Windows runner.
+`AZURE_CODE_SIGNING_CERTIFICATE_PROFILE_NAME`, `AZURE_CODE_SIGNING_DLIB` and
+`WINDOWS_SIGNTOOL_PATH` are set; setting only some of them is an error rather than a
+silently unsigned build.
+
+The last two are new, and they are the price of Forge reaching `@electron/windows-sign`
+1.x instead of electron-builder's own Trusted Signing module. windows-sign only knows how
+to drive `signtool.exe`, and the copy vendored inside it predates `/dlib` — so point
+`WINDOWS_SIGNTOOL_PATH` at one from Windows SDK 10.0.22621.755 or newer, and
+`AZURE_CODE_SIGNING_DLIB` at `Azure.CodeSigning.Dlib.dll` from the
+`Microsoft.Trusted.Signing.Client` NuGet package. There is no `publisherName` any more,
+so `AZURE_CODE_SIGNING_PUBLISHER_NAME` is no longer read.
+
+Authentication is separate, and unchanged: the dlib reads an Entra ID service principal
+from `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`. Signing runs
+`signtool.exe`, so it only works on a Windows runner.
 
 **Linux.** AppImage and deb are not signed.
+
+### Electron fuses
+
+Statusky flips none of them. A packaged build ships whatever fuse wire Electron shipped,
+and `src/test/packaging.test.ts` fails if `forge.config.ts` ever grows a plugin that
+changes that. On Electron 44 the defaults are:
+
+| Fuse                                    | Default |
+| --------------------------------------- | ------- |
+| `RunAsNode`                             | on      |
+| `EnableCookieEncryption`                | off     |
+| `EnableNodeOptionsEnvironmentVariable`  | on      |
+| `EnableNodeCliInspectArguments`         | on      |
+| `EnableEmbeddedAsarIntegrityValidation` | off     |
+| `OnlyLoadAppFromAsar`                   | off     |
+| `LoadBrowserProcessSpecificV8Snapshot`  | off     |
+| `GrantFileProtocolExtraPrivileges`      | on      |
+
+Flipping a fuse means rewriting bytes inside the Electron binary, and on macOS that
+invalidates whatever code signature is on it. `@electron-forge/plugin-fuses` carries a
+`resetAdHocDarwinSignature` option for exactly that reason, and it runs in
+`packageAfterCopy` — before `@electron/packager` renames the bundle and writes
+`ElectronAsarIntegrity` into `Info.plist`. So the rewrite has to be sequenced against
+both `osxSign` and packager's own late writes, and getting the order wrong is how a build
+ends up reporting `Info.plist=not bound` and losing the Keychain access that keeps the
+webhook secret sealed. Leaving the wire alone removes the ordering problem instead of
+solving it: there is no rewrite, so there is nothing to re-sign, and `codesign --verify
+--strict --deep` passes on a bundle packager signed last and touched no further.
+
+`EnableCookieEncryption` is the one that has actually cost this project something, and
+the default is the value it needs. With it on, Chromium will not open the cookie store
+until the browser process has fetched a Safe Storage key from the Keychain, and it will
+not send anything that consults a cookie until the store is open. A menu bar app has no
+window for a modal SecurityAgent prompt to belong to, and an ad-hoc signature changes
+with every package, so the prompt is raised, never answered, and the wait has no timeout.
+Measured on one packaged build with the fuse on: 171 of 181 checks passed and all ten
+stream checks timed out, because a WebSocket handshake reads cookies before it sends and
+the HTTP checks send `credentials: 'omit'`. With the fuse off, 181 of 181. The test above
+asserts this against the installed Electron binary rather than against the config, so an
+upgrade that changes the default fails on `npm install` rather than on somebody's Mac a
+release later.
+
+What the defaults cost is the three hardening fuses. `RunAsNode`,
+`EnableNodeOptionsEnvironmentVariable` and `EnableNodeCliInspectArguments` are all on,
+which means anyone who can set environment variables for the process can run arbitrary
+code inside a bundle macOS has already identified as Statusky — including code that asks
+`safeStorage` to hand back the webhook secret. That is a local-attacker-only exposure, and
+an attacker who can set your environment variables has other options, but it is a real
+one and it is worth naming rather than implying it away. `EnableEmbeddedAsarIntegrityValidation`
+being off costs the matching guarantee for the bundle's contents: packager still writes an
+`ElectronAsarIntegrity` hash into `Info.plist`, but nothing checks it at boot, so editing
+`app.asar` in a shipped bundle no longer stops it starting. The code signature still seals
+the asar, so on a Developer ID build Gatekeeper catches the edit — it is the second,
+Electron-level check that is absent. `OnlyLoadAppFromAsar` being off changes nothing in
+practice: packager produces an `app.asar` and no `app/` directory beside it for Electron
+to prefer.
 
 ## Development
 
@@ -379,16 +951,28 @@ src/
 │   ├── schemas.ts    Those types as Zod schemas, for validating them at the boundary
 │   └── bridge.ts     Reaching `window.statusky`, and reading errors back off it
 ├── main/       Electron main process: the only place that touches network or disk
+│   ├── index.ts      The startup sequence, read top to bottom
 │   ├── model.ts      Owns all state; polls, merges, decides what to notify about
 │   ├── state.ts      Pure state transitions (dedupe, notification cursors, read cursors)
-│   ├── store.ts      Persistence and config migration
+│   ├── store.ts      Persistence, config migration, and the sealed webhook secret
+│   ├── ipc.ts        The behaviour behind each method the schema declares
 │   ├── webhook.ts    The loopback HTTP receiver for pushed updates
 │   ├── probes.ts     The requests each kind of service is measured with
 │   ├── network.ts    Sweeping, debouncing failures, and noticing being offline
+│   ├── notifications.ts  Banners, their buttons, and the waiting room in front of them
+│   ├── power.ts      What the OS says about the machine, and what to do about it
 │   ├── tray.ts       Tray icon, tooltip and menu
+│   ├── menu.ts       The application menu and the native About panel
+│   ├── context-menu.ts   The right-click menu on an update, and the share sheet
 │   ├── window.ts     The popover window
-│   └── position.ts   Where the popover goes relative to the tray icon
-│   └── protocol.ts   Serves the packaged renderer over app://statusky
+│   ├── position.ts   Where the popover goes relative to the tray icon
+│   ├── protocol.ts   Serves the packaged renderer over app://statusky
+│   ├── deep-link.ts  The statusky:// scheme, in both directions it arrives from
+│   ├── shortcut.ts   The global shortcut, and reporting one the OS refused
+│   ├── login-item.ts Opening at login, per platform, and reporting a refusal
+│   ├── update.ts     Self-update where it works, and a notice where it cannot
+│   ├── squirrel.ts   The four install-time launches Squirrel.Windows makes
+│   └── packed-wiring.ts   Reads the IPC wiring out of a staged build, for packaging
 ├── preload/    The context-isolated bridge — three lines; the rest is generated
 ├── renderer/   Svelte 5 + shadcn-svelte UI
 ├── ipc/        Generated from schemas/statusky.eipc. Not checked in; do not edit
@@ -400,7 +984,12 @@ Three decisions shape everything else:
 **All network and disk access lives in the main process.** The renderer runs sandboxed
 with context isolation and no Node integration; it receives whole `AppState` snapshots
 over IPC and sends back narrow, individually-typed requests. There is no generic
-`invoke` escape hatch, and the renderer cannot drift from what is persisted.
+`invoke` escape hatch, and the renderer cannot drift from what is persisted. It is also
+refused every permission Chromium can be asked for — camera, microphone, geolocation,
+renderer-side notifications — before the first page exists, because Chromium decides for
+itself when nothing says otherwise, and the popover has no business asking for any of
+them. Anything that reaches that handler is either a bug or a page that is not ours, which
+is worth a line in the log and not worth a prompt.
 
 **The IPC boundary is declared once and generated.** See [The IPC boundary](#the-ipc-boundary).
 
@@ -415,7 +1004,12 @@ keep in step. See [Reading and unreading](#reading-and-unreading).
 entries record what _changed_; the header, the tray and the dashboard show what is
 _true now_, straight from the live measurement. The worse of the two verdicts wins the
 headline, and when they agree the operators' wording is kept — an operator's "Active
-incident" says more than a probe's.
+incident" says more than a probe's. A claim only counts while it is current, though:
+the header reports what Statusky knows, and what somebody posted three days ago and
+never mentioned again is attributed and dated rather than repeated as a fact. Both
+processes build that line through one function, `reportHeadline`, because the popover
+and the tray drawing different sentences from the same snapshot would be a bug. See
+[Claims have an age](#claims-have-an-age).
 
 **A pushed source is an `Account` like any other.** Its `did` is `webhook:<page id>`
 rather than a real DID, and its `kind` keeps it out of the polling loop — but muting,
@@ -482,10 +1076,11 @@ now stop that from happening quietly:
   `app.isPackaged`. Production wiring running unpackaged logs what to run instead.
   Development wiring in a packaged app logs the problem and shows a dialog, because a
   menu bar app has no console to read.
-- **Packaging refuses development wiring.** electron-builder's `beforePack` hook reads the
-  compiled validator in `out/`, which is what actually gets packed and can be older than
-  `src/ipc`. It stops unless it finds production wiring and nothing else. Packaging with
-  `--prepackaged` skips `beforePack`, so it skips this check too.
+- **Packaging refuses development wiring.** Forge's `packageAfterCopy` hook reads the
+  compiled validator in the staged copy of `out/`, which is what actually gets packed
+  and can be older than `src/ipc`. It stops unless it finds production wiring and
+  nothing else. `electron-forge make --skip-package` reuses an existing bundle without
+  packaging, so it skips this check too.
 
 To see which branch is compiled in right now:
 
@@ -513,16 +1108,27 @@ on disk, and the network. Vitest aliases `electron`, `electron/renderer` and
 `electron-store` to the doubles, so importing any main- or preload-process module
 transparently gets them.
 
-| Module                 | Stands in for                                                                     |
-| ---------------------- | --------------------------------------------------------------------------------- |
-| `electron.ts`          | `app`, `ipcMain`/`ipcRenderer`, `BrowserWindow`, `Tray`, `Menu`, `protocol`, …    |
-| `electron-renderer.ts` | `webFrame`, so the preload can be asked whether it is a top-level frame           |
-| `page.ts`              | `window.location`, so a test can serve the preload any origin it likes            |
-| `electron-store.ts`    | The persisted config, in memory, copying on read and write like the real one      |
-| `appview.ts`           | The public AppView: three XRPC methods, per-actor failures, hangs and rate limits |
-| `bridge.ts`            | `window.statusky`, for component tests that do not need a main process            |
-| `factories.ts`         | Total builders for `Account`, `StatusPost`, `Settings`, `AppState`                |
-| `harness.ts`           | All of the above, wired into a running app                                        |
+`update-electron-app` is aliased too, for a narrower and more annoying reason: the real
+package is CommonJS inside `node_modules`, so Vitest loads it through Node rather than
+through Vite, and its own `require('electron')` escapes that first alias and reaches the
+real `electron` package — which outside an Electron process is a module exporting the path
+to a binary. There is no way to hand it the doubles, so the package itself is the seam.
+What is lost is the package's own feed-URL construction and option validation, none of
+which is this app's to test; what is kept is the whole of the boundary `src/main/update.ts`
+owns — whether it is called, on which platforms, with which options, and what it does when
+the download it is waiting for finally lands.
+
+| Module                   | Stands in for                                                                     |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `electron.ts`            | `app`, `ipcMain`/`ipcRenderer`, `BrowserWindow`, `Tray`, `Menu`, `protocol`, …    |
+| `electron-renderer.ts`   | `webFrame`, so the preload can be asked whether it is a top-level frame           |
+| `page.ts`                | `window.location`, so a test can serve the preload any origin it likes            |
+| `electron-store.ts`      | The persisted config, in memory, copying on read and write like the real one      |
+| `appview.ts`             | The public AppView: three XRPC methods, per-actor failures, hangs and rate limits |
+| `bridge.ts`              | `window.statusky`, for component tests that do not need a main process            |
+| `update-electron-app.ts` | The self-updater, so a finished download can be delivered on demand               |
+| `factories.ts`           | Total builders for `Account`, `StatusPost`, `Settings`, `AppState`                |
+| `harness.ts`             | All of the above, wired into a running app                                        |
 
 The doubles are behavioural, not inert. `ipcRenderer.invoke` really reaches the handler
 registered on that page's `WebContents`, carrying a `senderFrame` the origin validator

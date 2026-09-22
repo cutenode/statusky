@@ -30,7 +30,7 @@
     "src/ipc/**/*.ts",
     "src/shared/**/*.ts",
     "src/test/**/*.ts",
-    "electron-builder.ts",
+    "forge.config.ts",
     "electron.vite.config.ts",
     "vitest.config.ts",
     "scripts/**/*.mjs"

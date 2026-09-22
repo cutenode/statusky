@@ -37,7 +37,7 @@ describe('the verdict', () => {
     })
     expect(title(container).textContent?.trim()).toBe('The Atmosphere is reachable')
     expect(container.textContent).toContain('2 of 2 answering · median 400 ms')
-    expect(container.textContent).toContain('Checked 2 minutes ago ·')
+    expect(container.textContent).toContain('Checked 2 minutes ago')
     // The ring counts the Atmosphere only, not the control checks.
     expect(container.querySelectorAll('path.ring-segment')).toHaveLength(2)
   })
@@ -122,7 +122,21 @@ describe('a sweep in progress', () => {
     expect(title(container).textContent?.trim()).toBe('Checking the Atmosphere…')
     expect(container.textContent).toContain('Checking… 1 of 4 requests answered')
     expect((container.querySelector('.progress') as HTMLElement).style.width).toBe('25%')
-    expect(container.textContent).not.toContain('Check now')
+    // Nothing about when it last ran while it is running.
+    expect(container.textContent).not.toContain('Checked ')
+  })
+
+  it('counts each service into the ring as it answers, not at the end', async () => {
+    // The rollup still says nothing is answering: it is only recomputed when the sweep
+    // starts and finishes, and the ring must not wait for it.
+    const { container } = await hero({
+      snapshot: makeSnapshot({
+        running: true,
+        services: [relay(), pds({ state: 'pending' }), control]
+      }),
+      network: makeNetworkSummary({ health: 'unknown', running: true, total: 2, reachable: 0 })
+    })
+    expect(container.textContent).toMatch(/\b1\s*of 2/)
   })
 
   it('says it is starting before the first request goes out', async () => {
@@ -146,12 +160,35 @@ describe('offline', () => {
     })
     expect(title(container).textContent?.trim()).toBe('You’re offline')
     expect(container.textContent).toContain('None of the control checks got through')
-    expect(container.textContent).not.toContain('Check now')
+    expect(container.textContent).toContain('as soon as the connection is back')
     expect(container.querySelector('.opacity-45')).not.toBeNull()
     const chip = [...container.querySelectorAll('button')].find((b) =>
       b.textContent?.includes('Relays')
     )!
     expect(chip.querySelector('span')!.className).toContain('bg-muted-foreground/40')
+  })
+})
+
+describe('a machine the schedule is staying out of the way of', () => {
+  // Without this, a dashboard last measured forty minutes ago under a ten-minute
+  // setting reads as the app having quietly stopped working.
+  it.each([
+    ['battery', 'Checking less often on battery'],
+    ['thermal', 'Paused while this machine is under load']
+  ] as const)('says so for %s', async (restraint, wording) => {
+    const { container } = await hero({
+      snapshot: makeSnapshot({ finishedAt: FINISHED, services: [relay()], restraint }),
+      network: makeNetworkSummary({ health: 'operational', total: 1, reachable: 1, restraint })
+    })
+
+    expect(container.textContent).toContain(`Checked 2 minutes ago · ${wording}`)
+  })
+
+  it('says nothing when the schedule is doing exactly what it was told', async () => {
+    const { container } = await hero({
+      snapshot: makeSnapshot({ finishedAt: FINISHED, services: [relay()] })
+    })
+    expect(container.textContent).not.toContain('battery')
   })
 })
 
@@ -171,12 +208,12 @@ describe('switched off', () => {
 })
 
 describe('actions', () => {
-  it('checks again on request', async () => {
-    const { getByText, bridge } = await hero({
+  // Measuring again lives in the header, which means exactly that on this tab.
+  it('leaves the sweep to the header', async () => {
+    const { container } = await hero({
       snapshot: makeSnapshot({ finishedAt: FINISHED, services: [relay()] })
     })
-    await fireEvent.click(getByText('Check now'))
-    expect(bridge.api.Network.run).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('button[aria-label="Check now"]')).toBeNull()
   })
 
   it('tallies each Atmosphere group, and jumps to it', async () => {

@@ -164,6 +164,50 @@
     outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
+
+  /*
+   * Windows high contrast, and anything else that turns forced colours on.
+   *
+   * This palette is built out of `oklch` severity hues laid on with a lot of
+   * translucency — `bg-sev-outage/12` over a window that is itself a `color-mix` with
+   * `transparent` — which is exactly the kind of thing forced-colors mode exists to
+   * throw away, and it does throw it away: the user agent replaces every colour an
+   * author sets with the pair the user chose, and the eight severity hues stop
+   * distinguishing anything from anything.
+   *
+   * The deliberate decision is not to fight that. Severity is already said in words and
+   * in a glyph everywhere it carries meaning — `SeverityBadge` and `TimelineRow` both
+   * draw the label beside the icon, `ServiceRow` writes "Live" or "Down" next to its LED
+   * — so what forced colours take away is the duplicate, not the information. Building a
+   * second severity palette that survives `forced-color-adjust: none` legibly against
+   * both a black and a white system background is a real design job, and is not
+   * attempted here.
+   *
+   * What is worth doing is making sure nothing *vanishes*. Two things would: the window
+   * itself, whose background is deliberately part-transparent so macOS vibrancy shows
+   * through and which has no vibrancy behind it here; and the glows, which are
+   * `box-shadow` — not a property forced colours override, so they would survive as
+   * haloes in a colour nobody picked, around discs that no longer differ from each other.
+   */
+  @media (forced-colors: active) {
+    body {
+      /* A real surface rather than a translucent wash over nothing. */
+      background: Canvas;
+      color: CanvasText;
+    }
+
+    /*
+     * Every lit LED, glowing timeline node and unread dot in this app is a `box-shadow`,
+     * and every one of them is decorative — the thing it was emphasising is still said in
+     * text beside it. Blanket rather than per-component because the alternative is
+     * listing them and being wrong about the next one.
+     */
+    *,
+    *::before,
+    *::after {
+      box-shadow: none !important;
+    }
+  }
 }
 
 @layer utilities {

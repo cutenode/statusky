@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { BrowserWindow, app, openedExternally, screen } from '../test/electron'
-import { withPlatform } from '../test/harness'
-import { PopoverWindow } from './window'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { BrowserWindow, app, dialog, openedExternally, screen } from '../test/electron'
+import { flush, withPlatform } from '../test/harness'
+import { followDisplayChanges, PopoverWindow } from './window'
 
 const TRAY_BOUNDS = { x: 900, y: 0, width: 24, height: 24 }
 
@@ -14,6 +14,19 @@ function popoverWithWindow(): { popover: PopoverWindow; window: BrowserWindow } 
   const popover = new PopoverWindow()
   popover.create()
   return { popover, window: BrowserWindow.instances.at(-1)! }
+}
+
+/** Kill the renderer of whatever window the popover is holding, the way Electron reports it. */
+function killRenderer(reason = 'crashed'): void {
+  BrowserWindow.instances.at(-1)!.webContents.emit('render-process-gone', {}, { reason })
+}
+
+/** A second display, to the right of the built-in one. */
+const PROJECTOR = {
+  id: 2,
+  bounds: { x: 1440, y: 0, width: 1920, height: 1080 },
+  workArea: { x: 1440, y: 0, width: 1920, height: 1050 },
+  scaleFactor: 1
 }
 
 describe('create', () => {
@@ -47,6 +60,7 @@ describe('create', () => {
       const { window } = popoverWithWindow()
       expect(window.options.transparent).toBe(true)
       expect(window.options.vibrancy).toBe('under-window')
+      expect(window.options.backgroundMaterial).toBeUndefined()
       expect(window.options.backgroundColor).toBe('#00000000')
     })
 
@@ -55,6 +69,31 @@ describe('create', () => {
     await withPlatform('win32', () => {
       const { window } = popoverWithWindow()
       expect(window.options.transparent).toBe(false)
+      expect(window.options.vibrancy).toBeUndefined()
+      expect(window.options.backgroundColor).toBe('#0b0d12')
+    })
+  })
+
+  /**
+   * Item 21. A popover hanging off the taskbar should be made of the same material as
+   * the menus around it, and on Windows 11 that material is acrylic — macOS vibrancy's
+   * opposite number. `backgroundMaterial` is win32-only and does nothing on Windows 10,
+   * which is why the opaque colour stays put underneath it rather than being made
+   * conditional: on 10 it is the whole window, and on 11 it is what acrylic tints.
+   */
+  it('asks for acrylic on Windows, and keeps the opaque fallback underneath', async () => {
+    await withPlatform('win32', () => {
+      const { window } = popoverWithWindow()
+      expect(window.options.backgroundMaterial).toBe('acrylic')
+      expect(window.options.backgroundColor).toBe('#0b0d12')
+    })
+
+    BrowserWindow.instances.length = 0
+
+    // Anything that supports neither gets the solid colour and nothing else.
+    await withPlatform('linux', () => {
+      const { window } = popoverWithWindow()
+      expect(window.options.backgroundMaterial).toBeUndefined()
       expect(window.options.vibrancy).toBeUndefined()
       expect(window.options.backgroundColor).toBe('#0b0d12')
     })
@@ -124,9 +163,8 @@ describe('navigation containment', () => {
 })
 
 describe('developer diagnostics', () => {
-  it('mirrors renderer errors to the terminal in development', () => {
+  it('mirrors the renderer’s console to the terminal in development', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const { window } = popoverWithWindow()
 
     window.webContents.emit('console-message', {
@@ -136,12 +174,9 @@ describe('developer diagnostics', () => {
       lineNumber: 12
     })
     window.webContents.emit('console-message', { level: 'info', message: 'quiet' })
-    window.webContents.emit('render-process-gone', {}, { reason: 'crashed' })
-    window.webContents.emit('preload-error', {}, '/preload.cjs', new Error('nope'))
 
     expect(log).toHaveBeenCalledTimes(1)
     expect(log.mock.calls[0]?.[0]).toContain('[renderer:error] boom (app.js:12)')
-    expect(error).toHaveBeenCalledTimes(2)
   })
 
   it('stays silent in a packaged build', () => {
@@ -152,6 +187,206 @@ describe('developer diagnostics', () => {
     window.webContents.emit('console-message', { level: 'error', message: 'boom' })
 
     expect(log).not.toHaveBeenCalled()
+  })
+})
+
+describe('surviving a dead renderer', () => {
+  /** Every test here kills a renderer, which is reported on the terminal. */
+  let error: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    error = vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  // The failure this exists to prevent: in a packaged build the window used to be
+  // left behind as a transparent, empty rectangle that came back on every tray click.
+  it('destroys the window in a packaged build, not just in development', () => {
+    app.isPackaged = true
+    const { popover, window } = popoverWithWindow()
+
+    killRenderer()
+
+    expect(window.isDestroyed()).toBe(true)
+    expect(popover.browserWindow).toBeNull()
+    expect(error).toHaveBeenCalledWith('[renderer] process gone:', { reason: 'crashed' })
+  })
+
+  it('builds a working replacement on the next show, handlers and all', () => {
+    app.isPackaged = true
+    const popover = new PopoverWindow()
+    const attach = vi.fn()
+    popover.onCreate(attach)
+    popover.create()
+
+    killRenderer()
+    popover.show()
+
+    expect(BrowserWindow.instances).toHaveLength(2)
+    expect(popover.isVisible()).toBe(true)
+    // `onCreate` re-runs against the new window: this is why destroying is safe.
+    expect(attach).toHaveBeenCalledTimes(2)
+    expect(attach).toHaveBeenLastCalledWith(BrowserWindow.instances.at(-1))
+  })
+
+  // Electron can report a page that died inside a window that is already gone, and
+  // `destroy()` is not a question to ask a window twice.
+  it('does not tear down a window that is already destroyed', () => {
+    const { window } = popoverWithWindow()
+    const closed = vi.fn()
+    window.on('closed', closed)
+
+    killRenderer()
+    window.webContents.emit('render-process-gone', {}, { reason: 'crashed' })
+
+    expect(closed).toHaveBeenCalledTimes(1)
+  })
+
+  // A preload failure leaves the page running, and a new window would load the same
+  // broken preload — so it is reported and nothing is torn down.
+  it('reports a failed preload without destroying anything', () => {
+    app.isPackaged = true
+    const { window } = popoverWithWindow()
+
+    window.webContents.emit('preload-error', {}, '/preload.cjs', new Error('nope'))
+
+    expect(error).toHaveBeenCalledWith('[preload] failed:', '/preload.cjs', expect.any(Error))
+    expect(window.isDestroyed()).toBe(false)
+  })
+
+  it('keeps rebuilding for as long as the page dies during use', async () => {
+    vi.useFakeTimers()
+    try {
+      const { popover } = popoverWithWindow()
+
+      // Four deaths, each after the page had been up for a quarter of an hour.
+      for (let attempt = 0; attempt < 4; attempt++) {
+        vi.advanceTimersByTime(15 * 60_000)
+        killRenderer()
+        popover.show()
+      }
+
+      expect(BrowserWindow.instances).toHaveLength(5)
+      expect(popover.isVisible()).toBe(true)
+      expect(dialog.showMessageBox).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops rebuilding after three deaths on load, and explains itself once', async () => {
+    const { popover } = popoverWithWindow()
+
+    killRenderer()
+    popover.show()
+    killRenderer()
+    popover.show()
+    killRenderer()
+
+    // No fourth window: another attempt would only produce another crash.
+    popover.show()
+    expect(BrowserWindow.instances).toHaveLength(3)
+    expect(popover.isVisible()).toBe(false)
+
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1)
+    expect(dialog.showMessageBox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'error',
+        message: 'Statusky’s popover keeps crashing',
+        detail: expect.stringContaining('menu bar icon still works')
+      })
+    )
+    await flush()
+  })
+
+  // The tray icon toggles the popover, so somebody watching nothing happen clicks
+  // again — and a stack of identical modal message boxes is its own kind of broken.
+  it('never stacks the warning, but does repeat it once it has been dismissed', async () => {
+    const { popover } = popoverWithWindow()
+
+    killRenderer()
+    popover.show()
+    killRenderer()
+    popover.show()
+    killRenderer()
+
+    popover.show()
+    popover.show()
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(1)
+
+    await flush()
+    popover.show()
+
+    expect(dialog.showMessageBox).toHaveBeenCalledTimes(2)
+    await flush()
+  })
+})
+
+describe('following the displays', () => {
+  it('brings an open popover back onto a display that still exists', () => {
+    screen.displays.push({ ...PROJECTOR })
+    const { popover, window } = popoverWithWindow()
+    let tray = { x: 2000, y: 0, width: 24, height: 24 }
+    followDisplayChanges(popover, () => tray)
+
+    popover.show(tray)
+    expect(window.getPosition()[0]).toBeGreaterThanOrEqual(1440)
+
+    // The projector is unplugged, and the menu bar — and the icon in it — move back.
+    screen.displays.pop()
+    tray = TRAY_BOUNDS
+    screen.emit('display-removed', {}, { id: 2 })
+
+    expect(window.getPosition()[0]).toBe(Math.round(900 + 12 - 440 / 2))
+  })
+
+  it('follows a work area that changes under an open popover', () => {
+    const { popover, window } = popoverWithWindow()
+    followDisplayChanges(popover, () => TRAY_BOUNDS)
+    popover.show(TRAY_BOUNDS)
+
+    // A menu bar that grew, or a dock that moved to the top.
+    screen.displays[0]!.workArea = { x: 0, y: 120, width: 1440, height: 780 }
+    screen.emit('display-metrics-changed', {}, screen.displays[0], ['workArea'])
+
+    expect(window.getPosition()[1]).toBe(128)
+  })
+
+  it('places the popover on a display that has just appeared', () => {
+    const { popover, window } = popoverWithWindow()
+    let tray = TRAY_BOUNDS
+    followDisplayChanges(popover, () => tray)
+    popover.show(tray)
+
+    screen.displays.push({ ...PROJECTOR })
+    tray = { x: 2000, y: 0, width: 24, height: 24 }
+    screen.emit('display-added', {}, PROJECTOR)
+
+    expect(window.getPosition()[0]).toBeGreaterThanOrEqual(1440)
+  })
+
+  // A hidden popover is positioned by `show()`, which runs against the arrangement as
+  // it is then. Moving it now would only be guesswork about where it will be opened.
+  it('leaves a hidden popover where it is', () => {
+    const { popover, window } = popoverWithWindow()
+    followDisplayChanges(popover, () => TRAY_BOUNDS)
+
+    screen.emit('display-metrics-changed', {}, screen.displays[0], ['bounds'])
+
+    expect(window.getPosition()).toEqual([0, 0])
+  })
+
+  it('shrugs off a change that arrives with no window, or a destroyed one', () => {
+    const popover = new PopoverWindow()
+    followDisplayChanges(popover, () => undefined)
+
+    expect(() => screen.emit('display-removed', {}, PROJECTOR)).not.toThrow()
+
+    popover.create()
+    const window = BrowserWindow.instances.at(-1)!
+    window.show()
+    window.destroyed = true
+
+    expect(() => screen.emit('display-removed', {}, PROJECTOR)).not.toThrow()
   })
 })
 

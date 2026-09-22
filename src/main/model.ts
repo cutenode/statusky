@@ -12,11 +12,15 @@ import {
 import type {
   Account,
   AppState,
+  LoginItemStatus,
   NetworkSnapshot,
   ResolvedProfile,
   Settings,
+  ShortcutStatus,
   StatusPost,
+  SweepRestraint,
   SyncStatus,
+  UpdateStatus,
   WebhookStatus
 } from '../shared/types'
 import {
@@ -40,7 +44,7 @@ import {
 } from './state'
 import { NetworkMonitor, type MonitorTimings } from './network'
 import type { ProbeTransport } from './probes'
-import type { PersistedShape } from './store'
+import { readWebhookSecret, writeWebhookSecret, type PersistedShape } from './store'
 import { generateWebhookSecret, WebhookReceiver } from './webhook'
 
 export interface ModelEvents {
@@ -72,8 +76,24 @@ const FETCH_TIMEOUT_MS = 15_000
  */
 export class Model extends EventEmitter<ModelEvents> {
   private timer: NodeJS.Timeout | null = null
+  /** The machine is asleep: both schedules are down until `resume()`. See `pause()`. */
+  private paused = false
   private inFlight: Promise<void> | null = null
   private sync: AppState['sync'] = { status: 'idle', lastSyncedAt: null, error: null }
+  /**
+   * What the OS has actually done with `launchAtLogin`. Owned here rather than derived,
+   * because only the startup wiring in src/main/index.ts ever talks to the OS about it;
+   * this is where the answer it got is kept so the popover can see it.
+   */
+  private loginItem: LoginItemStatus = { registered: false, error: null }
+  /** And likewise for the global shortcut, which the OS may hand to somebody else. */
+  private shortcut: ShortcutStatus = { registered: false, error: null }
+  /**
+   * And likewise for whether there is a newer Statusky than this one. Starts at
+   * `current`, which is also what it stays at when nothing can find out — see
+   * `UpdateStatus`, where the two are deliberately the same answer.
+   */
+  private update: UpdateStatus = { stage: 'current', version: null }
   private readonly receiver: WebhookReceiver
   private readonly monitor: NetworkMonitor
 
@@ -85,8 +105,12 @@ export class Model extends EventEmitter<ModelEvents> {
     super()
     this.receiver = new WebhookReceiver({
       // Read through to the store rather than capturing: regenerating the secret has
-      // to invalidate the old URL for the very next request.
-      secret: () => this.store.get('webhookSecret'),
+      // to invalidate the old URL for the very next request. The store answers from
+      // memory after the first call, so this costs nothing per request even though the
+      // secret is sealed in the OS credential store on disk — and because it is a
+      // callback rather than a value, nothing opens that store until a receiver is
+      // actually running. Constructing a `Model` with the webhook off never does.
+      secret: () => readWebhookSecret(this.store),
       onDelivery: (body) => this.ingestWebhook(body)
     })
     this.monitor = new NetworkMonitor({
@@ -122,6 +146,9 @@ export class Model extends EventEmitter<ModelEvents> {
       sync: this.sync,
       webhook: this.receiver.status(),
       network: this.monitor.summary(this.settings.networkChecks),
+      loginItem: this.loginItem,
+      shortcut: this.shortcut,
+      update: this.update,
       version: this.version
     }
   }
@@ -129,6 +156,67 @@ export class Model extends EventEmitter<ModelEvents> {
   /** Count of unread posts from accounts that are currently visible. */
   get unreadCount(): number {
     return this.getState().unread.length
+  }
+
+  /**
+   * Of `posts`, the ones the user has still not dealt with.
+   *
+   * Asked before a banner held back while nobody was at the machine is finally raised:
+   * an update read in the popover in the meantime has been dealt with, and announcing it
+   * afterwards would be the notification resurrecting it. A muted source's posts are not
+   * in `unread` either, so muting one while its banner was held also settles it.
+   */
+  stillUnread(posts: StatusPost[]): StatusPost[] {
+    const unread = new Set(this.getState().unread)
+    return posts.filter((post) => unread.has(post.uri))
+  }
+
+  /**
+   * Record what the OS said when it was asked to open Statusky at login.
+   *
+   * Called from the `change` handler in src/main/index.ts, which is where the OS is
+   * talked to — so this can re-enter the very event it is being called from. The
+   * equality check is what stops that: the second pass finds the same status and
+   * emits nothing, and the run terminates one level deep. It is also why a status
+   * that has not moved costs nothing, which matters because the settings change on
+   * every poll.
+   */
+  setLoginItem(status: LoginItemStatus): void {
+    if (status.registered === this.loginItem.registered && status.error === this.loginItem.error) {
+      return
+    }
+    this.loginItem = status
+    this.emitChange()
+  }
+
+  /**
+   * Record what the OS did with `Settings.globalShortcut`.
+   *
+   * Exactly `setLoginItem`'s shape and for exactly its reason: called from the `change`
+   * handler in src/main/index.ts, so it can re-enter the event it is being called from,
+   * and the equality check is what stops that one level deep. See `ShortcutStatus`.
+   */
+  setShortcut(status: ShortcutStatus): void {
+    if (status.registered === this.shortcut.registered && status.error === this.shortcut.error) {
+      return
+    }
+    this.shortcut = status
+    this.emitChange()
+  }
+
+  /**
+   * Record that there is — or is no longer — a newer Statusky to be had.
+   *
+   * The third of the same shape as `setLoginItem` and `setShortcut`, and it keeps their
+   * equality check for a different reason: this one is not called from inside a `change`
+   * handler, but it is called from a timer that fires every few hours and almost always
+   * finds exactly what it found last time. Without the check, every install would push a
+   * whole `AppState` to the popover four times a day to say nothing had happened.
+   */
+  setUpdate(status: UpdateStatus): void {
+    if (status.stage === this.update.stage && status.version === this.update.version) return
+    this.update = status
+    this.emitChange()
   }
 
   private emitChange(): void {
@@ -396,7 +484,7 @@ export class Model extends EventEmitter<ModelEvents> {
    * point of the button.
    */
   regenerateWebhookSecret(): WebhookStatus {
-    this.store.set('webhookSecret', generateWebhookSecret())
+    writeWebhookSecret(this.store, generateWebhookSecret())
     this.emitChange()
     return this.receiver.status()
   }
@@ -513,6 +601,19 @@ export class Model extends EventEmitter<ModelEvents> {
     this.monitor.configure({ enabled: networkChecks, intervalSec: networkIntervalSec })
   }
 
+  /** Tell the sweep schedule what the machine's own condition is. See `SweepRestraint`. */
+  restrainNetwork(restraint: SweepRestraint | null): void {
+    this.monitor.restrain(restraint)
+  }
+
+  /**
+   * Something outside the checks says the connection is back — see `Popover.online` in
+   * `schemas/statusky.eipc`. Nothing here trusts the claim; the control checks settle it.
+   */
+  recheckConnection(): void {
+    this.monitor.connectionRestored()
+  }
+
   /**
    * File the checks' confirmed changes as feed entries from their own source, which
    * registers itself the first time there is something to say — as a pushed status
@@ -551,6 +652,28 @@ export class Model extends EventEmitter<ModelEvents> {
     this.monitor.stop()
   }
 
+  /**
+   * Put both schedules down while the machine is away, and nothing else.
+   *
+   * Deliberately not `stop()`: the webhook receiver has to keep its socket, because a
+   * status page pushing an update to a machine that is merely asleep should find the
+   * port still bound when it wakes — and `stop()` taking the receiver and the network
+   * checks down with it is the exact mistake `restartTimer` already exists to avoid.
+   * What has to stop is the two `setInterval`s, which do not sleep with the machine.
+   */
+  pause(): void {
+    this.paused = true
+    this.clearTimer()
+    this.monitor.pause()
+  }
+
+  /** Both schedules back. Catching up on what was missed is the caller's to ask for. */
+  resume(): void {
+    this.paused = false
+    this.restartTimer()
+    this.monitor.resume()
+  }
+
   private clearTimer(): void {
     if (this.timer) {
       clearInterval(this.timer)
@@ -564,6 +687,9 @@ export class Model extends EventEmitter<ModelEvents> {
    */
   private restartTimer(): void {
     this.clearTimer()
+    // A settings change while the machine is asleep must not start polling again; the
+    // new interval is picked up by `resume()`, which is the thing that restarts it.
+    if (this.paused) return
     this.timer = setInterval(() => void this.refresh(), this.settings.pollIntervalSec * 1000)
     // Polling should not hold the event loop open on quit.
     this.timer.unref?.()

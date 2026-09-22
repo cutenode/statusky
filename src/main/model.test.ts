@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BskyError } from '../shared/bsky'
 import { DEFAULT_SETTINGS } from '../shared/defaults'
 import type { Account } from '../shared/types'
-import { BUILTIN_PROFILES, createHarness, createModel, flush, seedFeed } from '../test/harness'
+import {
+  BUILTIN_PROFILES,
+  createHarness,
+  createModel,
+  flush,
+  seedFeed,
+  waitFor
+} from '../test/harness'
 import { FakeAppView, rawPost } from '../test/appview'
 import { makeAccount, makePost } from '../test/factories'
 import type { Harness } from '../test/harness'
@@ -60,6 +67,55 @@ describe('getState', () => {
     })
 
     expect(h.model.unreadCount).toBe(1)
+  })
+})
+
+/**
+ * The third of the three "what the machine actually did" fields, after the login item
+ * and the global shortcut. It differs from those two in what the equality check is for:
+ * theirs stops a re-entrant `change` handler, and this one stops a timer that fires
+ * every six hours from pushing a whole `AppState` to say nothing has changed.
+ */
+describe('setUpdate', () => {
+  it('starts with nothing to say', async () => {
+    const h = await boot()
+    expect(h.state().update).toEqual({ stage: 'current', version: null })
+  })
+
+  it('publishes news of a newer release', async () => {
+    const { model } = createModel()
+    const changes = vi.fn()
+    model.on('change', changes)
+
+    model.setUpdate({ stage: 'available', version: '0.2.0' })
+
+    expect(changes).toHaveBeenCalledTimes(1)
+    expect(model.getState().update).toEqual({ stage: 'available', version: '0.2.0' })
+  })
+
+  /** Which is what every check after the first one finds. */
+  it('says nothing when the check finds exactly what it found last time', () => {
+    const { model } = createModel()
+    model.setUpdate({ stage: 'available', version: '0.2.0' })
+    const changes = vi.fn()
+    model.on('change', changes)
+
+    model.setUpdate({ stage: 'available', version: '0.2.0' })
+
+    expect(changes).not.toHaveBeenCalled()
+  })
+
+  it('publishes a move from one release to a newer one, and to a download waiting', () => {
+    const { model } = createModel()
+    const changes = vi.fn()
+    model.on('change', changes)
+
+    model.setUpdate({ stage: 'available', version: '0.2.0' })
+    model.setUpdate({ stage: 'available', version: '0.3.0' })
+    model.setUpdate({ stage: 'ready', version: '0.3.0' })
+
+    expect(changes).toHaveBeenCalledTimes(3)
+    expect(model.getState().update).toEqual({ stage: 'ready', version: '0.3.0' })
   })
 })
 
@@ -550,6 +606,94 @@ describe('the poll timer', () => {
   it('exposes the current sync status', async () => {
     const h = await boot()
     expect(h.model.syncStatus).toBe('idle')
+  })
+})
+
+describe('a machine that is asleep', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('stops polling while it sleeps and polls again when it wakes', async () => {
+    const h = await boot({ settings: { pollIntervalSec: 60 } })
+    const refresh = vi.spyOn(h.model, 'refresh').mockResolvedValue()
+    h.model.start()
+
+    h.model.pause()
+    vi.advanceTimersByTime(300_000)
+    expect(refresh).toHaveBeenCalledTimes(1)
+
+    h.model.resume()
+    vi.advanceTimersByTime(60_000)
+    expect(refresh).toHaveBeenCalledTimes(2)
+  })
+
+  // A queue of missed fires landing at once on a machine whose Wi-Fi is not back yet is
+  // a burst of failures followed by a burst of recoveries, none of which describe
+  // anything that happened to the Atmosphere.
+  it('does not let a settings change restart polling underneath it', async () => {
+    const h = await boot({ settings: { pollIntervalSec: 60 } })
+    const refresh = vi.spyOn(h.model, 'refresh').mockResolvedValue()
+    h.model.start()
+    h.model.pause()
+
+    h.model.patchSettings({ pollIntervalSec: 30 })
+    vi.advanceTimersByTime(300_000)
+
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('picks up an interval changed while it slept', async () => {
+    const h = await boot({ settings: { pollIntervalSec: 600 } })
+    const refresh = vi.spyOn(h.model, 'refresh').mockResolvedValue()
+    h.model.start()
+    h.model.pause()
+    h.model.patchSettings({ pollIntervalSec: 30 })
+
+    h.model.resume()
+    vi.advanceTimersByTime(90_000)
+
+    expect(refresh).toHaveBeenCalledTimes(4)
+  })
+
+  // The mistake `stop()` makes, and the reason this is not `stop()`: a status page
+  // pushing an update to a machine that is merely asleep should find the port still
+  // bound when it wakes.
+  it('leaves the webhook receiver listening', async () => {
+    vi.useRealTimers()
+    const h = await boot({ settings: { webhookEnabled: true, webhookPort: 0 } })
+    h.model.start()
+    await waitFor(() => h.model.webhookStatus.state === 'listening', 'the receiver to bind')
+
+    h.model.pause()
+
+    expect(h.model.webhookStatus.state).toBe('listening')
+    expect(h.model.webhookStatus.url).not.toBeNull()
+  })
+})
+
+describe('stillUnread', () => {
+  it('keeps what the user has not dealt with and drops what they have', async () => {
+    const dealt = makePost({ authorDid: BSKY.did, rkey: 'a' })
+    const fresh = makePost({ authorDid: BSKY.did, rkey: 'b' })
+    const h = await boot({ posts: [dealt, fresh], unread: [dealt.uri, fresh.uri] })
+
+    h.model.markRead([dealt.uri])
+
+    expect(h.model.stillUnread([dealt, fresh])).toEqual([fresh])
+  })
+
+  it('drops a post whose source was muted while its banner waited', async () => {
+    const post = makePost({ authorDid: BSKY.did })
+    const h = await boot({ posts: [post], unread: [post.uri] })
+
+    h.model.patchAccount(BSKY.did, { muted: true })
+
+    expect(h.model.stillUnread([post])).toEqual([])
   })
 })
 

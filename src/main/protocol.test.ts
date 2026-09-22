@@ -1,7 +1,22 @@
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { net, privilegedSchemes, protocol, protocolHandlers, servedFiles } from '../test/electron'
-import { APP_INDEX, APP_ORIGIN, registerAppScheme, resolveWithin, serveRenderer } from './protocol'
+import { vi } from 'vitest'
+import {
+  net,
+  privilegedSchemes,
+  protocol,
+  protocolHandlers,
+  servedFiles,
+  session
+} from '../test/electron'
+import {
+  APP_INDEX,
+  APP_ORIGIN,
+  denyRendererPermissions,
+  registerAppScheme,
+  resolveWithin,
+  serveRenderer
+} from './protocol'
 
 const ROOT = '/Applications/Statusky.app/Contents/Resources/app/out/renderer'
 
@@ -146,5 +161,52 @@ describe('serveRenderer', () => {
   it('serves the bundle from the root it was given', async () => {
     await request(`${APP_ORIGIN}/assets/app.js`)
     expect(net.fetch).toHaveBeenCalledWith(expect.stringContaining('assets/app.js'))
+  })
+})
+
+describe('renderer permissions', () => {
+  /** Permissions Chromium will hand a page unless something says otherwise. */
+  const PERMISSIONS = [
+    'media',
+    'geolocation',
+    'midi',
+    'midiSysex',
+    'notifications',
+    'clipboard-read',
+    'display-capture',
+    'openExternal'
+  ] as const
+
+  it.each(PERMISSIONS)('refuses a request for %s', (permission) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    denyRendererPermissions()
+
+    expect(session.defaultSession.request(permission)).toBe(false)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(permission))
+    warn.mockRestore()
+  })
+
+  // The silent half. `navigator.permissions.query` and `Notification.permission` read
+  // this one, so a page denied the prompt could still believe it held the capability.
+  it.each(PERMISSIONS)('reports %s as not held, without a prompt', (permission) => {
+    denyRendererPermissions()
+
+    expect(session.defaultSession.check(permission)).toBe(false)
+  })
+
+  // The popover's own origin gets no exemption: it has no use for any of this, and an
+  // origin allowlist here would only be a second place for the real one to drift from.
+  it('denies the popover’s own origin as flatly as any other', () => {
+    denyRendererPermissions()
+
+    expect(session.defaultSession.check('notifications', APP_ORIGIN)).toBe(false)
+    expect(session.defaultSession.check('notifications', 'https://evil.test')).toBe(false)
+  })
+
+  it('installs both handlers on the session the popover actually loads in', () => {
+    denyRendererPermissions()
+
+    expect(session.defaultSession.setPermissionRequestHandler).toHaveBeenCalledTimes(1)
+    expect(session.defaultSession.setPermissionCheckHandler).toHaveBeenCalledTimes(1)
   })
 })

@@ -11,9 +11,11 @@
   import PostCard from './PostCard.svelte'
 
   /**
-   * One tab's worth of updates: the Feed tab's status accounts, or the Alerts tab's
-   * pushed deliveries and network findings. Both are a chronology of the same kind of
-   * card, so both are this component with a different slice of the feed handed to it.
+   * A chronology of full cards over one slice of the feed, with a chip per source to
+   * filter it. `Feed` is what hands it the status accounts; it stays separate from that
+   * tab because the browsing behaviour — filter chips, the `markReadOn` setting, the
+   * seen-while-scrolling flush — is the part with rules, and the tab is just a slice
+   * and an empty state.
    */
   let {
     now,
@@ -38,8 +40,8 @@
    * a menu bar app is the same gesture without a remount.
    *
    * Only this tab's own posts are read, not the whole feed: opening Feed should not
-   * quietly clear an unread alert you have not looked at. The Unread tab, which shows
-   * everything, is the one that catches you up on everything.
+   * quietly clear an unread network finding you have not looked at. The Timeline, which
+   * shows everything, is the one that catches you up on everything.
    *
    * `seen` flushes on the way out instead: whatever scrolled past in the last few
    * hundred milliseconds should not be lost because the popover was dismissed.

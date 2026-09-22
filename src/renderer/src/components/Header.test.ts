@@ -191,6 +191,107 @@ describe('the clock', () => {
   })
 })
 
+describe('who the headline is quoting', () => {
+  const hoursAgo = (hours: number): string => new Date(NOW - hours * 3_600_000).toISOString()
+  const bluesky = makeAccount({ did: 'did:plc:bsky', displayName: 'Bluesky Status' })
+  const blacksky = makeAccount({ did: 'did:plc:black', displayName: 'Blacksky Status' })
+
+  it('names the source and how long ago, instead of when we last polled', async () => {
+    const { container, getByRole } = await renderWith(
+      Header,
+      { now: NOW },
+      {
+        accounts: [bluesky],
+        posts: [makePost({ authorDid: bluesky.did, severity: 'outage', createdAt: hoursAgo(2) })],
+        sync: { status: 'idle', lastSyncedAt: '2026-01-01T11:55:00Z', error: null }
+      }
+    )
+
+    expect(getByRole('heading', { level: 1 }).textContent?.trim()).toBe(HEALTH_LABEL.incident)
+    expect(container.textContent).toContain('Bluesky Status · 2 hours ago')
+    expect(container.textContent).not.toContain('Last checked')
+  })
+
+  it('keeps the claim on screen once it has stopped setting the verdict', async () => {
+    const { container, getByRole } = await renderWith(
+      Header,
+      { now: NOW },
+      {
+        accounts: [blacksky],
+        posts: [
+          makePost({ authorDid: blacksky.did, severity: 'maintenance', createdAt: hoursAgo(72) })
+        ],
+        network: makeNetworkSummary({ health: 'operational' })
+      }
+    )
+
+    // The verdict has gone back to what this machine measured; the post is still named,
+    // with its age, rather than dropped without a word.
+    expect(getByRole('heading', { level: 1 }).textContent?.trim()).toBe(HEALTH_LABEL.operational)
+    expect(container.textContent).toContain('Blacksky Status reported maintenance 3 days ago')
+  })
+
+  it('will not claim there is no data while it is quoting somebody', async () => {
+    const { getByRole, container } = await renderWith(
+      Header,
+      { now: NOW },
+      {
+        accounts: [blacksky],
+        posts: [makePost({ authorDid: blacksky.did, severity: 'outage', createdAt: hoursAgo(72) })],
+        network: makeNetworkSummary({ health: 'off' })
+      }
+    )
+
+    expect(getByRole('heading', { level: 1 }).textContent?.trim()).toBe('Nothing reported recently')
+    expect(container.textContent).toContain('Blacksky Status reported an incident 3 days ago')
+  })
+
+  it('counts the other sources saying the same thing', async () => {
+    const { container } = await renderWith(
+      Header,
+      { now: NOW },
+      {
+        accounts: [bluesky, blacksky],
+        posts: [
+          makePost({ authorDid: bluesky.did, severity: 'outage', createdAt: hoursAgo(3) }),
+          makePost({ authorDid: blacksky.did, severity: 'outage', createdAt: hoursAgo(1) })
+        ]
+      }
+    )
+
+    expect(container.textContent).toContain('Blacksky Status +1 · 1 hour ago')
+  })
+
+  it('goes back to the last check when nobody is being quoted', async () => {
+    const { container } = await renderWith(
+      Header,
+      { now: NOW },
+      {
+        accounts: [bluesky],
+        posts: [makePost({ authorDid: bluesky.did, severity: 'resolved', createdAt: hoursAgo(1) })],
+        sync: { status: 'idle', lastSyncedAt: '2026-01-01T11:55:00Z', error: null }
+      }
+    )
+
+    expect(container.textContent).toContain('Last checked 5 minutes ago')
+  })
+
+  it('lets a sync failure have the line, since it is about whether any of this is current', async () => {
+    const { container } = await renderWith(
+      Header,
+      { now: NOW },
+      {
+        accounts: [bluesky],
+        posts: [makePost({ authorDid: bluesky.did, severity: 'outage', createdAt: hoursAgo(2) })],
+        sync: { status: 'idle', lastSyncedAt: null, error: 'AppView unreachable' }
+      }
+    )
+
+    expect(container.textContent).toContain('Refresh failed')
+    expect(container.textContent).not.toContain('Bluesky Status ·')
+  })
+})
+
 describe('the network in the headline', () => {
   it('names a service the checks found down while the accounts are quiet', async () => {
     const { getByRole } = await renderWith(
@@ -224,15 +325,14 @@ describe('the tabs', () => {
   it('starts on the timeline', async () => {
     const { getByRole } = await renderWith(Header, { now: NOW })
     expect(tab(getByRole, /Timeline/).getAttribute('aria-selected')).toBe('true')
-    for (const name of [/^Feed$/, /Alerts/, /Network/]) {
+    for (const name of [/^Feed$/, /Network/]) {
       expect(tab(getByRole, name).getAttribute('aria-selected')).toBe('false')
     }
   })
 
   it.each([
     [/^Feed$/, 'feed', 1],
-    [/Alerts/, 'alerts', 2],
-    [/Network/, 'network', 3]
+    [/Network/, 'network', 2]
   ])('switches to %s, sliding the indicator across', async (name, view, index) => {
     const { getByRole, container } = await renderWith(Header, { now: NOW })
     await fireEvent.click(tab(getByRole, name))
@@ -282,7 +382,6 @@ describe('the tabs', () => {
 
     expect(tab(getByRole, /Timeline/).textContent).toContain('2')
     expect(tab(getByRole, /^Feed$/).textContent).toContain('1')
-    expect(tab(getByRole, /Alerts/).textContent).toContain('1')
   })
 
   it.each([

@@ -5,6 +5,8 @@ import {
   clipboard,
   clipboardContents,
   FakeWebFrameMain,
+  menus,
+  net,
   Notification,
   notifications,
   openedExternally,
@@ -379,6 +381,35 @@ describe('state pushes', () => {
     const h = await boot({ window: false })
     expect(() => h.ipc.publish(h.state())).not.toThrow()
   })
+
+  // A renderer that dies is destroyed outright so that the next `show()` can rebuild
+  // it, and the model keeps polling and publishing in the meantime. Electron throws
+  // from `send` on a destroyed page, and that throw would come straight back out of a
+  // `model.on('change')` handler in src/main/index.ts.
+  it('does not push to a page that has been destroyed under it', async () => {
+    const h = await boot()
+    h.browserWindow()!.destroy()
+
+    expect(() => h.ipc.publish(h.state())).not.toThrow()
+    expect(() => h.ipc.publishNetwork(h.model.networkSnapshot())).not.toThrow()
+    expect(() => h.ipc.revealNetwork(null)).not.toThrow()
+  })
+
+  it('pushes again once the popover has been rebuilt', async () => {
+    const h = await boot()
+    const seen: AppState[] = []
+    const stop = h.api.State.onChanged((state) => seen.push(state))
+
+    h.browserWindow()!.destroy()
+    h.ipc.publish(h.state())
+    expect(seen).toHaveLength(0)
+
+    h.popover.show()
+    h.ipc.publish(h.state())
+
+    expect(seen).toHaveLength(1)
+    stop()
+  })
 })
 
 describe('the network dashboard', () => {
@@ -425,5 +456,94 @@ describe('the network dashboard', () => {
     frame(h).url = 'https://evil.example/'
     await expect(h.api.Network.run()).rejects.toThrow()
     await expect(h.api.Network.get()).rejects.toThrow()
+  })
+})
+
+describe('what the page can tell main about the world', () => {
+  it('has the checks look again when Chromium says the connection is back', async () => {
+    const h = await boot()
+    const recheck = vi.spyOn(h.model, 'recheckConnection')
+
+    await h.api.Popover.online(true)
+
+    expect(recheck).toHaveBeenCalledTimes(1)
+  })
+
+  // Believing this would let a page stop the measurements, and the control group is
+  // what decides whether we are offline.
+  it('ignores a page insisting we are offline', async () => {
+    const h = await boot()
+    const recheck = vi.spyOn(h.model, 'recheckConnection')
+
+    await h.api.Popover.online(false)
+
+    expect(recheck).not.toHaveBeenCalled()
+  })
+
+  it('puts the claim to main’s own read before acting on it', async () => {
+    const h = await boot()
+    const recheck = vi.spyOn(h.model, 'recheckConnection')
+    net.online = false
+
+    await h.api.Popover.online(true)
+
+    expect(recheck).not.toHaveBeenCalled()
+  })
+
+  it('refuses the report from any other origin', async () => {
+    const h = await boot()
+    frame(h).url = 'https://evil.example/'
+    await expect(h.api.Popover.online(true)).rejects.toThrow(/did not pass origin validation/)
+  })
+
+  it('asks the popover to catch the user up, and does not mind if there is none', async () => {
+    const h = await boot()
+    let caught = 0
+    const stop = h.api.Popover.onCatchUp(() => caught++)
+
+    h.ipc.catchUp()
+    expect(caught).toBe(1)
+
+    h.browserWindow()!.destroy()
+    expect(() => h.ipc.catchUp()).not.toThrow()
+    stop()
+  })
+})
+
+/**
+ * The context menu, across the real boundary. What the menu itself contains is
+ * src/main/context-menu.ts's own test; what is proven here is that a right-click in the
+ * popover reaches main, that main answers with a menu built from its own state, and that
+ * nothing but the URI crosses.
+ */
+describe('a native menu for an update', () => {
+  it('builds a menu for the update the page named', async () => {
+    const post = makePost({ text: 'Investigating' })
+    const h = await boot({ accounts: [], posts: [post] })
+    const before = menus.length
+
+    await h.api.Popover.postMenu(post.uri)
+
+    const menu = menus.at(-1)
+    expect(menus.length).toBe(before + 1)
+    expect(menu?.template.map((entry) => entry.label)).toContain('Copy link')
+    expect(menu?.isOpen()).toBe(true)
+  })
+
+  it('sends back the sentence when the update has left the feed', async () => {
+    const h = await boot()
+
+    await expect(h.api.Popover.postMenu('at://did:plc:gone/app.bsky.feed.post/x')).rejects.toThrow(
+      'no longer in the feed'
+    )
+  })
+
+  it('refuses a right-click from any other origin', async () => {
+    const h = await boot()
+    frame(h).url = 'https://evil.example/'
+
+    await expect(h.api.Popover.postMenu('at://anything')).rejects.toThrow(
+      /did not pass origin validation/
+    )
   })
 })

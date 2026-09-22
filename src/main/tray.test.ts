@@ -1,20 +1,32 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { app, menus, nativeImage, openedExternally, trays } from '../test/electron'
+import { app, autoUpdater, menus, nativeImage, openedExternally, trays } from '../test/electron'
 import {
+  justPosted,
   makeAccount,
   makeNetworkSummary,
   makePost,
   makeSettings,
   makeState
 } from '../test/factories'
+import { withPlatform } from '../test/harness'
 import { PROBE_SOURCE_DID, probeAccount } from '../shared/network'
 import type { AppState, Settings } from '../shared/types'
 import { PopoverWindow } from './window'
 import { TrayController } from './tray'
 
-function build(): {
+/**
+ * A tray, created, with the popover having already reported that the OS is not asking
+ * for reduced motion.
+ *
+ * That report is the ordinary steady state — the popover is built at startup and reports
+ * on mount — but it is not the *initial* state, because `TrayController` assumes reduced
+ * motion until a page tells it otherwise. Saying so here rather than in each test keeps
+ * every test that is about something else reading the way it did; the tests that are
+ * about the assumption pass `reduceMotion: true` and say so.
+ */
+function build(options: { reduceMotion?: boolean } = {}): {
   tray: TrayController
   popover: PopoverWindow
   deps: {
@@ -22,6 +34,7 @@ function build(): {
     onMarkAllRead: ReturnType<typeof vi.fn>
     onRunNetworkChecks: ReturnType<typeof vi.fn>
     onShowNetwork: ReturnType<typeof vi.fn>
+    onDropText: ReturnType<typeof vi.fn>
     onQuit: ReturnType<typeof vi.fn>
   }
 } {
@@ -31,10 +44,12 @@ function build(): {
     onMarkAllRead: vi.fn(),
     onRunNetworkChecks: vi.fn(),
     onShowNetwork: vi.fn(),
+    onDropText: vi.fn(),
     onQuit: vi.fn()
   }
   const tray = new TrayController({ popover, ...deps })
   tray.create()
+  tray.setReducedMotion(options.reduceMotion ?? false)
   return { tray, popover, deps }
 }
 
@@ -52,7 +67,9 @@ function stateWithSeverity(severity: AppState['posts'][number]['severity']): App
   const account = makeAccount({ did: 'did:plc:a', handle: 'a.test' })
   return makeState({
     accounts: [account],
-    posts: [makePost({ authorDid: account.did, severity })]
+    // Stamped now: the icon reports what is happening, and a claim stops being what
+    // is happening once its author has been quiet for long enough.
+    posts: [makePost({ authorDid: account.did, severity, createdAt: justPosted() })]
   })
 }
 
@@ -88,7 +105,7 @@ describe('create', () => {
     try {
       build()
       expect(nativeImage.createFromPath).toHaveBeenCalledWith(
-        '/Applications/Statusky.app/Contents/Resources/assets/trayTemplate.png'
+        '/Applications/Statusky.app/Contents/Resources/resources/trayTemplate.png'
       )
     } finally {
       Object.defineProperty(process, 'resourcesPath', { value: original, configurable: true })
@@ -122,6 +139,7 @@ describe('update', () => {
       onMarkAllRead: vi.fn(),
       onRunNetworkChecks: vi.fn(),
       onShowNetwork: vi.fn(),
+      onDropText: vi.fn(),
       onQuit: vi.fn()
     })
     expect(() => tray.update(makeState())).not.toThrow()
@@ -370,6 +388,19 @@ describe('update', () => {
       expect(trays[0]!.title).toBe('3')
     })
 
+    /**
+     * Item 23. Without `monospacedDigit` the count is set in the menu bar's proportional
+     * font, so 9 and 10 are different widths and everything to the left of the icon —
+     * including the clock — shuffles sideways as the number changes.
+     */
+    it('writes the count in digits that all take the same width', () => {
+      const { tray } = build()
+      tray.update(unread('count'))
+
+      expect(trays[0]!.title).toBe('1')
+      expect(trays[0]!.titleOptions).toEqual({ fontType: 'monospacedDigit' })
+    })
+
     it('clears the count once everything is read', () => {
       const { tray } = build()
       tray.update(unread('count'))
@@ -408,6 +439,111 @@ describe('update', () => {
 
       expect(trays[0]!.image.path).toContain('trayIncident.png')
       expect(trays[0]!.title).toBe('')
+    })
+
+    /**
+     * Item 22. The heartbeat is ten icon swaps a second in peripheral vision for as long
+     * as anything is unread, and it is this app's *default* — so most of the people it
+     * reaches never chose it. `dot` says the same thing and holds still.
+     */
+    describe('reduced motion', () => {
+      it('degrades the beat to a badge when the OS asks for less motion', () => {
+        const { tray } = build({ reduceMotion: true })
+        tray.update(unread('beat'))
+
+        expect(trays[0]!.image.path).toContain('trayIncidentDot.png')
+        expect(trays[0]!.image.path).not.toMatch(/trayBeat/)
+      })
+
+      /**
+       * The safe default, and the one decision in this item that is not obvious. Nothing
+       * in the main process can read `prefers-reduced-motion`, so the answer comes from
+       * the popover — which has not loaded yet at startup, and never loads at all if its
+       * renderer has died three times. Being wrong the optimistic way flashes an icon at
+       * ten hertz at somebody who asked the whole system for that not to happen; being
+       * wrong this way costs a heartbeat for the second before the page reports in.
+       */
+      it('assumes reduced motion until a page has said otherwise', () => {
+        const popover = new PopoverWindow()
+        const tray = new TrayController({
+          popover,
+          onRefresh: vi.fn(),
+          onMarkAllRead: vi.fn(),
+          onRunNetworkChecks: vi.fn(),
+          onShowNetwork: vi.fn(),
+          onDropText: vi.fn(),
+          onQuit: vi.fn()
+        })
+        tray.create()
+
+        tray.update(unread('beat'))
+
+        expect(trays[0]!.image.path).toContain('trayIncidentDot.png')
+      })
+
+      it('starts beating the moment the page says motion is fine', () => {
+        const { tray } = build({ reduceMotion: true })
+        tray.update(unread('beat'))
+        expect(trays[0]!.image.path).toContain('trayIncidentDot.png')
+
+        // Applied to the state already in hand rather than waiting for the next poll,
+        // which is a whole interval away.
+        tray.setReducedMotion(false)
+
+        expect(trays[0]!.image.path).toMatch(/trayBeat\d+\.png$/)
+      })
+
+      it('stops an already-playing beat when the preference comes on', () => {
+        vi.useFakeTimers()
+        try {
+          const { tray } = build()
+          tray.update(unread('beat'))
+          expect(vi.getTimerCount()).toBe(1)
+
+          tray.setReducedMotion(true)
+
+          expect(trays[0]!.image.path).toContain('trayIncidentDot.png')
+          expect(vi.getTimerCount()).toBe(0)
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it('leaves the stored preference exactly where the user put it', () => {
+        const { tray } = build({ reduceMotion: true })
+        const state = unread('beat')
+        tray.update(state)
+
+        // The app declining to shout, not the app editing what was asked for: the very
+        // same object goes back out, with `beat` still on it.
+        expect(state.settings.trayUnreadStyle).toBe('beat')
+      })
+
+      it('does nothing with a report that has not changed', () => {
+        const { tray } = build()
+        tray.update(unread('beat'))
+        const setImage = vi.spyOn(trays[0]!, 'setImage')
+
+        tray.setReducedMotion(false)
+
+        expect(setImage).not.toHaveBeenCalled()
+      })
+
+      it('survives a report arriving before anything has been drawn', () => {
+        const { tray } = build()
+        expect(() => tray.setReducedMotion(true)).not.toThrow()
+      })
+
+      // `count` is a number, not motion, so the preference has nothing to say about it.
+      it('leaves the other styles alone', () => {
+        const { tray } = build({ reduceMotion: true })
+
+        tray.update(unread('count'))
+        expect(trays[0]!.title).toBe('1')
+
+        tray.update(unread('none'))
+        expect(trays[0]!.image.path).toContain('trayIncident.png')
+      })
     })
 
     it('says nothing at all when there is nothing unread', () => {
@@ -510,6 +646,48 @@ describe('the network checks', () => {
     expect(trays[0]!.tooltip).not.toContain('Network')
   })
 
+  // A tooltip saying the network was last checked forty minutes ago under a ten-minute
+  // setting reads as the app being broken, so the schedule says why it is behaving.
+  it('say when the machine itself is what is holding the schedule back', () => {
+    const { tray } = build()
+
+    tray.update({
+      ...calm(),
+      network: makeNetworkSummary({ health: 'operational', total: 26, reachable: 26 }),
+      settings: makeSettings()
+    })
+    expect(trays[0]!.tooltip).not.toContain('battery')
+
+    tray.update({
+      ...calm(),
+      network: makeNetworkSummary({
+        health: 'operational',
+        total: 26,
+        reachable: 26,
+        restraint: 'battery'
+      })
+    })
+    expect(trays[0]!.tooltip.split('\n').slice(1, 3)).toEqual([
+      'Network: 26 of 26 services reachable',
+      'Checking less often on battery'
+    ])
+
+    tray.update({
+      ...calm(),
+      network: makeNetworkSummary({ health: 'operational', restraint: 'thermal' })
+    })
+    expect(trays[0]!.tooltip).toContain('Checks paused while this machine is under load')
+  })
+
+  it('say nothing about the schedule when the checks are off entirely', () => {
+    const { tray } = build()
+    tray.update({
+      ...calm(),
+      network: makeNetworkSummary({ health: 'off', restraint: 'battery' })
+    })
+    expect(trays[0]!.tooltip).not.toContain('battery')
+  })
+
   it('stop counting once their source is hidden', () => {
     const { tray } = build()
     const state = calm()
@@ -551,9 +729,11 @@ describe('the context menu', () => {
       'separator',
       'Bluesky status page',
       'Blacksky status page',
+      'Northsky status page',
       'Atmosphere status (status.feeds.blue)',
       'separator',
-      `Version ${app.getVersion()}`,
+      // No update entry: there is nothing to offer while `stage` is `current`.
+      'About Statusky',
       'Quit Statusky'
     ])
   })
@@ -587,11 +767,13 @@ describe('the context menu', () => {
 
     menus[0]!.click('Bluesky status page')
     menus[0]!.click('Blacksky status page')
+    menus[0]!.click('Northsky status page')
     menus[0]!.click('Atmosphere status (status.feeds.blue)')
 
     expect(openedExternally).toEqual([
       'https://status.bsky.app',
       'https://status.blacksky.community',
+      'https://status.northsky.social',
       'https://status.feeds.blue'
     ])
   })
@@ -617,12 +799,314 @@ describe('the context menu', () => {
     expect(menus[1]!.item('Run network checks')?.enabled).toBe(false)
   })
 
-  it('disables the version entry and gives quit an accelerator', () => {
+  // It used to say `Version 0.1.0` and refuse to be clicked. The panel it opens now
+  // carries the version, the copyright and what the app is; see src/main/menu.ts.
+  it('opens the native About panel rather than stating the version and stopping', () => {
     build()
     trays[0]!.emit('right-click')
 
-    expect(menus[0]!.item(`Version ${app.getVersion()}`)?.enabled).toBe(false)
+    menus[0]!.click('About Statusky')
+
+    expect(app.showAboutPanel).toHaveBeenCalledTimes(1)
+    expect(menus[0]!.item('About Statusky')?.enabled).toBeUndefined()
+  })
+
+  it('gives quit an accelerator', () => {
+    build()
+    trays[0]!.emit('right-click')
+
     expect(menus[0]!.item('Quit Statusky')?.accelerator).toBe('CommandOrControl+Q')
+  })
+})
+
+/** State whose only interesting feature is what the app has learned about itself. */
+function withUpdate(stage: 'current' | 'available' | 'ready', version: string | null): AppState {
+  return makeState({ update: { stage, version } })
+}
+
+/**
+ * Item 27. The app's one piece of news about itself, and the one place it is allowed to
+ * say it out loud. An OS notification from Statusky means the Atmosphere is broken, and
+ * a version number is not that: put it through the same channel and the next real one
+ * costs less to ignore. The menu is already where this app's verbs live.
+ */
+describe('the update entry', () => {
+  it('is absent entirely while there is nothing to offer', () => {
+    const { tray } = build()
+    tray.update(withUpdate('current', null))
+    trays[0]!.emit('right-click')
+
+    expect(menus.at(-1)!.template.map((entry) => entry.label)).not.toContain('About Statusky ')
+    expect(menus.at(-1)!.item('Restart to update')).toBeUndefined()
+  })
+
+  /**
+   * macOS and Windows, where Squirrel has already fetched the build and the only thing
+   * left is a restart. `quitAndInstall` does not return: the process is handed over.
+   */
+  it('restarts into a downloaded update, naming the version', () => {
+    const { tray } = build()
+    tray.update(withUpdate('ready', '0.5.0'))
+    trays[0]!.emit('right-click')
+
+    menus.at(-1)!.click('Restart to update 0.5.0')
+
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1)
+  })
+
+  /** Squirrel.Windows does not always say which version it has downloaded. */
+  it('still offers the restart when the version is not known', () => {
+    const { tray } = build()
+    tray.update(withUpdate('ready', null))
+    trays[0]!.emit('right-click')
+
+    menus.at(-1)!.click('Restart to update')
+
+    expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Everywhere Squirrel cannot help. The label says *Download* rather than *Update*
+   * because nothing here updates anything: these builds come from a download page, not
+   * from a package repository, so replacing the copy is the user's to do.
+   */
+  it('sends the user to the download page where nothing can install for them', () => {
+    const { tray } = build()
+    tray.update(withUpdate('available', '0.2.0'))
+    trays[0]!.emit('right-click')
+
+    menus.at(-1)!.click('Download Statusky 0.2.0')
+
+    expect(openedExternally).toEqual(['https://github.com/cutenode/statusky/releases/latest'])
+    expect(autoUpdater.quitAndInstall).not.toHaveBeenCalled()
+  })
+
+  it('sits above About rather than at the top, because it is never why you opened this', () => {
+    const { tray } = build()
+    tray.update(withUpdate('available', '0.2.0'))
+    trays[0]!.emit('right-click')
+
+    const labels = menus.at(-1)!.template.map((entry) => entry.label ?? entry.type)
+    expect(labels.indexOf('Download Statusky 0.2.0')).toBe(labels.indexOf('About Statusky') - 2)
+    expect(labels[0]).toBe('Open Statusky')
+  })
+
+  it('goes away again if the news is withdrawn', () => {
+    const { tray } = build()
+    tray.update(withUpdate('available', '0.2.0'))
+    tray.update(withUpdate('current', null))
+    trays[0]!.emit('right-click')
+
+    expect(menus.at(-1)!.item('Download Statusky 0.2.0')).toBeUndefined()
+  })
+})
+
+/**
+ * Item 3. Most Linux desktops now speak StatusNotifierItem/AppIndicator rather than the
+ * old XEmbed tray, and under it a left click is never delivered to the application — so
+ * an item that has not set a menu through `setContextMenu` can end up with no way in at
+ * all. None of this is reachable from macOS except through `process.platform`, which is
+ * why the branch is written on it.
+ */
+describe('the Linux context menu', () => {
+  it('attaches the menu to the icon, so there is always a way in', async () => {
+    await withPlatform('linux', () => {
+      build()
+      const menu = trays[0]!.contextMenu
+      expect(menu).not.toBeNull()
+      expect(menu!.template.map((entry) => entry.label)).toContain('Open Statusky')
+    })
+  })
+
+  it('opens the popover from the attached menu', async () => {
+    await withPlatform('linux', () => {
+      const { popover } = build()
+      popover.create()
+
+      trays[0]!.contextMenu!.click('Open Statusky')
+
+      expect(popover.isVisible()).toBe(true)
+    })
+  })
+
+  /**
+   * The menu is built once here rather than per right-click, so it holds whatever
+   * `networkChecks` was at the time — and *Run network checks* would stay greyed out
+   * after the setting came back on, with no way to notice.
+   */
+  it('rebuilds the attached menu when the state it reads moves', async () => {
+    await withPlatform('linux', () => {
+      const { tray } = build()
+      tray.update(makeState({ settings: makeSettings({ networkChecks: false }) }))
+
+      const disabled = trays[0]!.contextMenu!.template.find(
+        (entry) => entry.label === 'Run network checks'
+      )
+      expect(disabled?.enabled).toBe(false)
+
+      tray.update(makeState({ settings: makeSettings({ networkChecks: true }) }))
+
+      const enabled = trays[0]!.contextMenu!.template.find(
+        (entry) => entry.label === 'Run network checks'
+      )
+      expect(enabled?.enabled).toBe(true)
+    })
+  })
+
+  /**
+   * The same hazard as the one above, for the other thing the menu now reads. A build
+   * that learned about a new release and never rebuilt this menu would be the one
+   * platform where the news never appears — and Linux is the platform that has nothing
+   * else to tell it, since Linux never self-updates.
+   */
+  it('rebuilds the attached menu when there is an update to offer', async () => {
+    await withPlatform('linux', () => {
+      const { tray } = build()
+      expect(trays[0]!.contextMenu!.item('Download Statusky 0.2.0')).toBeUndefined()
+
+      tray.update(makeState({ update: { stage: 'available', version: '0.2.0' } }))
+
+      expect(trays[0]!.contextMenu!.item('Download Statusky 0.2.0')).toBeDefined()
+    })
+  })
+
+  // A native menu object per state change, several times a minute while a sweep runs,
+  // for a menu whose only input has not moved.
+  it('does not rebuild it for a change the menu cannot see', async () => {
+    await withPlatform('linux', () => {
+      const { tray } = build()
+      tray.update(makeState({ unread: ['a'] }))
+      const built = trays[0]!.contextMenu
+
+      tray.update(makeState({ unread: ['a', 'b'] }))
+
+      expect(trays[0]!.contextMenu).toBe(built)
+    })
+  })
+
+  /**
+   * On macOS `setContextMenu` replaces the left-click toggle with a menu, and clicking
+   * the icon to get the popover is this app's entire interaction. Windows has a working
+   * right-click, so it keeps the pop-up-on-demand menu too.
+   */
+  it('is not attached on macOS or Windows', async () => {
+    /** Build a tray on `platform` and report whether a menu was attached to the icon. */
+    const attached = async (platform: NodeJS.Platform): Promise<unknown> => {
+      trays.length = 0
+      return withPlatform(platform, () => {
+        const { tray } = build()
+        // A state change too, since that is the other place the menu is set.
+        tray.update(makeState({ settings: makeSettings({ networkChecks: false }) }))
+        return trays[0]!.contextMenu
+      })
+    }
+
+    expect(await attached('darwin')).toBeNull()
+    expect(await attached('win32')).toBeNull()
+  })
+
+  // The old XEmbed trays still deliver both, and a session running one should still work.
+  it('keeps the click handlers, which some sessions do deliver', async () => {
+    await withPlatform('linux', () => {
+      const { popover } = build()
+      popover.create()
+
+      trays[0]!.emit('click')
+      expect(popover.isVisible()).toBe(true)
+
+      trays[0]!.emit('right-click')
+      expect(trays[0]!.poppedUpMenus).toHaveLength(1)
+    })
+  })
+})
+
+/**
+ * Dragging a handle onto the menu bar icon: the shortest path there is from "I should
+ * watch this" to watching it. Select `status.blacksky.community` in a browser, drag it
+ * to the icon, let go — no popover, no Accounts panel, no typing a handle by hand.
+ *
+ * All three events are macOS-only in Electron and are never emitted anywhere else, which
+ * is also why none of this is guarded by a platform check: there is nothing to guard.
+ */
+/** State whose only interesting feature is the number the icon is writing beside it. */
+function counted(count: number): AppState {
+  return makeState({
+    unread: Array.from({ length: count }, (_, index) => String(index)),
+    settings: makeSettings({ trayUnreadStyle: 'count' })
+  })
+}
+
+describe('dropping text on the icon', () => {
+  it('hands over whatever was dropped, exactly as it arrived', () => {
+    const { deps } = build()
+
+    trays[0]!.dropText('status.blacksky.community')
+
+    expect(deps.onDropText).toHaveBeenCalledWith('status.blacksky.community')
+  })
+
+  /**
+   * The icon itself is a health report, so it cannot be turned into a drop target for
+   * the length of a drag without saying something untrue about the network. A `+` beside
+   * it is what macOS uses everywhere else to mean "let go here and this gets added".
+   */
+  it('says the icon will take it, and puts the icon back afterwards', () => {
+    const { tray } = build()
+    tray.update(counted(1))
+    expect(trays[0]!.title).toBe('1')
+
+    trays[0]!.dragEnter()
+    expect(trays[0]!.title).toBe('+')
+
+    trays[0]!.dragLeave()
+    expect(trays[0]!.title).toBe('1')
+  })
+
+  it('puts the icon back when the drag ends in a drop', () => {
+    const { tray } = build()
+    tray.update(counted(1))
+
+    trays[0]!.dragEnter()
+    trays[0]!.dropText('status.bsky.app')
+
+    expect(trays[0]!.title).toBe('1')
+  })
+
+  /**
+   * A poll can land in the second a drag is over the icon. The cue has to survive it,
+   * and what comes back afterwards has to be the title the *new* state asked for rather
+   * than the one from before the drag.
+   */
+  it('keeps the cue through an update, and restores what the update asked for', () => {
+    const { tray } = build()
+    tray.update(counted(1))
+
+    trays[0]!.dragEnter()
+    tray.update(counted(4))
+    expect(trays[0]!.title).toBe('+')
+
+    trays[0]!.dragLeave()
+    expect(trays[0]!.title).toBe('4')
+  })
+
+  it('does not stack cues when the pointer moves around over the icon', () => {
+    const { tray } = build()
+    tray.update(counted(1))
+
+    trays[0]!.dragEnter()
+    trays[0]!.dragEnter()
+    trays[0]!.dragLeave()
+
+    expect(trays[0]!.title).toBe('1')
+  })
+
+  it('ignores a drag leaving that never entered', () => {
+    const { tray } = build()
+    tray.update(counted(1))
+
+    trays[0]!.dragLeave()
+
+    expect(trays[0]!.title).toBe('1')
   })
 })
 
@@ -635,6 +1119,7 @@ describe('bounds', () => {
       onMarkAllRead: vi.fn(),
       onRunNetworkChecks: vi.fn(),
       onShowNetwork: vi.fn(),
+      onDropText: vi.fn(),
       onQuit: vi.fn()
     })
     expect(tray.bounds()).toBeUndefined()

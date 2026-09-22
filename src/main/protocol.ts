@@ -1,6 +1,6 @@
 import { extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { net, protocol } from 'electron'
+import { net, protocol, session } from 'electron'
 
 /**
  * The popover's own scheme.
@@ -101,4 +101,38 @@ export function serveRenderer(root: string): void {
     headers.set('Content-Type', type)
     return new Response(response.body, { status: response.status, headers })
   })
+}
+
+/**
+ * Refuse every permission a page can ask this app for.
+ *
+ * Giving the renderer its own origin is only half of the answer to "what is this page
+ * allowed to do?" — the other half is Chromium's permission model, which decides on
+ * its own defaults when nothing configures it. A menu bar popover that shows a feed
+ * needs none of them: not the camera, not the microphone, not geolocation, not MIDI,
+ * not the clipboard to read from, and not renderer-side notifications, because the
+ * only notification path in this app is `src/main/notifications.ts` and it runs in the
+ * main process where it can be told what was clicked.
+ *
+ * Both handlers matter, and they answer different questions. `setPermissionRequestHandler`
+ * is the prompt — "may I?" — and `setPermissionCheckHandler` is the silent one Chromium
+ * runs to decide whether a capability is already held, which is what synchronous APIs
+ * like `navigator.permissions.query` and `Notification.permission` read. Denying only
+ * the first would leave a page believing it had been granted something it could then
+ * quietly use.
+ *
+ * This is the default session because the popover has no `partition`, so it is the
+ * session the popover actually loads in. Device access — WebUSB, WebHID, Web Serial —
+ * needs no handler of its own: with none installed Electron grants no device at all,
+ * and installing one here could only widen that.
+ */
+export function denyRendererPermissions(): void {
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
+    // The popover asks for nothing, so anything reaching here is either a bug or a
+    // page that is not ours. Either is worth a line; neither is worth a prompt.
+    console.warn(`Refused a permission the popover should never ask for: ${permission}`)
+    callback(false)
+  })
+
+  session.defaultSession.setPermissionCheckHandler(() => false)
 }

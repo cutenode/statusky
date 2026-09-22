@@ -22,7 +22,7 @@ const MINIFIED_DEVELOPMENT = `function o(a){if(!a.senderFrame||!a.senderFrame.ur
  * truthiness, so none of them may count as wiring.
  */
 const APP_CODE = `function resourcesDir() {
-  return app.isPackaged ? join(process.resourcesPath, "assets") : join(import.meta.dirname, "../../resources");
+  return app.isPackaged ? join(process.resourcesPath, "resources") : join(import.meta.dirname, "../../resources");
 }
 function watchRenderer(window) {
   if (!app.isPackaged) {
@@ -190,7 +190,7 @@ describe('assertProductionWiring', () => {
     )
   })
 
-  // electron-builder.ts leaves maps out of the package, and their embedded sources can
+  // forge.config.ts leaves maps out of the package, and their embedded sources can
   // be older than the code beside them.
   it('ignores source maps, which are not packed', async () => {
     const dir = await app({

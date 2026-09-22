@@ -3,6 +3,7 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import type { RollupLog } from 'rollup'
+import type { Plugin } from 'vite'
 
 const alias = { '@shared': resolve('src/shared'), '@ipc': resolve('src/ipc') }
 
@@ -16,6 +17,46 @@ const alias = { '@shared': resolve('src/shared'), '@ipc': resolve('src/ipc') }
 function quietGeneratedTypeImports(warning: RollupLog, warn: (warning: RollupLog) => void): void {
   if (warning.code === 'MISSING_EXPORT' && warning.id?.includes('/src/ipc/_internal/')) return
   warn(warning)
+}
+
+/**
+ * The renderer's own `<meta>` tag carries the policy the packaged window runs under, and
+ * it names no `worker-src`, so workers fall back to `script-src 'self'`.
+ *
+ * Vite's dev client wants one. When the HMR socket closes it polls for the server to
+ * come back from inside a SharedWorker built out of a blob URL, and reloads the page
+ * once the ping succeeds. Under the shipped policy that worker is blocked, the poll
+ * rejects, and the reload after it never runs: the window keeps rendering but stops
+ * taking updates, which is what "HMR just stopped working after a while" looks like from
+ * the outside. It takes a restarted dev server or a slept machine to get there, which is
+ * why it shows up in a long-running session and never on a fresh one.
+ *
+ * So the served copy gets the one extra source the dev client needs, and `apply: 'serve'`
+ * keeps this out of `electron-vite build` — index.html on disk, and in the asar, still
+ * carries the strict policy verbatim.
+ */
+export function allowDevServerWorkers(): Plugin {
+  return {
+    name: 'statusky:dev-server-csp',
+    apply: 'serve',
+    transformIndexHtml: {
+      order: 'pre',
+      handler: (html) =>
+        html.replace(
+          /(<meta[^>]+http-equiv="Content-Security-Policy"[^>]+content=")([^"]*)"/,
+          (_tag, lead: string, policy: string) => `${lead}${withBlobWorkers(policy)}"`
+        )
+    }
+  }
+}
+
+/** The given policy with `worker-src` — however it arrived — set to what Vite needs. */
+function withBlobWorkers(policy: string): string {
+  const directives = policy
+    .split(';')
+    .map((directive) => directive.trim())
+    .filter((directive) => directive !== '' && !directive.startsWith('worker-src'))
+  return [...directives, "worker-src 'self' blob:"].join('; ')
 }
 
 export default defineConfig({
@@ -52,7 +93,7 @@ export default defineConfig({
         ...alias
       }
     },
-    plugins: [tailwindcss(), svelte()],
+    plugins: [tailwindcss(), svelte(), allowDevServerWorkers()],
     build: {
       rollupOptions: {
         input: { index: resolve('src/renderer/index.html') },

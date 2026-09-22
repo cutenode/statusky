@@ -32,26 +32,36 @@ const blacksky = makeAccount({
   builtin: true
 })
 
+/**
+ * Fixture timestamps counted back from one instant fixed at import.
+ *
+ * The header only takes its colour from a claim recent enough to still be a report of
+ * the present, so a journey about an incident that is happening has to stamp it as
+ * happening. Fixing the instant keeps a re-pushed post identical to itself.
+ */
+const STARTED = Date.now()
+const ago = (minutes: number): string => new Date(STARTED - minutes * 60_000).toISOString()
+
 const outage = makePost({
   authorDid: bsky.did,
   authorHandle: bsky.handle,
   rkey: 'outage',
   text: 'We are investigating elevated error rates.',
-  createdAt: '2026-01-03T10:00:00Z'
+  createdAt: ago(20)
 })
 const resolved = makePost({
   authorDid: blacksky.did,
   authorHandle: blacksky.handle,
   rkey: 'resolved',
   text: 'This incident has been resolved.',
-  createdAt: '2026-01-03T09:00:00Z'
+  createdAt: ago(30)
 })
 
 const initial = {
   accounts: [bsky, blacksky],
   posts: [outage, resolved],
   unread: [outage.uri],
-  sync: { status: 'idle' as const, lastSyncedAt: '2026-01-03T10:05:00Z', error: null },
+  sync: { status: 'idle' as const, lastSyncedAt: ago(15), error: null },
   // These journeys are about the unread machinery, so they take the manual setting.
   // What the default does instead is its own journey, below.
   settings: makeSettings({ markReadOn: 'never' as const })
@@ -230,7 +240,7 @@ describe('a live incident arriving', () => {
       authorHandle: bsky.handle,
       rkey: 'calm',
       text: 'This incident has been resolved.',
-      createdAt: '2026-01-03T09:00:00Z'
+      createdAt: ago(30)
     })
     const { bridge, container, getByRole, getByText } = await renderApp(App, {
       accounts: [bsky],
@@ -245,7 +255,7 @@ describe('a live incident arriving', () => {
       authorHandle: bsky.handle,
       rkey: 'fresh',
       text: 'Major outage affecting the AppView.',
-      createdAt: '2026-01-03T11:00:00Z'
+      createdAt: ago(10)
     })
     await pushState(bridge, { posts: [fresh, calm], unread: [fresh.uri] })
 
@@ -256,7 +266,7 @@ describe('a live incident arriving', () => {
 })
 
 describe('a relay going down, measured', () => {
-  it('shows in the header, the alerts and the dashboard, each leading to the next', async () => {
+  it('shows in the header, the timeline and the dashboard, each leading to the next', async () => {
     const relay = SERVICES.find((s) => s.id === 'relay:europe.firehose.network')!
     const entry = probePost({
       service: relay,
@@ -293,7 +303,7 @@ describe('a relay going down, measured', () => {
         // Nothing unread at open, then the entry lands: the Timeline catches up on
         // sight, and this journey is about clicking the entry itself marking it read.
         unread: [],
-        // Manual, so the Alerts tab does not read it out from under the click either.
+        // Manual, so the Feed tab does not read it out from under the click either.
         settings: makeSettings({ markReadOn: 'never' as const }),
         snapshot,
         network: makeNetworkSummary({
@@ -312,15 +322,11 @@ describe('a relay going down, measured', () => {
     )
     expect(getByRole('tab', { name: 'Network' }).textContent).toContain('1')
 
-    // Nobody posted this, so it is filed under Alerts rather than in the feed.
-    await fireEvent.click(getByRole('tab', { name: 'Feed' }))
-    expect(queryByText(/europe\.firehose\.network is not responding from this computer/)).toBeNull()
-
-    await fireEvent.click(getByRole('tab', { name: 'Alerts' }))
+    // It lands on the Timeline, which is where the popover already is.
     expect(getByText(/europe\.firehose\.network is not responding from this computer/)).toBeTruthy()
 
     // And the entry links into the dashboard.
-    await fireEvent.click(getByLabelText('Show on the network dashboard'))
+    await fireEvent.click(getByLabelText(/show on the network dashboard$/))
     await settle()
     await settle()
 
@@ -329,6 +335,10 @@ describe('a relay going down, measured', () => {
     expect(row.querySelector('button')!.getAttribute('aria-expanded')).toBe('true')
     expect(row.textContent).toContain('No commits received')
     expect(row.textContent).toContain('Unreachable for')
+
+    // Nobody posted it, so the feed — which is what people wrote — leaves it out.
+    await fireEvent.click(getByRole('tab', { name: 'Feed' }))
+    expect(queryByText(/europe\.firehose\.network is not responding from this computer/)).toBeNull()
 
     // It comes back: the next push clears the headline.
     await pushState(bridge, {

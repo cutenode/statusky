@@ -186,6 +186,73 @@ describe('refresh on focus', () => {
   })
 })
 
+describe('telling main what only Chromium knows', () => {
+  // The checks would otherwise sit out their offline retry before noticing.
+  it('passes the connection coming back and going away straight on', async () => {
+    const { bridge } = await renderApp(App, populated)
+
+    await fireEvent(window, new Event('online'))
+    await fireEvent(window, new Event('offline'))
+
+    expect(vi.mocked(bridge.api.Popover.online).mock.calls).toEqual([[true], [false]])
+  })
+
+  it('stops reporting once unmounted', async () => {
+    const { bridge, unmount } = await renderApp(App, populated)
+    unmount()
+    await settle()
+    vi.mocked(bridge.api.Popover.online).mockClear()
+
+    await fireEvent(window, new Event('online'))
+
+    expect(bridge.api.Popover.online).not.toHaveBeenCalled()
+  })
+
+  // The tray icon is in the main process, where this cannot be read; see `Popover` in
+  // schemas/statusky.eipc.
+  it('reports the reduced-motion preference on mount', async () => {
+    setMediaQuery('(prefers-reduced-motion: reduce)', true)
+
+    const { bridge } = await renderApp(App, populated)
+
+    expect(bridge.api.Popover.reduceMotion).toHaveBeenCalledWith(true)
+  })
+
+  it('reports the preference changing while the popover is open', async () => {
+    setMediaQuery('(prefers-reduced-motion: reduce)', false)
+    const { bridge } = await renderApp(App, populated)
+    vi.mocked(bridge.api.Popover.reduceMotion).mockClear()
+
+    setMediaQuery('(prefers-reduced-motion: reduce)', true)
+    await settle()
+
+    expect(bridge.api.Popover.reduceMotion).toHaveBeenCalledWith(true)
+  })
+
+  it('stops reporting the preference once unmounted', async () => {
+    const { bridge, unmount } = await renderApp(App, populated)
+    unmount()
+    await settle()
+    vi.mocked(bridge.api.Popover.reduceMotion).mockClear()
+
+    setMediaQuery('(prefers-reduced-motion: reduce)', true)
+    await settle()
+
+    expect(bridge.api.Popover.reduceMotion).not.toHaveBeenCalled()
+  })
+
+  it('shows the Timeline when main asks to catch the user up', async () => {
+    const { bridge, getByRole } = await renderApp(App, populated)
+    await fireEvent.keyDown(window, { key: '3', metaKey: true })
+    expect(getByRole('tab', { name: 'Network' }).getAttribute('aria-selected')).toBe('true')
+
+    bridge.catchUp()
+    await settle()
+
+    expect(getByRole('tab', { name: 'Timeline' }).getAttribute('aria-selected')).toBe('true')
+  })
+})
+
 describe('the relative-time ticker', () => {
   it('advances timestamps without a timer per card', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -266,7 +333,7 @@ describe('the network tab', () => {
   it.each([
     ['metaKey', { metaKey: true }],
     ['ctrlKey', { ctrlKey: true }]
-  ])('selects each tab on %s+1 through +4', async (_name, modifier) => {
+  ])('selects each tab on %s+1 through +3', async (_name, modifier) => {
     const { getByRole } = await renderApp(App, { ...populated, snapshot })
 
     const select = async (key: string, name: string): Promise<void> => {
@@ -274,9 +341,8 @@ describe('the network tab', () => {
       expect(getByRole('tab', { name }).getAttribute('aria-selected')).toBe('true')
     }
 
-    await select('4', 'Network')
+    await select('3', 'Network')
     await select('2', 'Feed')
-    await select('3', 'Alerts')
     await select('1', 'Timeline')
   })
 
@@ -288,7 +354,7 @@ describe('the network tab', () => {
 
   it('re-measures on Cmd+R rather than polling', async () => {
     const { bridge } = await renderApp(App, { ...populated, snapshot })
-    await fireEvent.keyDown(window, { key: '4', metaKey: true })
+    await fireEvent.keyDown(window, { key: '3', metaKey: true })
     vi.mocked(bridge.api.Feed.refresh).mockClear()
 
     await fireEvent.keyDown(window, { key: 'r', metaKey: true })

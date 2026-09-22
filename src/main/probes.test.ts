@@ -133,6 +133,7 @@ describe('a relay', () => {
   it.each([
     ['stale', 'Newest commit is 2 hours old', null],
     ['silent', 'No commits received', expect.any(Number)],
+    ['unopened', 'Firehose connection timed out', expect.any(Number)],
     ['socket-error', 'Firehose connection failed', expect.any(Number)],
     ['close', 'Firehose connection closed (1006)', expect.any(Number)],
     ['error-frame', 'ConsumerTooSlow: Stream consumer too slow', expect.any(Number)],
@@ -159,6 +160,22 @@ describe('a relay', () => {
     network.setFirehose('bsky.network', 'other-then-fresh')
     const { checks } = await probe(id)
     expect(check(checks, 'firehose').ok).toBe(true)
+  })
+
+  /**
+   * The two silences a stream check can end in are different news, and the wording is
+   * the only thing that tells them apart on the dashboard: a relay that sent nothing,
+   * and a socket that never opened to hear it. A frame settles it either way — it is
+   * proof the connection came up, whatever the `open` event did or did not do.
+   */
+  it('counts a frame it skipped as proof the connection came up', async () => {
+    network.setFirehose('bsky.network', 'unopened')
+    const checks: ProbeCheck[] = []
+    const done = probeService(service(id), checks, context())
+    await vi.waitFor(() => expect(network.sockets).toHaveLength(1))
+    network.sockets[0]!.emit(frame({ op: 1, t: '#identity' }, { seq: 1, did: 'did:plc:someone' }))
+    await done
+    expect(check(checks, 'firehose').error).toBe('No commits received')
   })
 
   it('passes as soon as a fresh commit follows a stale one', async () => {
@@ -435,15 +452,18 @@ describe('an AppView', () => {
     expect(check(checks, '_health').error).toBe('Invalid response')
   })
 
-  it('accepts Blacksky’s empty health answer', async () => {
-    network.fail(
-      'api.blacksky.community',
-      { kind: 'respond', body: '{}', contentType: 'application/json' },
-      '/xrpc/_health'
-    )
-    const { checks } = await probe('appview:api.blacksky.community')
-    expect(check(checks, '_health').ok).toBe(true)
-  })
+  it.each(['api.blacksky.community', 'appview.wsocial.eu'])(
+    'accepts %s’s empty health answer',
+    async (appview) => {
+      network.fail(
+        appview,
+        { kind: 'respond', body: '{}', contentType: 'application/json' },
+        '/xrpc/_health'
+      )
+      const { checks } = await probe(`appview:${appview}`)
+      expect(check(checks, '_health').ok).toBe(true)
+    }
+  )
 
   it('fails a profile or handle lookup that returns no DID', async () => {
     network.fail(
@@ -885,7 +905,7 @@ describe('the indexes that report their own cursor', () => {
   })
 })
 
-describe('the identity and directory services', () => {
+describe('the identity services', () => {
   it('asks Slingshot for an identity and a record', async () => {
     const { checks } = await probe('slingshot:slingshot.microcosm.blue')
     expect(checks.map((c) => [c.label, c.ok])).toEqual([
@@ -911,76 +931,19 @@ describe('the identity and directory services', () => {
       error: 'Resolved to the wrong DID'
     })
   })
-
-  it('reads the fleet from one page and seven more hosts from the relay', async () => {
-    const { checks } = await probe('fleet:bsky.network')
-    expect(checks.slice(0, 2).map((c) => [c.label, c.kind, c.ok])).toEqual([
-      ['listHosts', 'http', true],
-      ['fleet status', 'derived', true]
-    ])
-    expect(checks.slice(2).map((c) => c.label)).toEqual([...CATALOGUE.directory.watched])
-    expect(checks.every((c) => c.ok)).toBe(true)
-  })
-
-  it('names the fleet hosts the relay is no longer hearing from', async () => {
-    const hosts = [
-      ...Array.from({ length: 58 }, (_, i) => ({
-        hostname: `host${i}.host.bsky.network`,
-        status: 'active'
-      })),
-      { hostname: 'amanita.host.bsky.network', status: 'offline' },
-      { hostname: 'morel.host.bsky.network', status: 'banned' }
-    ]
-    network.fail(
-      'bsky.network',
-      {
-        kind: 'respond',
-        body: JSON.stringify({ hosts }),
-        contentType: 'application/json'
-      },
-      '/xrpc/com.atproto.sync.listHosts'
-    )
-    const { checks } = await probe('fleet:bsky.network')
-    expect(check(checks, 'fleet status')).toMatchObject({
-      ok: false,
-      error: '2 of 60 fleet hosts not active: amanita, morel'
-    })
-  })
-
-  it('passes on the relay’s verdict about a host it never touched', async () => {
-    const watched = CATALOGUE.directory.watched[0]!
-    network.fail(
-      'bsky.network',
-      {
-        kind: 'respond',
-        body: JSON.stringify({ hostname: watched, status: 'offline' }),
-        contentType: 'application/json'
-      },
-      '/xrpc/com.atproto.sync.getHostStatus'
-    )
-    const { checks } = await probe('fleet:bsky.network')
-    expect(check(checks, watched)).toMatchObject({
-      ok: false,
-      error: 'Relay reports it offline'
-    })
-  })
-
-  it('treats an idle host as quiet rather than broken', async () => {
-    network.fail(
-      'bsky.network',
-      {
-        kind: 'respond',
-        body: JSON.stringify({ hostname: 'x', status: 'idle' }),
-        contentType: 'application/json'
-      },
-      '/xrpc/com.atproto.sync.getHostStatus'
-    )
-    const { checks } = await probe('fleet:bsky.network')
-    expect(check(checks, CATALOGUE.directory.watched[0]!).ok).toBe(true)
-  })
 })
 
 describe('Tangled', () => {
+  it('probes Tangled’s own PDS as a PDS', async () => {
+    const { checks } = await probe('pds:tngl.sh')
+    expect(checks.map((c) => [c.label, c.ok])).toEqual([
+      ['_health', true],
+      ['describeServer', true],
+      ['listRepos', true],
+      ['listRecords', true]
+    ])
+  })
+
   it('checks the appview’s static route and its real page', async () => {
     const { checks } = await probe('tangled-appview:tangled.org')
     expect(checks.map((c) => [c.label, c.ok])).toEqual([

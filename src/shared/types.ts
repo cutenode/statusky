@@ -102,7 +102,7 @@ export type ThemePreference = 'system' | 'light' | 'dark'
 export type TrayUnreadStyle = 'beat' | 'dot' | 'count' | 'none'
 
 /**
- * When a post stops being unread without being clicked, in the Feed and Alerts tabs.
+ * When a post stops being unread without being clicked, in the Feed tab.
  *
  * `open` is the default: showing a tab is taken as having read what is in it, which is
  * what a menu bar app is for — you click the icon because something is beating at you,
@@ -111,8 +111,8 @@ export type TrayUnreadStyle = 'beat' | 'dot' | 'count' | 'none'
  * exactly what they have clicked. `seen` marks each post once it has actually been on
  * screen, which is the pedantic version of `open` for a list longer than the popover.
  *
- * The Unread tab ignores this. It is the view the menu bar summons you to, it shows
- * nothing but what you have not read, and opening it is reading it.
+ * The Timeline ignores this. It is the view the menu bar summons you to, it leads with
+ * what you have not read, and opening it is reading it.
  */
 export type MarkReadTrigger = 'never' | 'open' | 'seen'
 
@@ -139,6 +139,16 @@ export interface Settings {
   networkChecks: boolean
   /** Seconds between network sweeps. */
   networkIntervalSec: number
+  /**
+   * A system-wide key combination that summons the popover, or `''` for none.
+   *
+   * Empty by default, and deliberately so: a global shortcut is taken from every other
+   * application on the machine for as long as this one is running, which is not a thing
+   * an app gets to do to somebody who never asked for it. The value is an Electron
+   * accelerator (`CommandOrControl+Shift+S`); whether the OS actually granted it is a
+   * separate question, answered by `AppState.shortcut` rather than by this field.
+   */
+  globalShortcut: string
 }
 
 export type WebhookState = 'off' | 'listening' | 'error'
@@ -160,6 +170,82 @@ export interface WebhookStatus {
   /** Deliveries accepted since launch — the fastest way to tell a tunnel is wired up. */
   deliveries: number
   lastDeliveryAt: string | null
+}
+
+/**
+ * What the OS actually did with `Settings.launchAtLogin`, as opposed to what was asked.
+ *
+ * Not persisted, and deliberately separate from the setting itself: the setting is the
+ * user's intention and stays theirs, while this is a fact about this machine right now,
+ * re-established at every launch. They are allowed to disagree, and when they do it is
+ * the only warning anybody gets — a login item that was refused produces no error the
+ * user ever sees, because the next thing that would have told them is the app that
+ * failed to start. See src/main/login-item.ts.
+ */
+export interface LoginItemStatus {
+  /** Whether the OS reports the login item as registered, read back rather than assumed. */
+  registered: boolean
+  /**
+   * Why `registered` disagrees with the setting, worded for a person to act on; null
+   * when the OS did what it was asked.
+   */
+  error: string | null
+}
+
+/**
+ * What the OS did with `Settings.globalShortcut`, as opposed to what was asked.
+ *
+ * The same split as `LoginItemStatus`, for the same reason: the setting is the user's
+ * intention and stays theirs, this is a fact about this machine right now. A global
+ * shortcut is first-come-first-served across the whole session — `globalShortcut.register`
+ * answers false when another application already owns the combination — and a refusal
+ * is otherwise completely silent, because the only symptom is a key that does nothing
+ * while some other app quietly handles it. Not persisted: whichever app got there first
+ * today says nothing about tomorrow, so this is re-established on every launch.
+ */
+export interface ShortcutStatus {
+  /** Whether the combination is registered to this app right now. */
+  registered: boolean
+  /** Why it is not, worded for a person to act on; null when it is, or when none is set. */
+  error: string | null
+}
+
+/**
+ * How far along this install is in becoming a newer Statusky.
+ *
+ * `current` is both "you are up to date" and "we have not been able to find out", and
+ * the two are deliberately not distinguished: the only thing either can honestly make
+ * the app say is nothing. `available` means a newer release exists and this build cannot
+ * install it for itself, so the user has to go and fetch it. `ready` means one has
+ * already been downloaded and is sitting there waiting for a restart.
+ *
+ * The two are mutually exclusive by construction rather than by accident — see
+ * src/main/update.ts, where exactly one of the two mechanisms is ever running.
+ */
+export type UpdateStage = 'current' | 'available' | 'ready'
+
+/**
+ * Whether there is a newer Statusky than this one, and whose job it is to do something
+ * about it.
+ *
+ * The same shape of thing as `LoginItemStatus` and `ShortcutStatus`: not a setting, not
+ * persisted, and re-established from scratch on every launch, because what was the newest
+ * release yesterday says nothing about today. Unlike those two it is not a refusal being
+ * reported — it is the one piece of news this app carries about itself.
+ *
+ * It deliberately does not travel as an OS notification. This app's banners mean *the
+ * Atmosphere is broken*, and spending that channel on "a new version is out" teaches
+ * people that the thing which pages them is routine. See src/main/update.ts.
+ */
+export interface UpdateStatus {
+  stage: UpdateStage
+  /**
+   * The version on offer, as the release names it — without the `v` a Git tag usually
+   * carries. Null while `current`, and also null when an update is `ready` but the
+   * platform would not say which version it is; see `downloadedVersion` in
+   * src/main/update.ts.
+   */
+  version: string | null
 }
 
 export type SyncStatus = 'idle' | 'syncing' | 'error'
@@ -184,7 +270,6 @@ export type ProbeKind =
   | 'ufos'
   | 'slingshot'
   | 'foryou'
-  | 'fleet'
   | 'tangled-appview'
   | 'bobbin'
   | 'hydrant'
@@ -270,6 +355,21 @@ export interface ServiceProbe {
   rechecking: boolean
 }
 
+/**
+ * Why the sweep schedule is not doing what the settings ask of it.
+ *
+ * A sweep is around a hundred small requests and five brief firehose connections, which
+ * is defensible every ten minutes on a desk and indefensible on a laptop at 9% — so the
+ * OS gets a say. `battery` widens the interval while the machine is unplugged. `thermal`
+ * holds scheduled sweeps back entirely while the machine is under thermal pressure or
+ * has had its CPU ceiling cut: piling a hundred TLS handshakes onto a machine already in
+ * trouble is rude, and the measurements would be about this laptop's throttling rather
+ * than about the services, which is the opposite of what this app claims to do.
+ *
+ * `thermal` outranks `battery`, because it is the stronger statement of the two.
+ */
+export type SweepRestraint = 'battery' | 'thermal'
+
 /** The whole dashboard. Pushed on its own channel, because it changes by the request. */
 export interface NetworkSnapshot {
   running: boolean
@@ -277,6 +377,14 @@ export interface NetworkSnapshot {
   finishedAt: string | null
   /** Every control check failed, so nothing else can be judged. */
   offline: boolean
+  /**
+   * What the machine's own condition is doing to the schedule, or null when nothing is.
+   *
+   * Carried so that a sweep that never ran is distinguishable from one that ran and
+   * found nothing. Without it, a dashboard last measured forty minutes ago under a
+   * ten-minute setting reads as the app being broken.
+   */
+  restraint: SweepRestraint | null
   services: ServiceProbe[]
 }
 
@@ -300,6 +408,12 @@ export interface NetworkSummary {
   community: string[]
   running: boolean
   lastSweepAt: string | null
+  /**
+   * What the machine's own condition is doing to the schedule; see `SweepRestraint`.
+   * Mirrored out of `NetworkSnapshot` so the tray tooltip and the header, which never
+   * see the dashboard itself, can say why the last sweep is older than the setting.
+   */
+  restraint: SweepRestraint | null
 }
 
 /** Main asking the popover to show the dashboard, optionally scrolled to one service. */
@@ -326,6 +440,12 @@ export interface AppState {
   }
   webhook: WebhookStatus
   network: NetworkSummary
+  /** Whether the OS really did register the login item, and why not when it did not. */
+  loginItem: LoginItemStatus
+  /** Whether the OS really did grant the global shortcut, and why not when it did not. */
+  shortcut: ShortcutStatus
+  /** Whether there is a newer Statusky, and whether this build can install it itself. */
+  update: UpdateStatus
   version: string
 }
 

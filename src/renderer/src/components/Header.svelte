@@ -5,6 +5,7 @@
   import { nav, TAB_ORDER, type Tab } from '$lib/nav.svelte'
   import { HEALTH_STYLE } from '$lib/severity'
   import { cn } from '$lib/utils'
+  import { HEALTH_NOUN } from '@shared/status'
   import { sinceTime } from '@shared/time'
   import type { Component } from 'svelte'
   import Activity from '@lucide/svelte/icons/activity'
@@ -14,7 +15,6 @@
   import Newspaper from '@lucide/svelte/icons/newspaper'
   import RefreshCw from '@lucide/svelte/icons/refresh-cw'
   import Settings from '@lucide/svelte/icons/settings'
-  import Siren from '@lucide/svelte/icons/siren'
   import Users from '@lucide/svelte/icons/users'
   import WifiOff from '@lucide/svelte/icons/wifi-off'
   import X from '@lucide/svelte/icons/x'
@@ -22,11 +22,37 @@
 
   let { now }: { now: number } = $props()
 
-  const style = $derived(HEALTH_STYLE[app.overall])
+  const line = $derived(app.headlineAt(now))
+  const style = $derived(HEALTH_STYLE[line.health])
   const syncing = $derived(app.sync.status === 'syncing')
   const lastSynced = $derived(
     app.sync.lastSyncedAt ? sinceTime(app.sync.lastSyncedAt, now) : 'never'
   )
+
+  /**
+   * Who the headline rests on, for the line underneath it.
+   *
+   * When the app is only repeating what somebody posted, saying so is the difference
+   * between a fact and a quotation — and the age is what lets the reader discount it,
+   * which is the judgement the app used to make badly on their behalf.
+   *
+   * A current claim needs only its source and its age: the headline above already names
+   * the stage. A stale one has to name the stage too, because the headline has stopped
+   * doing so — the verdict has moved to what this machine measured, and this line is
+   * what keeps the post on screen instead of dropping it silently.
+   *
+   * When nothing is being quoted, this is null and the line goes back to saying when we
+   * last looked.
+   */
+  const provenance = $derived.by(() => {
+    const source = line.attribution
+    if (!source) return null
+    const who = source.others > 0 ? `${source.name} +${source.others}` : source.name
+    const when = sinceTime(source.at, now)
+    return source.stale
+      ? `${who} reported ${HEALTH_NOUN[source.health]} ${when}`
+      : `${who} · ${when}`
+  })
 
   /** On the dashboard, refreshing means measuring again; everywhere else, polling. */
   const onNetwork = $derived(nav.view === 'network')
@@ -39,7 +65,7 @@
   }
 
   /**
-   * Four tabs in a 440px popover, so the labels go and the icons carry the names —
+   * Three tabs in a 440px popover, so the labels go and the icons carry the names —
    * each button keeps its label as `aria-label` and its tooltip, which is also what a
    * test asks for it by. Only the selected tab spells itself out, which fits because
    * exactly one ever does.
@@ -47,7 +73,6 @@
   const TABS: { id: Tab; label: string; icon: Component }[] = [
     { id: 'timeline', label: 'Timeline', icon: Inbox },
     { id: 'feed', label: 'Feed', icon: Newspaper },
-    { id: 'alerts', label: 'Alerts', icon: Siren },
     { id: 'network', label: 'Network', icon: Activity }
   ]
 
@@ -58,7 +83,6 @@
   function unreadFor(tab: Tab): number {
     if (tab === 'timeline') return app.unreadCount
     if (tab === 'feed') return app.feedUnreadCount
-    if (tab === 'alerts') return app.alertUnreadCount
     return 0
   }
 
@@ -81,14 +105,14 @@
   <div class="flex items-start justify-between gap-2">
     <div class="min-w-0">
       <div class="flex items-center gap-2">
-        <HealthDot health={app.overall} pulse />
+        <HealthDot health={line.health} pulse />
         <h1
           class={cn(
             'truncate text-[14px] leading-none font-semibold transition-colors',
             style.text
           )}
         >
-          {app.headline.label}
+          {line.label}
         </h1>
       </div>
       <p class="mt-1 truncate text-[11px] text-muted-foreground">
@@ -97,7 +121,11 @@
         {:else if app.sync.error}
           <span class="text-destructive">Refresh failed</span> · retried automatically
         {:else}
-          Last checked {lastSynced}
+          {#if provenance}
+            <span class={cn(line.attribution?.stale && 'italic')}>{provenance}</span>
+          {:else}
+            Last checked {lastSynced}
+          {/if}
           {#if app.unreadCount > 0}
             · <span class="font-medium text-primary">{app.unreadCount} unread</span>
           {/if}
@@ -212,15 +240,15 @@
     </p>
   {/if}
 
-  <!-- The four things the app is for. A detour to accounts or settings leaves all unselected. -->
+  <!-- The three things the app is for. A detour to accounts or settings leaves all unselected. -->
   <div
-    class="no-drag relative mt-2.5 grid grid-cols-4 gap-[2px] rounded-lg bg-muted/60 p-[3px]"
+    class="no-drag relative mt-2.5 grid grid-cols-3 gap-[2px] rounded-lg bg-muted/60 p-[3px]"
     role="tablist"
     aria-label="View"
   >
     <span
       class={cn(
-        'pointer-events-none absolute top-[3px] bottom-[3px] left-[3px] w-[calc(25%-3px)] rounded-md bg-elevated shadow-sm transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]',
+        'pointer-events-none absolute top-[3px] bottom-[3px] left-[3px] w-[calc(100%/3-3.333px)] rounded-md bg-elevated shadow-sm transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.2,0.8,0.2,1)]',
         nav.view !== nav.tab && 'opacity-0'
       )}
       style:transform={`translateX(calc(${tabIndex * 100}% + ${tabIndex * 2}px))`}

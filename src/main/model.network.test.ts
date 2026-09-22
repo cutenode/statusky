@@ -44,9 +44,8 @@ async function started(options: Parameters<typeof createHarness>[0] = {}): Promi
  * Take a relay down and wait until the checks believe it.
  *
  * `europe.firehose.network` on purpose: it carries exactly one service, so an outage there is one
- * feed entry. `bsky.network` carries two — the relay and the host directory that reads
- * its view of everybody else — and a test about one entry should not be asserting on
- * how many capabilities happen to share a hostname.
+ * feed entry, and a test about one entry should not be asserting on how many
+ * capabilities happen to share a hostname.
  */
 async function outage(h: Harness, host = 'europe.firehose.network'): Promise<void> {
   network.fail(host, { kind: 'network', message: 'net::ERR_CONNECTION_REFUSED' })

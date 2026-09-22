@@ -47,10 +47,12 @@ export interface TestBridge {
   pushNetwork(patch: Partial<NetworkSnapshot>): void
   /** Ask the popover to show the dashboard, as a notification click would. */
   reveal(serviceId: string | null): void
+  /** Ask the popover to show the Timeline, as a click on the away summary would. */
+  catchUp(): void
   /** Number of live `State.onChanged` subscriptions; 0 after a clean teardown. */
   listenerCount(): number
-  /** Live `Network.onChanged` and `Network.onReveal` subscriptions, likewise. */
-  networkListenerCount(): number
+  /** Live subscriptions on every other pushed channel, likewise. */
+  pushListenerCount(): number
   /** Restore the previous `window.statusky`, if any. */
   restore(): void
 }
@@ -73,6 +75,7 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
   const listeners = new Set<(next: AppState) => void>()
   const networkListeners = new Set<(next: NetworkSnapshot) => void>()
   const revealListeners = new Set<(target: NetworkReveal) => void>()
+  const catchUpListeners = new Set<() => void>()
   let secrets = 0
 
   const pushNetwork = (patch: Partial<NetworkSnapshot>): void => {
@@ -215,6 +218,22 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
       })
     },
 
+    Popover: {
+      online: vi.fn(async () => undefined),
+      reduceMotion: vi.fn(async () => undefined),
+      // The real one pops up a menu the OS drew, which a component test has no way to
+      // see and no business drawing. What a test asserts is that the right-click asked
+      // for one, and for which update.
+      postMenu: vi.fn(async () => undefined),
+
+      onCatchUp: vi.fn((listener: () => void) => {
+        catchUpListeners.add(listener)
+        return () => {
+          catchUpListeners.delete(listener)
+        }
+      })
+    },
+
     Host: {
       openExternal: vi.fn(async () => undefined),
       copyText: vi.fn(async () => undefined),
@@ -242,12 +261,16 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
     reveal(serviceId: string | null): void {
       for (const listener of Array.from(revealListeners)) listener({ serviceId })
     },
+    catchUp(): void {
+      for (const listener of Array.from(catchUpListeners)) listener()
+    },
     listenerCount: () => listeners.size,
-    networkListenerCount: () => networkListeners.size + revealListeners.size,
+    pushListenerCount: () => networkListeners.size + revealListeners.size + catchUpListeners.size,
     restore(): void {
       listeners.clear()
       networkListeners.clear()
       revealListeners.clear()
+      catchUpListeners.clear()
       if (previous === undefined) delete target.statusky
       else target.statusky = previous
     }

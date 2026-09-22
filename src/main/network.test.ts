@@ -656,6 +656,242 @@ describe('the schedule', () => {
   })
 })
 
+describe('a machine that is asleep', () => {
+  it('puts the schedule down without forgetting what it measured', async () => {
+    const built = build()
+    await start(built)
+
+    built.monitor.pause()
+
+    expect(built.service(RELAY).state).toBe('live')
+    expect(built.service(RELAY).history).toHaveLength(1)
+    expect(built.monitor.summary(true).health).toBe('operational')
+  })
+
+  it('does not re-arm the schedule for a settings change made while it sleeps', async () => {
+    const built = build()
+    await start(built)
+    built.monitor.pause()
+
+    const interval = vi.spyOn(globalThis, 'setInterval')
+    built.monitor.configure({ enabled: true, intervalSec: 900 })
+
+    expect(interval).not.toHaveBeenCalled()
+  })
+
+  it('ignores being paused twice, and resumed when it never slept', async () => {
+    const built = build()
+    await start(built)
+    built.monitor.pause()
+    built.monitor.pause()
+
+    const interval = vi.spyOn(globalThis, 'setInterval')
+    built.monitor.resume()
+    built.monitor.resume()
+
+    expect(interval).toHaveBeenCalledTimes(1)
+  })
+
+  it('picks the settings changed while it slept up when it wakes', async () => {
+    const built = build()
+    await start(built)
+    built.monitor.pause()
+    built.monitor.configure({ enabled: true, intervalSec: 900 })
+
+    const interval = vi.spyOn(globalThis, 'setInterval')
+    built.monitor.resume()
+
+    expect(interval.mock.calls.at(-1)?.[1]).toBe(900_000)
+  })
+
+  it('still forgets everything if the checks are switched off while it sleeps', async () => {
+    const built = build()
+    await start(built)
+    built.monitor.pause()
+
+    built.monitor.configure({ enabled: false, intervalSec: 600 })
+
+    expect(built.service(RELAY).state).toBe('pending')
+    expect(built.monitor.summary(false).health).toBe('off')
+  })
+
+  it('abandons the sweep it was in the middle of, as a lid closing would', async () => {
+    network.fail('eurosky.social', { kind: 'hang' })
+    network.setFirehose('bsky.network', 'silent')
+    const built = build({ timings: { firehoseWindowMs: 5_000 } })
+    built.monitor.configure({ enabled: true, intervalSec: 600 })
+    const sweep = built.monitor.run()
+    await vi.waitFor(() => expect(network.sockets).toHaveLength(1))
+
+    built.monitor.pause()
+    await sweep
+
+    expect(network.sockets[0]!.closed).toBe(true)
+    expect(built.monitor.snapshot().running).toBe(false)
+  })
+})
+
+describe('a machine on battery', () => {
+  it('waits out the battery floor rather than the setting', async () => {
+    const built = build({ timings: { batteryIntervalMs: 1_800_000 } })
+    await start(built)
+
+    const interval = vi.spyOn(globalThis, 'setInterval')
+    built.monitor.restrain('battery')
+
+    expect(interval.mock.calls.at(-1)?.[1]).toBe(1_800_000)
+  })
+
+  it('leaves a setting already gentler than the floor exactly where it was put', async () => {
+    const built = build({ timings: { batteryIntervalMs: 1_800_000 } })
+    built.monitor.configure({ enabled: true, intervalSec: 7200 })
+    await built.monitor.run()
+
+    const interval = vi.spyOn(globalThis, 'setInterval')
+    built.monitor.restrain('battery')
+
+    expect(interval.mock.calls.at(-1)?.[1]).toBe(7_200_000)
+  })
+
+  it('goes back to the setting on mains', async () => {
+    const built = build({ timings: { batteryIntervalMs: 1_800_000 } })
+    await start(built)
+    built.monitor.restrain('battery')
+
+    const interval = vi.spyOn(globalThis, 'setInterval')
+    built.monitor.restrain(null)
+
+    expect(interval.mock.calls.at(-1)?.[1]).toBe(600_000)
+  })
+
+  it('keeps sweeping, just less often', async () => {
+    const interval = vi.spyOn(globalThis, 'setInterval')
+    const built = build({ timings: { batteryIntervalMs: 1_800_000 } })
+    await start(built)
+    built.monitor.restrain('battery')
+    network.requests.length = 0
+
+    const tick = interval.mock.calls.at(-1)![0] as () => void
+    tick()
+    await built.monitor.run()
+
+    expect(network.requestsTo('bsky.network').length).toBeGreaterThan(0)
+  })
+
+  it('says so on the dashboard and in the summary', async () => {
+    const built = build()
+    await start(built)
+
+    built.monitor.restrain('battery')
+
+    expect(built.monitor.snapshot().restraint).toBe('battery')
+    expect(built.monitor.summary(true).restraint).toBe('battery')
+    expect(built.snapshots.at(-1)?.restraint).toBe('battery')
+  })
+
+  it('ignores being told what it already knows', async () => {
+    const built = build()
+    await start(built)
+    built.monitor.restrain('battery')
+    const pushed = built.snapshots.length
+
+    built.monitor.restrain('battery')
+
+    expect(built.snapshots).toHaveLength(pushed)
+  })
+})
+
+describe('a machine that is struggling', () => {
+  it('lets the schedule come round and go away again without sweeping', async () => {
+    const interval = vi.spyOn(globalThis, 'setInterval')
+    const built = build()
+    await start(built)
+    built.monitor.restrain('thermal')
+    network.requests.length = 0
+
+    const tick = interval.mock.calls.at(-1)![0] as () => void
+    tick()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(network.requests).toHaveLength(0)
+    expect(built.service(RELAY).history).toHaveLength(1)
+  })
+
+  it('still sweeps when the user asks for it themselves', async () => {
+    const built = build()
+    await start(built)
+    built.monitor.restrain('thermal')
+    network.requests.length = 0
+
+    await built.monitor.run()
+
+    expect(network.requestsTo('bsky.network').length).toBeGreaterThan(0)
+  })
+
+  it('does not sweep at once when the checks are switched on under load', async () => {
+    const built = build()
+    built.monitor.restrain('thermal')
+    built.monitor.configure({ enabled: true, intervalSec: 600 })
+
+    expect(network.requests).toHaveLength(0)
+  })
+
+  it('outranks the battery it is almost certainly also on', async () => {
+    const built = build()
+    await start(built)
+
+    built.monitor.restrain('thermal')
+
+    expect(built.monitor.snapshot().restraint).toBe('thermal')
+  })
+})
+
+describe('being told the connection is back', () => {
+  it('asks the controls now instead of waiting out the retry', async () => {
+    const built = build({ timings: { offlineRetryMs: 600_000 } })
+    await start(built)
+    network.goOffline()
+    await built.monitor.run()
+    network.goOnline()
+    network.requests.length = 0
+
+    built.monitor.connectionRestored()
+
+    await vi.waitFor(() => expect(built.monitor.snapshot().offline).toBe(false))
+    // The controls answer first and the full sweep follows on their verdict.
+    await vi.waitFor(() => expect(built.service(RELAY).history).toHaveLength(2))
+  })
+
+  it('does nothing when the checks never thought we were offline', async () => {
+    const built = build({ timings: { offlineRetryMs: 600_000 } })
+    await start(built)
+    network.requests.length = 0
+
+    built.monitor.connectionRestored()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(network.requests).toHaveLength(0)
+  })
+
+  it('does nothing while the machine is asleep, or the checks are off', async () => {
+    const built = build({ timings: { offlineRetryMs: 600_000 } })
+    await start(built)
+    network.goOffline()
+    await built.monitor.run()
+    built.monitor.pause()
+    network.goOnline()
+    network.requests.length = 0
+
+    built.monitor.connectionRestored()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(network.requests).toHaveLength(0)
+
+    const off = build()
+    off.monitor.connectionRestored()
+    expect(network.requests).toHaveLength(0)
+  })
+})
+
 describe('the concurrency cap', () => {
   it('never has more services in flight than it is allowed', async () => {
     let inFlight = 0

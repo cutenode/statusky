@@ -74,8 +74,18 @@ describe('decode', () => {
 
   it('reads a whole firehose commit body', () => {
     const [header, rest] = decodeFirst(new Uint8Array(commitFrame('2026-01-01T00:00:00Z')))
-    expect(header).toEqual({ op: 1, t: '#commit' })
-    expect(decode(rest)).toMatchObject({ time: '2026-01-01T00:00:00Z', seq: 1 })
+    expect(header).toEqual({ t: '#commit', op: 1 })
+    // The fixture is a real frame, so this reads the parts nothing in the app looks at:
+    // a sequence number past 2^32, the CAR block bytes, and the CID links inside and
+    // beside the operations. They are where a decoder falls over, and reading the `time`
+    // out of a body means having read past all of them.
+    expect(decode(rest)).toMatchObject({
+      time: '2026-01-01T00:00:00Z',
+      seq: 33_825_347_653,
+      blocks: expect.any(Uint8Array),
+      commit: { $cid: expect.any(Uint8Array) },
+      ops: [{ cid: { $cid: expect.any(Uint8Array) }, action: 'create' }]
+    })
   })
 })
 

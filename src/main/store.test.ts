@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { BUILTIN_ACCOUNTS, DEFAULT_SETTINGS } from '../shared/defaults'
 import { unreadUris } from './state'
-import { createStore, reconcile } from './store'
+import { createStore, readWebhookSecret, reconcile, writeWebhookSecret } from './store'
 import FakeElectronStore, { seedStore } from '../test/electron-store'
 import type { PersistedShape } from './store'
 import { makeAccount, makePost } from '../test/factories'
+import { SEALED_PREFIX, safeStorage } from '../test/electron'
 
 describe('createStore', () => {
   it('seeds the builtin accounts and default settings on a fresh install', () => {
@@ -17,8 +18,20 @@ describe('createStore', () => {
     expect(store.get('posts')).toEqual([])
     expect(store.get('read')).toEqual({ cursors: {}, above: [] })
     expect(store.get('cursors')).toEqual({})
-    expect(store.get('webhookSecret')).toMatch(/^[\w-]{20,}$/)
-    expect(store.get('schemaVersion')).toBe(4)
+    expect(readWebhookSecret(store as never)).toMatch(/^[\w-]{20,}$/)
+    expect(store.get('schemaVersion')).toBe(5)
+  })
+
+  // The one thing that must not happen on the way up: `safeStorage` is synchronous,
+  // and a Keychain round trip here hangs `bootstrap()` before anything is polled.
+  it('opens no credential store on the way up', () => {
+    seedStore('statusky', { schemaVersion: 4, webhookSecret: 'secret-from-schema-4' })
+
+    createStore()
+
+    expect(safeStorage.isEncryptionAvailable).not.toHaveBeenCalled()
+    expect(safeStorage.encryptString).not.toHaveBeenCalled()
+    expect(safeStorage.decryptString).not.toHaveBeenCalled()
   })
 
   it('names the config file so it can be found on disk', () => {
@@ -119,7 +132,7 @@ describe('reconcile', () => {
   it('stamps the current schema version', () => {
     const store = bare({})
     reconcile(store as never)
-    expect(store.get('schemaVersion')).toBe(4)
+    expect(store.get('schemaVersion')).toBe(5)
   })
 
   it('carries a schema 1 tray-count preference over to the tray style', () => {
@@ -316,5 +329,188 @@ describe('a config with no accounts array at all', () => {
     reconcile(store as never)
 
     expect(store.get('accounts').map((a) => a.did)).toEqual(BUILTIN_ACCOUNTS.map((a) => a.did))
+  })
+})
+
+/** A config file with exactly `data` in it, and no defaults to answer a read. */
+function secretStore(data: Partial<PersistedShape> = {}): FakeElectronStore<PersistedShape> {
+  const store = new FakeElectronStore<PersistedShape>({
+    name: `secret-${Math.random().toString(36).slice(2)}`
+  })
+  store.set(data as Record<string, unknown>)
+  return store
+}
+
+/** What the sealed key actually holds, once the envelope is off. */
+function unsealed(store: FakeElectronStore<PersistedShape>): string {
+  return Buffer.from(String(store.data.webhookSecretEncrypted), 'base64').toString('utf8')
+}
+
+describe('the webhook secret', () => {
+  it('mints one on a fresh install and seals it before it reaches the disk', () => {
+    const store = secretStore()
+
+    const secret = readWebhookSecret(store as never)
+
+    expect(secret).toMatch(/^[\w-]{20,}$/)
+    expect(unsealed(store)).toBe(`${SEALED_PREFIX}${secret}`)
+    // The whole point: nothing readable is left in statusky.json.
+    expect(store.data).not.toHaveProperty('webhookSecret')
+    expect(JSON.stringify(store.data)).not.toContain(secret)
+  })
+
+  // Regenerating instead would silently break whatever tunnel the user had already
+  // pointed at their endpoint, with nothing anywhere to say why deliveries stopped.
+  // The re-sealing happens at the first read rather than during `reconcile()`, so an
+  // install that never turns the receiver on is never migrated — and never pays for a
+  // credential store trip it has no use for. See the test below.
+  it('carries a schema 4 plaintext secret into the credential store unchanged', () => {
+    const store = secretStore({ schemaVersion: 4, webhookSecret: 'secret-from-schema-4' })
+    reconcile(store as never)
+
+    expect(readWebhookSecret(store as never)).toBe('secret-from-schema-4')
+
+    expect(unsealed(store)).toBe(`${SEALED_PREFIX}secret-from-schema-4`)
+    expect(store.data).not.toHaveProperty('webhookSecret')
+  })
+
+  // `reconcile()` runs inside `createStore()`, early in `bootstrap()` and on the main
+  // thread, where a `safeStorage` read is a synchronous round trip into the OS
+  // credential store: on macOS an ad-hoc-signed build can be left parked behind a modal
+  // Keychain prompt with its tray up and nothing ever polled.
+  it('leaves a schema 4 secret where it is until something asks for it', () => {
+    const store = secretStore({ schemaVersion: 4, webhookSecret: 'secret-from-schema-4' })
+
+    reconcile(store as never)
+
+    expect(safeStorage.isEncryptionAvailable).not.toHaveBeenCalled()
+    expect(safeStorage.encryptString).not.toHaveBeenCalled()
+    expect(safeStorage.decryptString).not.toHaveBeenCalled()
+    expect(store.data.webhookSecret).toBe('secret-from-schema-4')
+  })
+
+  it('reads a sealed secret back out again', () => {
+    const store = secretStore()
+    writeWebhookSecret(store as never, 'round-trip')
+
+    // A second store over the same file: nothing is remembered in this process.
+    const reopened = secretStore({
+      webhookSecretEncrypted: store.data.webhookSecretEncrypted as string
+    })
+
+    expect(readWebhookSecret(reopened as never)).toBe('round-trip')
+  })
+
+  // Not an error. On Linux `isEncryptionAvailable()` is false until a secret service
+  // is running and reachable, and refusing to start there would be the worse answer.
+  it('keeps the secret in the clear on a machine with no credential store', () => {
+    safeStorage.available = false
+    const store = secretStore()
+
+    const secret = readWebhookSecret(store as never)
+
+    expect(store.data.webhookSecret).toBe(secret)
+    expect(store.data).not.toHaveProperty('webhookSecretEncrypted')
+  })
+
+  it('seals a secret that was kept in the clear as soon as a credential store appears', () => {
+    safeStorage.available = false
+    const store = secretStore()
+    const secret = readWebhookSecret(store as never)
+
+    // The secret service is running this time. A new store, because the old one has
+    // the answer in memory and will never ask again.
+    safeStorage.available = true
+    const reopened = secretStore({ webhookSecret: store.data.webhookSecret as string })
+
+    expect(readWebhookSecret(reopened as never)).toBe(secret)
+    expect(reopened.data).not.toHaveProperty('webhookSecret')
+  })
+
+  // A config carried to another machine, or one whose secret service has been reset.
+  // The URL inside that ciphertext can never be shown to the user again, so there is
+  // nothing to preserve — only something to say.
+  it('mints a new secret when the sealed one cannot be opened, and says so', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = secretStore({
+      webhookSecretEncrypted: Buffer.from('not ours', 'utf8').toString('base64')
+    })
+
+    const secret = readWebhookSecret(store as never)
+
+    expect(secret).toMatch(/^[\w-]{20,}$/)
+    expect(unsealed(store)).toBe(`${SEALED_PREFIX}${secret}`)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not be decrypted'))
+    warn.mockRestore()
+  })
+
+  it('mints a new secret when the credential store that sealed it has gone away', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = secretStore()
+    const original = readWebhookSecret(store as never)
+
+    safeStorage.available = false
+    const reopened = secretStore({
+      webhookSecretEncrypted: store.data.webhookSecretEncrypted as string
+    })
+    const secret = readWebhookSecret(reopened as never)
+
+    expect(secret).not.toBe(original)
+    expect(reopened.data.webhookSecret).toBe(secret)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not be decrypted'))
+    warn.mockRestore()
+  })
+
+  // A credential store that answers yes and then refuses the write. Starting without a
+  // webhook endpoint would be a worse outcome than storing it the way schema 4 did.
+  it('falls back to the clear when the credential store refuses the write', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    safeStorage.encryptThrows = new Error('the keyring is locked')
+    const store = secretStore()
+
+    const secret = readWebhookSecret(store as never)
+
+    expect(store.data.webhookSecret).toBe(secret)
+    expect(store.data).not.toHaveProperty('webhookSecretEncrypted')
+    expect(warn).toHaveBeenCalledWith(
+      'The OS credential store refused to hold the webhook secret:',
+      expect.any(Error)
+    )
+    warn.mockRestore()
+  })
+
+  // Every request to the receiver asks for this, and every `AppState` carries the
+  // endpoint URL built from it. One trip through the OS is all it may cost.
+  it('answers later reads from memory rather than from the credential store', () => {
+    const store = secretStore()
+    const secret = readWebhookSecret(store as never)
+    safeStorage.decryptString.mockClear()
+    safeStorage.encryptString.mockClear()
+
+    expect(readWebhookSecret(store as never)).toBe(secret)
+    expect(readWebhookSecret(store as never)).toBe(secret)
+
+    expect(safeStorage.decryptString).not.toHaveBeenCalled()
+    expect(safeStorage.encryptString).not.toHaveBeenCalled()
+  })
+
+  it('replaces the secret in place when a new one is minted', () => {
+    const store = secretStore()
+    readWebhookSecret(store as never)
+
+    writeWebhookSecret(store as never, 'the-new-one')
+
+    expect(readWebhookSecret(store as never)).toBe('the-new-one')
+    expect(unsealed(store)).toBe(`${SEALED_PREFIX}the-new-one`)
+  })
+
+  it('leaves exactly one representation behind, whichever one it used', () => {
+    const store = secretStore({ webhookSecret: 'in the clear' })
+    writeWebhookSecret(store as never, 'sealed now')
+    expect(Object.keys(store.data)).not.toContain('webhookSecret')
+
+    safeStorage.available = false
+    writeWebhookSecret(store as never, 'clear again')
+    expect(Object.keys(store.data)).not.toContain('webhookSecretEncrypted')
   })
 })

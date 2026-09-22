@@ -63,6 +63,18 @@ export function makeWebhookStatus(overrides: Partial<WebhookStatus> = {}): Webho
   }
 }
 
+/**
+ * A timestamp a moment ago, for a fixture that is meant to be happening now.
+ *
+ * `makePost` dates a post to a fixed instant, which is what keeps ordering and
+ * formatting assertions stable. Health needs the other thing: a claim only speaks for
+ * the present while it is recent, so a test about an incident happening *now* has to
+ * say when — see `deriveClaim`.
+ */
+export function justPosted(minutesAgo = 1): string {
+  return new Date(Date.now() - minutesAgo * 60_000).toISOString()
+}
+
 export interface PostOverrides extends Partial<StatusPost> {
   /** Convenience: derive `uri`, `rkey` and `url` from a record key. */
   rkey?: string
@@ -159,6 +171,7 @@ export function makeNetworkSummary(overrides: Partial<NetworkSummary> = {}): Net
     community: [],
     running: false,
     lastSweepAt: null,
+    restraint: null,
     ...overrides
   }
 }
@@ -197,6 +210,7 @@ export function makeSnapshot(overrides: Partial<NetworkSnapshot> = {}): NetworkS
     startedAt: null,
     finishedAt: null,
     offline: false,
+    restraint: null,
     services: [],
     ...overrides
   }
@@ -211,6 +225,9 @@ export function makeState(overrides: Partial<AppState> = {}): AppState {
     sync: { status: 'idle', lastSyncedAt: '2026-01-01T12:00:00.000Z', error: null },
     webhook: makeWebhookStatus(),
     network: makeNetworkSummary(),
+    loginItem: { registered: false, error: null },
+    shortcut: { registered: false, error: null },
+    update: { stage: 'current', version: null },
     version: '0.1.0-test',
     ...overrides
   }

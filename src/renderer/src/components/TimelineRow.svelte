@@ -17,9 +17,9 @@
    *
    * Deliberately less than a `PostCard` — no avatar, no rich text, no embed, no
    * per-post read controls. This view exists to be read in one pass, so everything
-   * that invites you to linger on a single update belongs in Feed or Alerts instead.
-   * What survives is what tells you whether to care: the colour, the source and enough
-   * prose to recognise the incident.
+   * that invites you to linger on a single update belongs in Feed instead. What
+   * survives is what tells you whether to care: the colour, the source and enough prose
+   * to recognise the incident.
    *
    * The severity is drawn twice on purpose, and neither is redundant. The node is what
    * you scan — a colour and a glyph at a fixed x, so a column of them reads as a shape

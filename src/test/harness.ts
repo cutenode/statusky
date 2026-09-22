@@ -87,6 +87,8 @@ export interface Harness {
   readonly networkPushes: NetworkSnapshot[]
   /** Every service the popover was asked to reveal (null: the dashboard itself). */
   readonly revealed: (string | null)[]
+  /** Every piece of text dragged onto the menu bar icon. */
+  readonly dropped: string[]
   state(): AppState
   /** The tray double backing the `TrayController`, if one was created. */
   trayIcon(): Tray | null
@@ -174,12 +176,24 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   const notified: StatusPost[][] = []
   const networkPushes: NetworkSnapshot[] = []
   const revealed: (string | null)[] = []
+  /** Every piece of text dragged onto the tray icon, in order. */
+  const dropped: string[] = []
   const quit = vi.fn(() => {
     model.stop()
     tray?.destroy()
   })
 
-  const ipc = registerIpc({ model, popover, onQuit: quit })
+  const ipc = registerIpc({
+    model,
+    popover,
+    onQuit: quit,
+    // `tray` is declared below and read when this is called rather than now, the same
+    // way `quit` above reaches it. A harness built without a tray simply drops the
+    // report, which is what the real app does before `tray.create()` too.
+    onReduceMotion: (reduce) => tray?.setReducedMotion(reduce),
+    // Declared below and read when called, the same way `quit` and `tray` are.
+    onShowNetwork: (serviceId) => showNetwork(serviceId)
+  })
   const showNetwork = (serviceId: string | null): void => {
     popover.show()
     revealed.push(serviceId)
@@ -201,7 +215,11 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   model.on('notify', (posts) => {
     notified.push(posts)
     if (wireNotifications) {
-      notifyPosts(posts, model.settings, { onOpened: (post) => model.markRead([post.uri]) })
+      notifyPosts(posts, model.settings, {
+        onOpened: (post) => model.markRead([post.uri]),
+        onMarkRead: (post) => model.markRead([post.uri]),
+        onShowNetwork: (serviceId) => showNetwork(serviceId)
+      })
     }
   })
 
@@ -212,6 +230,12 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
         onMarkAllRead: () => model.markAllRead(),
         onRunNetworkChecks: () => void model.runNetworkChecks(),
         onShowNetwork: () => showNetwork(null),
+        // What the real app does with dropped text, minus the dialog: the harness has
+        // no screen to put one on, and `dropped` is what a test asserts against.
+        onDropText: (text) => {
+          dropped.push(text)
+          void model.addAccount(text).catch(() => undefined)
+        },
         onQuit: quit
       })
     : null
@@ -234,6 +258,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     notified,
     networkPushes,
     revealed,
+    dropped,
     state: () => model.getState(),
     trayIcon: () => trays.at(-1) ?? null,
     browserWindow: () => popover.browserWindow as unknown as BrowserWindow | null,
@@ -268,7 +293,10 @@ export function createModel(
       posts: [],
       read: { cursors: {}, above: [] },
       cursors: {},
+      // A secret already in the clear, the way schema 4 left it: reading it is what
+      // moves it into the OS credential store. See `readWebhookSecret`.
       webhookSecret: 'test-webhook-secret',
+      webhookSecretEncrypted: '',
       ...overrides
     }
   })

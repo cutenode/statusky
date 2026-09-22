@@ -64,7 +64,14 @@ export type HttpFailure =
 export type FirehoseBehaviour =
   | 'fresh'
   | 'stale'
+  /** Connected, and then nothing: the failure a health endpoint cannot show you. */
   | 'silent'
+  /**
+   * The opening request never finishes — no open, no error, no close. What a packaged
+   * build did to every stream at once when its cookie store would not load; see the
+   * cookie encryption fuse in forge.config.ts.
+   */
+  | 'unopened'
   | 'socket-error'
   | 'close'
   | 'error-frame'
@@ -98,6 +105,11 @@ export class FakeSocket implements ProbeSocket {
 
   close(): void {
     this.closed = true
+  }
+
+  /** The handshake finished, which is what every behaviour that speaks at all starts with. */
+  open(): void {
+    this.events.dispatchEvent(new Event('open'))
   }
 
   emit(data: unknown): void {
@@ -296,6 +308,10 @@ export class FakeNetwork implements ProbeTransport {
     // The probe attaches its handlers straight after this returns; speak once it has.
     queueMicrotask(() => {
       if (this.offline) return socket.fail()
+      // Everything that gets as far as speaking has an opening handshake behind it. The
+      // two that do not are the point of this line: a socket that fails on the way up,
+      // and one whose handshake simply never finishes.
+      if (behaviour !== 'unopened' && behaviour !== 'socket-error') socket.open()
       switch (behaviour) {
         case 'fresh':
           return socket.emit(fresh())
@@ -323,7 +339,7 @@ export class FakeNetwork implements ProbeTransport {
           )
           return socket.emit(fresh())
         default:
-          // 'silent': connected, and nothing ever arrives.
+          // 'silent': connected, and nothing ever arrives. 'unopened': not even that.
           return undefined
       }
     })
@@ -358,13 +374,6 @@ export class FakeNetwork implements ProbeTransport {
         return json({ status: 'ok', version: '0.4.0' })
       case 'com.atproto.sync.listHosts':
         return json(this.hostPage(params))
-      case 'com.atproto.sync.getHostStatus':
-        return json({
-          hostname: params.get('hostname'),
-          seq: this.tick('seq'),
-          accountCount: 42,
-          status: 'active'
-        })
       case 'com.atproto.server.describeServer':
         return json({ did: `did:web:${host}` })
       case 'com.atproto.sync.listRepos':
@@ -573,18 +582,14 @@ export class FakeNetwork implements ProbeTransport {
   }
 
   /**
-   * A page of `listHosts`. Enough of Bluesky's fleet to clear the check's sanity floor,
-   * all active, with one host outside the fleet for the check to ignore.
+   * A page of `listHosts`, all active.
    */
   private hostPage(params: URLSearchParams): unknown {
     const limit = Number(params.get('limit') ?? 200)
     if (params.get('cursor')) return { hosts: [] }
     const total = Math.min(Number.isFinite(limit) ? limit : 200, 60)
     const hosts = Array.from({ length: Math.max(1, total) }, (_, index) => ({
-      hostname:
-        index === 0
-          ? `independent${index}.example`
-          : `host${index}${CATALOGUE.directory.fleetSuffix}`,
+      hostname: `host${index}.example`,
       seq: 1000 + index,
       accountCount: 1000 - index,
       status: 'active'
