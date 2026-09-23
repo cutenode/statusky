@@ -1,16 +1,17 @@
 import { describe, expect, it, vi } from 'vitest'
+import ElectronStore from 'electron-store'
 import { BUILTIN_ACCOUNTS, DEFAULT_SETTINGS } from '../shared/defaults'
 import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
 import { unreadUris } from './state'
 import { createStore, readWebhookSecret, reconcile, writeWebhookSecret } from './store'
-import FakeElectronStore, { seedStore } from '../test/electron-store'
+import { fakeStore, seedStore } from '../test/electron-store'
 import type { PersistedShape } from './store'
 import { makeAccount, makePost } from '../test/factories'
 import { SEALED_PREFIX, safeStorage } from '../test/electron'
 
 describe('createStore', () => {
   it('seeds the builtin accounts and default settings on a fresh install', () => {
-    const store = createStore() as unknown as FakeElectronStore<PersistedShape>
+    const store = createStore()
 
     expect(store.get('accounts').map((a) => a.did)).toEqual(BUILTIN_ACCOUNTS.map((a) => a.did))
     expect(store.get('accounts').every((a) => a.builtin)).toBe(true)
@@ -20,7 +21,7 @@ describe('createStore', () => {
     expect(store.get('read')).toEqual({ cursors: {}, above: [] })
     expect(store.get('cursors')).toEqual({})
     expect(store.get('openIncidents')).toEqual([])
-    expect(readWebhookSecret(store as never)).toMatch(/^[\w-]{20,}$/)
+    expect(readWebhookSecret(store)).toMatch(/^[\w-]{20,}$/)
     expect(store.get('schemaVersion')).toBe(6)
   })
 
@@ -37,8 +38,8 @@ describe('createStore', () => {
   })
 
   it('names the config file so it can be found on disk', () => {
-    const store = createStore() as unknown as FakeElectronStore<PersistedShape>
-    expect(store.name).toBe('statusky')
+    const store = createStore()
+    expect(fakeStore(store).name).toBe('statusky')
   })
 
   it('keeps a user config and fills in settings added since it was written', () => {
@@ -53,7 +54,7 @@ describe('createStore', () => {
       cursors: {}
     })
 
-    const store = createStore() as unknown as FakeElectronStore<PersistedShape>
+    const store = createStore()
 
     expect(store.get('settings')).toEqual({
       ...DEFAULT_SETTINGS,
@@ -79,7 +80,7 @@ describe('createStore', () => {
       ]
     })
 
-    const store = createStore() as unknown as FakeElectronStore<PersistedShape>
+    const store = createStore()
     const account = store.get('accounts').find((a) => a.did === BUILTIN_ACCOUNTS[0]!.did)
 
     expect(account?.muted).toBe(true)
@@ -88,8 +89,8 @@ describe('createStore', () => {
 })
 
 /** A store with no reconciliation applied, seeded with exactly `data`. */
-function bare(data: Partial<PersistedShape>): FakeElectronStore<PersistedShape> {
-  return new FakeElectronStore<PersistedShape>({
+function bare(data: Partial<PersistedShape>): ElectronStore<PersistedShape> {
+  return new ElectronStore<PersistedShape>({
     name: 'reconcile-test',
     defaults: {
       schemaVersion: 0,
@@ -114,7 +115,7 @@ describe('reconcile', () => {
       ]
     })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('accounts')).toHaveLength(2)
     expect(store.get('accounts').find((a) => a.did === BUILTIN_ACCOUNTS[1]!.did)?.builtin).toBe(
@@ -124,7 +125,7 @@ describe('reconcile', () => {
 
   it('stamps the current schema version', () => {
     const store = bare({})
-    reconcile(store as never)
+    reconcile(store)
     expect(store.get('schemaVersion')).toBe(6)
   })
 
@@ -134,7 +135,7 @@ describe('reconcile', () => {
       settings: { ...schema1, showTrayCount: false } as unknown as PersistedShape['settings']
     })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('settings').trayUnreadStyle).toBe('none')
     expect(store.get('settings')).not.toHaveProperty('showTrayCount')
@@ -150,7 +151,7 @@ describe('reconcile', () => {
       } as unknown as PersistedShape['settings']
     })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('settings').trayUnreadStyle).toBe('beat')
     expect(store.get('settings')).not.toHaveProperty('beatWhenUnread')
@@ -163,10 +164,10 @@ describe('reconcile', () => {
         trayUnreadStyle: 'dot',
         beatWhenUnread: true,
         showTrayCount: true
-      } as unknown as PersistedShape['settings']
+      } as PersistedShape['settings']
     })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('settings').trayUnreadStyle).toBe('dot')
   })
@@ -185,8 +186,8 @@ describe('reconcile', () => {
       } as unknown as PersistedShape['settings']
     })
 
-    reconcile(on as never)
-    reconcile(off as never)
+    reconcile(on)
+    reconcile(off)
 
     expect(on.get('settings').notificationSound).toBe('all')
     expect(off.get('settings').notificationSound).toBe('never')
@@ -201,7 +202,7 @@ describe('reconcile', () => {
     } = DEFAULT_SETTINGS
     const store = bare({ settings: schema5 as PersistedShape['settings'] })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('settings')).toMatchObject({
       notifySeverities: DEFAULT_SETTINGS.notifySeverities,
@@ -218,18 +219,27 @@ describe('reconcile', () => {
       ]
     })
 
-    reconcile(store as never)
+    reconcile(store)
 
     const levels = Object.fromEntries(store.get('accounts').map((a) => [a.did, a.notify]))
     expect(levels['did:plc:on']).toBe('default')
     expect(levels['did:plc:off']).toBe('off')
   })
 
+  it('makes a schema 2 account, which predates pushed sources, a polled one', () => {
+    const { kind: _kind, ...schema2 } = makeAccount({ did: 'did:plc:old' })
+    const store = bare({ accounts: [schema2 as PersistedShape['accounts'][number]] })
+
+    reconcile(store)
+
+    expect(store.get('accounts').find((a) => a.did === 'did:plc:old')?.kind).toBe('atproto')
+  })
+
   it('is idempotent', () => {
     const store = bare({})
-    reconcile(store as never)
+    reconcile(store)
     const first = store.get('accounts')
-    reconcile(store as never)
+    reconcile(store)
     expect(store.get('accounts').map((a) => a.did)).toEqual(first.map((a) => a.did))
   })
 
@@ -245,9 +255,9 @@ describe('reconcile', () => {
       discovery: { at: new Date().toISOString(), pdses: ['pds.si46.world'] }
     })
 
-    const store = createStore() as unknown as FakeElectronStore<PersistedShape>
+    const store = createStore()
 
-    expect(store.data).not.toHaveProperty('discovery')
+    expect(fakeStore(store).data).not.toHaveProperty('discovery')
   })
 })
 
@@ -259,7 +269,7 @@ describe("rebuilding schema 3's unread list as read cursors", () => {
   it('keeps exactly the posts that were unread unread', () => {
     const store = bare({ posts: [newer, older], unread: [newer.uri] } as Partial<PersistedShape>)
 
-    reconcile(store as never)
+    reconcile(store)
 
     const read = store.get('read')
     expect(unreadUris([newer, older], read)).toEqual([newer.uri])
@@ -271,7 +281,7 @@ describe("rebuilding schema 3's unread list as read cursors", () => {
   it('reads a source whose posts were all read', () => {
     const store = bare({ posts: [newer, older], unread: [] } as Partial<PersistedShape>)
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('read')).toEqual({ cursors: { [DID]: newer.createdAt }, above: [] })
   })
@@ -282,7 +292,7 @@ describe("rebuilding schema 3's unread list as read cursors", () => {
       unread: [newer.uri, older.uri]
     } as Partial<PersistedShape>)
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(unreadUris([newer, older], store.get('read'))).toEqual([newer.uri, older.uri])
   })
@@ -299,16 +309,16 @@ describe("rebuilding schema 3's unread list as read cursors", () => {
       cursors: {}
     })
 
-    const store = createStore() as unknown as FakeElectronStore<PersistedShape>
+    const store = createStore()
 
-    expect(store.data).not.toHaveProperty('unread')
+    expect(fakeStore(store).data).not.toHaveProperty('unread')
     expect(unreadUris([newer], store.get('read'))).toEqual([newer.uri])
   })
 
   it('tolerates a config with neither key', () => {
     // Defaults that mention neither: `bare` would answer `posts` from its own, and
     // deleting the key only removes what was written, not what the defaults say.
-    const store = new FakeElectronStore<PersistedShape>({
+    const store = new ElectronStore<PersistedShape>({
       name: 'postless',
       defaults: {
         schemaVersion: 3,
@@ -318,14 +328,34 @@ describe("rebuilding schema 3's unread list as read cursors", () => {
       } as unknown as PersistedShape
     })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('read')).toEqual({ cursors: {}, above: [] })
   })
 
+  it('reads everything when the old list is not a list, rather than refusing to start', () => {
+    // Nothing types the old key any more. `new Set(5)` throws, and a throw here would
+    // come out of `createStore()` and stop the app before the tray ever appeared.
+    const store = bare({ posts: [newer, older], unread: 5 } as Partial<PersistedShape>)
+
+    expect(() => reconcile(store)).not.toThrow()
+    expect(store.get('read')).toEqual({ cursors: { [DID]: newer.createdAt }, above: [] })
+  })
+
+  it('ignores whatever in the old list is not a URI', () => {
+    const store = bare({
+      posts: [newer, older],
+      unread: [newer.uri, 42]
+    } as Partial<PersistedShape>)
+
+    reconcile(store)
+
+    expect(unreadUris([newer, older], store.get('read'))).toEqual([newer.uri])
+  })
+
   it('gives no cursor to a source with nothing cached', () => {
     const store = bare({ posts: [], unread: [] } as Partial<PersistedShape>)
-    reconcile(store as never)
+    reconcile(store)
     expect(store.get('read')).toEqual({ cursors: {}, above: [] })
   })
 
@@ -333,7 +363,7 @@ describe("rebuilding schema 3's unread list as read cursors", () => {
     const broken = makePost({ authorDid: DID, rkey: 'broken', createdAt: 'not a date' })
     const store = bare({ posts: [broken], unread: [] } as Partial<PersistedShape>)
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('read')).toEqual({ cursors: {}, above: [] })
   })
@@ -342,7 +372,7 @@ describe("rebuilding schema 3's unread list as read cursors", () => {
     const read = { cursors: { [DID]: older.createdAt }, above: [newer.uri] }
     const store = bare({ schemaVersion: 4, posts: [newer, older], read })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('read')).toEqual(read)
   })
@@ -351,7 +381,7 @@ describe("rebuilding schema 3's unread list as read cursors", () => {
 describe('a config with no settings at all', () => {
   it('falls back to the defaults', () => {
     // Defaults that never mentioned `settings`, so `get` returns undefined.
-    const store = new FakeElectronStore<PersistedShape>({
+    const store = new ElectronStore<PersistedShape>({
       name: 'settingless',
       defaults: {
         schemaVersion: 0,
@@ -362,7 +392,7 @@ describe('a config with no settings at all', () => {
       } as unknown as PersistedShape
     })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('settings')).toEqual(DEFAULT_SETTINGS)
   })
@@ -371,7 +401,7 @@ describe('a config with no settings at all', () => {
 describe('a config with no accounts array at all', () => {
   it('falls back to an empty list before adding the builtins', () => {
     // A store whose defaults do not mention `accounts`, so `get` returns undefined.
-    const store = new FakeElectronStore<PersistedShape>({
+    const store = new ElectronStore<PersistedShape>({
       name: 'accountless',
       defaults: {
         schemaVersion: 0,
@@ -382,37 +412,38 @@ describe('a config with no accounts array at all', () => {
       } as unknown as PersistedShape
     })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(store.get('accounts').map((a) => a.did)).toEqual(BUILTIN_ACCOUNTS.map((a) => a.did))
   })
 })
 
 /** A config file with exactly `data` in it, and no defaults to answer a read. */
-function secretStore(data: Partial<PersistedShape> = {}): FakeElectronStore<PersistedShape> {
-  const store = new FakeElectronStore<PersistedShape>({
+function secretStore(data: Partial<PersistedShape> = {}): ElectronStore<PersistedShape> {
+  const store = new ElectronStore<PersistedShape>({
     name: `secret-${Math.random().toString(36).slice(2)}`
   })
-  store.set(data as Record<string, unknown>)
+  store.set(data)
   return store
 }
 
 /** What the sealed key actually holds, once the envelope is off. */
-function unsealed(store: FakeElectronStore<PersistedShape>): string {
-  return Buffer.from(String(store.data.webhookSecretEncrypted), 'base64').toString('utf8')
+function unsealed(store: ElectronStore<PersistedShape>): string {
+  const sealed = String(fakeStore(store).data.webhookSecretEncrypted)
+  return Buffer.from(sealed, 'base64').toString('utf8')
 }
 
 describe('the webhook secret', () => {
   it('mints one on a fresh install and seals it before it reaches the disk', () => {
     const store = secretStore()
 
-    const secret = readWebhookSecret(store as never)
+    const secret = readWebhookSecret(store)
 
     expect(secret).toMatch(/^[\w-]{20,}$/)
     expect(unsealed(store)).toBe(`${SEALED_PREFIX}${secret}`)
     // The whole point: nothing readable is left in statusky.json.
-    expect(store.data).not.toHaveProperty('webhookSecret')
-    expect(JSON.stringify(store.data)).not.toContain(secret)
+    expect(fakeStore(store).data).not.toHaveProperty('webhookSecret')
+    expect(JSON.stringify(fakeStore(store).data)).not.toContain(secret)
   })
 
   // Regenerating instead would silently break whatever tunnel the user had already
@@ -422,12 +453,12 @@ describe('the webhook secret', () => {
   // credential store trip it has no use for. See the test below.
   it('carries a schema 4 plaintext secret into the credential store unchanged', () => {
     const store = secretStore({ schemaVersion: 4, webhookSecret: 'secret-from-schema-4' })
-    reconcile(store as never)
+    reconcile(store)
 
-    expect(readWebhookSecret(store as never)).toBe('secret-from-schema-4')
+    expect(readWebhookSecret(store)).toBe('secret-from-schema-4')
 
     expect(unsealed(store)).toBe(`${SEALED_PREFIX}secret-from-schema-4`)
-    expect(store.data).not.toHaveProperty('webhookSecret')
+    expect(fakeStore(store).data).not.toHaveProperty('webhookSecret')
   })
 
   // `reconcile()` runs inside `createStore()`, early in `bootstrap()` and on the main
@@ -437,24 +468,24 @@ describe('the webhook secret', () => {
   it('leaves a schema 4 secret where it is until something asks for it', () => {
     const store = secretStore({ schemaVersion: 4, webhookSecret: 'secret-from-schema-4' })
 
-    reconcile(store as never)
+    reconcile(store)
 
     expect(safeStorage.isEncryptionAvailable).not.toHaveBeenCalled()
     expect(safeStorage.encryptString).not.toHaveBeenCalled()
     expect(safeStorage.decryptString).not.toHaveBeenCalled()
-    expect(store.data.webhookSecret).toBe('secret-from-schema-4')
+    expect(fakeStore(store).data.webhookSecret).toBe('secret-from-schema-4')
   })
 
   it('reads a sealed secret back out again', () => {
     const store = secretStore()
-    writeWebhookSecret(store as never, 'round-trip')
+    writeWebhookSecret(store, 'round-trip')
 
     // A second store over the same file: nothing is remembered in this process.
     const reopened = secretStore({
-      webhookSecretEncrypted: store.data.webhookSecretEncrypted as string
+      webhookSecretEncrypted: fakeStore(store).data.webhookSecretEncrypted as string
     })
 
-    expect(readWebhookSecret(reopened as never)).toBe('round-trip')
+    expect(readWebhookSecret(reopened)).toBe('round-trip')
   })
 
   // Not an error. On Linux `isEncryptionAvailable()` is false until a secret service
@@ -463,24 +494,24 @@ describe('the webhook secret', () => {
     safeStorage.available = false
     const store = secretStore()
 
-    const secret = readWebhookSecret(store as never)
+    const secret = readWebhookSecret(store)
 
-    expect(store.data.webhookSecret).toBe(secret)
-    expect(store.data).not.toHaveProperty('webhookSecretEncrypted')
+    expect(fakeStore(store).data.webhookSecret).toBe(secret)
+    expect(fakeStore(store).data).not.toHaveProperty('webhookSecretEncrypted')
   })
 
   it('seals a secret that was kept in the clear as soon as a credential store appears', () => {
     safeStorage.available = false
     const store = secretStore()
-    const secret = readWebhookSecret(store as never)
+    const secret = readWebhookSecret(store)
 
     // The secret service is running this time. A new store, because the old one has
     // the answer in memory and will never ask again.
     safeStorage.available = true
-    const reopened = secretStore({ webhookSecret: store.data.webhookSecret as string })
+    const reopened = secretStore({ webhookSecret: fakeStore(store).data.webhookSecret as string })
 
-    expect(readWebhookSecret(reopened as never)).toBe(secret)
-    expect(reopened.data).not.toHaveProperty('webhookSecret')
+    expect(readWebhookSecret(reopened)).toBe(secret)
+    expect(fakeStore(reopened).data).not.toHaveProperty('webhookSecret')
   })
 
   // A config carried to another machine, or one whose secret service has been reset.
@@ -492,7 +523,7 @@ describe('the webhook secret', () => {
       webhookSecretEncrypted: Buffer.from('not ours', 'utf8').toString('base64')
     })
 
-    const secret = readWebhookSecret(store as never)
+    const secret = readWebhookSecret(store)
 
     expect(secret).toMatch(/^[\w-]{20,}$/)
     expect(unsealed(store)).toBe(`${SEALED_PREFIX}${secret}`)
@@ -503,16 +534,16 @@ describe('the webhook secret', () => {
   it('mints a new secret when the credential store that sealed it has gone away', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const store = secretStore()
-    const original = readWebhookSecret(store as never)
+    const original = readWebhookSecret(store)
 
     safeStorage.available = false
     const reopened = secretStore({
-      webhookSecretEncrypted: store.data.webhookSecretEncrypted as string
+      webhookSecretEncrypted: fakeStore(store).data.webhookSecretEncrypted as string
     })
-    const secret = readWebhookSecret(reopened as never)
+    const secret = readWebhookSecret(reopened)
 
     expect(secret).not.toBe(original)
-    expect(reopened.data.webhookSecret).toBe(secret)
+    expect(fakeStore(reopened).data.webhookSecret).toBe(secret)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not be decrypted'))
     warn.mockRestore()
   })
@@ -524,10 +555,10 @@ describe('the webhook secret', () => {
     safeStorage.encryptThrows = new Error('the keyring is locked')
     const store = secretStore()
 
-    const secret = readWebhookSecret(store as never)
+    const secret = readWebhookSecret(store)
 
-    expect(store.data.webhookSecret).toBe(secret)
-    expect(store.data).not.toHaveProperty('webhookSecretEncrypted')
+    expect(fakeStore(store).data.webhookSecret).toBe(secret)
+    expect(fakeStore(store).data).not.toHaveProperty('webhookSecretEncrypted')
     expect(warn).toHaveBeenCalledWith(
       'The OS credential store refused to hold the webhook secret:',
       expect.any(Error)
@@ -539,12 +570,12 @@ describe('the webhook secret', () => {
   // endpoint URL built from it. One trip through the OS is all it may cost.
   it('answers later reads from memory rather than from the credential store', () => {
     const store = secretStore()
-    const secret = readWebhookSecret(store as never)
+    const secret = readWebhookSecret(store)
     safeStorage.decryptString.mockClear()
     safeStorage.encryptString.mockClear()
 
-    expect(readWebhookSecret(store as never)).toBe(secret)
-    expect(readWebhookSecret(store as never)).toBe(secret)
+    expect(readWebhookSecret(store)).toBe(secret)
+    expect(readWebhookSecret(store)).toBe(secret)
 
     expect(safeStorage.decryptString).not.toHaveBeenCalled()
     expect(safeStorage.encryptString).not.toHaveBeenCalled()
@@ -552,29 +583,29 @@ describe('the webhook secret', () => {
 
   it('replaces the secret in place when a new one is minted', () => {
     const store = secretStore()
-    readWebhookSecret(store as never)
+    readWebhookSecret(store)
 
-    writeWebhookSecret(store as never, 'the-new-one')
+    writeWebhookSecret(store, 'the-new-one')
 
-    expect(readWebhookSecret(store as never)).toBe('the-new-one')
+    expect(readWebhookSecret(store)).toBe('the-new-one')
     expect(unsealed(store)).toBe(`${SEALED_PREFIX}the-new-one`)
   })
 
   it('leaves exactly one representation behind, whichever one it used', () => {
     const store = secretStore({ webhookSecret: 'in the clear' })
-    writeWebhookSecret(store as never, 'sealed now')
-    expect(Object.keys(store.data)).not.toContain('webhookSecret')
+    writeWebhookSecret(store, 'sealed now')
+    expect(Object.keys(fakeStore(store).data)).not.toContain('webhookSecret')
 
     safeStorage.available = false
-    writeWebhookSecret(store as never, 'clear again')
-    expect(Object.keys(store.data)).not.toContain('webhookSecretEncrypted')
+    writeWebhookSecret(store, 'clear again')
+    expect(Object.keys(fakeStore(store).data)).not.toContain('webhookSecretEncrypted')
   })
 })
 
 /** A store whose config on disk had these probe targets in its settings. */
-function loaded(probeTargets: unknown): FakeElectronStore<PersistedShape> {
+function loaded(probeTargets: unknown): ElectronStore<PersistedShape> {
   seedStore('statusky', { settings: { ...DEFAULT_SETTINGS, probeTargets } })
-  return createStore() as unknown as FakeElectronStore<PersistedShape>
+  return createStore()
 }
 
 describe('the probe targets override', () => {

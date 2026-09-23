@@ -10,9 +10,9 @@
     readProbeTargets,
     sectionOf,
     SECTIONS,
+    type FieldPath,
     type SectionChange,
-    type SectionKey,
-    type TargetPath
+    type SectionKey
   } from '$lib/probe-targets'
   import { cn } from '$lib/utils'
   import {
@@ -64,7 +64,7 @@
   /** The saved document the working copy was last taken from, to tell edits from pushes. */
   let base = effectiveProbeTargets(app.settings.probeTargets)
 
-  const current = $derived($state.snapshot(draft) as ProbeTargets)
+  const current = $derived<ProbeTargets>($state.snapshot(draft))
   const validation = $derived(validateProbeTargets(current))
   const dirty = $derived(!sameProbeTargets(current, saved))
   /** Which sections the working copy has changed, for the headers to say so. */
@@ -133,15 +133,17 @@
 
   // ------------------------------------------------------------- fields
 
+  // The walk itself cannot be typed, but where it ends can: a `FieldPath` always lands on
+  // a string, which is what makes reading one back as a string true.
   type Node = Record<string | number, unknown>
 
-  function read(path: TargetPath): string {
+  function read(path: FieldPath): string {
     let node: unknown = draft
     for (const key of path) node = (node as Node)[key]
     return node as string
   }
 
-  function write(path: TargetPath, value: string): void {
+  function write(path: FieldPath, value: string): void {
     let node = draft as unknown as Node
     for (const key of path.slice(0, -1)) node = node[key] as Node
     node[path.at(-1)!] = value
@@ -153,7 +155,7 @@
     else expanded.add(key)
   }
 
-  async function focusField(path: TargetPath): Promise<void> {
+  async function focusField(path: FieldPath): Promise<void> {
     await tick()
     document.getElementById(`probe-target-${pathKey(path)}`)?.focus()
   }
@@ -409,7 +411,7 @@
   const inputClass = 'h-7 px-2 font-mono text-[11px]'
 </script>
 
-{#snippet field(label: string, path: TargetPath, placeholder: string)}
+{#snippet field(label: string, path: FieldPath, placeholder: string)}
   {@const key = pathKey(path)}
   {@const id = `probe-target-${key}`}
   {@const error = fieldIssues.get(key)}
@@ -662,7 +664,7 @@
 
 {#snippet leafletBody()}
   <div class="space-y-1.5">
-    {#each [{ key: 'publication', title: 'Document' }, { key: 'feed', title: 'Feed' }] as record (record.key)}
+    {#each [{ key: 'publication', title: 'Document' }, { key: 'feed', title: 'Feed' }] as const as record (record.key)}
       <div class="space-y-1" role="group" aria-label={record.title}>
         <p class="text-[11px] font-medium">{record.title}</p>
         {@render field('DID', ['apps', 'leaflet', record.key, 'did'], 'did:plc:…')}

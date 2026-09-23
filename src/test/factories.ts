@@ -130,35 +130,41 @@ export function makeProfile(overrides: Partial<ResolvedProfile> = {}): ResolvedP
   }
 }
 
+/**
+ * One builder per kind, so each is typed as exactly its own kind: an override spread over
+ * `makeEmbed('external')` is then checked against the external shape, rather than against
+ * a union that some other kind's fields would satisfy.
+ */
+const EMBEDS: { [K in PostEmbed['kind']]: () => Extract<PostEmbed, { kind: K }> } = {
+  external: () => ({
+    kind: 'external',
+    uri: 'https://status.bsky.app/incidents/42',
+    title: 'Incident 42',
+    description: 'Elevated error rates',
+    thumb: 'https://cdn.bsky.app/thumb.jpg'
+  }),
+  images: () => ({
+    kind: 'images',
+    images: [
+      {
+        thumb: 'https://cdn.bsky.app/thumb-0.jpg',
+        fullsize: 'https://cdn.bsky.app/full-0.jpg',
+        alt: 'Latency graph'
+      }
+    ]
+  }),
+  record: () => ({
+    kind: 'record',
+    uri: 'at://did:plc:quoted/app.bsky.feed.post/abc',
+    author: 'someone.bsky.social',
+    text: 'Quoted post body'
+  })
+}
+
+export function makeEmbed(): Extract<PostEmbed, { kind: 'external' }>
+export function makeEmbed<K extends PostEmbed['kind']>(kind: K): Extract<PostEmbed, { kind: K }>
 export function makeEmbed(kind: PostEmbed['kind'] = 'external'): PostEmbed {
-  switch (kind) {
-    case 'external':
-      return {
-        kind: 'external',
-        uri: 'https://status.bsky.app/incidents/42',
-        title: 'Incident 42',
-        description: 'Elevated error rates',
-        thumb: 'https://cdn.bsky.app/thumb.jpg'
-      }
-    case 'images':
-      return {
-        kind: 'images',
-        images: [
-          {
-            thumb: 'https://cdn.bsky.app/thumb-0.jpg',
-            fullsize: 'https://cdn.bsky.app/full-0.jpg',
-            alt: 'Latency graph'
-          }
-        ]
-      }
-    case 'record':
-      return {
-        kind: 'record',
-        uri: 'at://did:plc:quoted/app.bsky.feed.post/abc',
-        author: 'someone.bsky.social',
-        text: 'Quoted post body'
-      }
-  }
+  return EMBEDS[kind]()
 }
 
 export function makeNetworkSummary(overrides: Partial<NetworkSummary> = {}): NetworkSummary {

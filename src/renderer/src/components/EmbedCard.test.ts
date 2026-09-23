@@ -15,16 +15,13 @@ describe('an external embed', () => {
   })
 
   it('strips a www prefix from the host', async () => {
-    const embed: PostEmbed = {
-      ...makeEmbed('external'),
-      uri: 'https://www.example.test/a'
-    } as PostEmbed
+    const embed: PostEmbed = { ...makeEmbed('external'), uri: 'https://www.example.test/a' }
     const { getByText } = await renderWith(EmbedCard, { embed })
     expect(getByText('example.test')).toBeTruthy()
   })
 
   it('falls back to the raw value when the uri is not a URL', async () => {
-    const embed = { ...makeEmbed('external'), uri: 'not a url' } as PostEmbed
+    const embed = { ...makeEmbed('external'), uri: 'not a url' } satisfies PostEmbed
     const { getByText } = await renderWith(EmbedCard, { embed })
     expect(getByText('not a url')).toBeTruthy()
   })
@@ -37,13 +34,13 @@ describe('an external embed', () => {
   })
 
   it('omits the thumbnail when there is none', async () => {
-    const embed = { ...makeEmbed('external'), thumb: null } as PostEmbed
+    const embed = { ...makeEmbed('external'), thumb: null } satisfies PostEmbed
     const { container } = await renderWith(EmbedCard, { embed })
     expect(container.querySelector('img')).toBeNull()
   })
 
   it('omits the description when there is none', async () => {
-    const embed = { ...makeEmbed('external'), description: '' } as PostEmbed
+    const embed = { ...makeEmbed('external'), description: '' } satisfies PostEmbed
     const { queryByText } = await renderWith(EmbedCard, { embed })
     expect(queryByText('Elevated error rates')).toBeNull()
   })

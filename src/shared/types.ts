@@ -21,9 +21,15 @@ export interface Account {
    *
    * For an `atproto` source this is the account's DID — handles change, DIDs do not.
    * For a `webhook` source it is `webhook:<page id>`, minted from the status page's
-   * own id in the payload, which is stable for the same reason.
+   * own id in the payload, which is stable for the same reason. The one `probe` source
+   * is always `probe:network`.
    */
   did: string
+  /**
+   * The account's handle for an `atproto` source; a status page's hostname, or the
+   * checks' own name, for the others. Only the first is written with an `@`, so show it
+   * through `sourceLabel` in src/shared/webhook.ts rather than prefixing one by hand.
+   */
   handle: string
   displayName: string
   avatar: string | null
@@ -32,7 +38,10 @@ export interface Account {
   notify: NotifyLevel
   /** Hide this account's posts from the feed without forgetting it. */
   muted: boolean
-  /** ISO timestamp of when the user added this account. */
+  /**
+   * ISO timestamp of when this source started being tracked: added by the user, seeded
+   * on first launch, or registered by its own first delivery or measured outage.
+   */
   addedAt: string
   /** Set for the accounts shipped with the app; they can be muted but not removed. */
   builtin: boolean
@@ -63,9 +72,19 @@ export type PostEmbed =
   | { kind: 'images'; images: { thumb: string; fullsize: string; alt: string }[] }
   | { kind: 'record'; uri: string; author: string; text: string }
 
-/** A single `app.bsky.feed.post` record, flattened for the UI. */
+/**
+ * One entry in the feed: an `app.bsky.feed.post` record flattened for the UI, or a
+ * pushed status-page update or a network-check event given the same shape. Those two
+ * have no record behind them, so their `cid` and `rkey` are only filled in to match —
+ * and every count is zero.
+ */
 export interface StatusPost {
-  /** `at://did/app.bsky.feed.post/rkey` — the record's canonical identity. */
+  /**
+   * The entry's identity, and the key read state and redeliveries join on. For a post it
+   * is the record's `at://did/app.bsky.feed.post/rkey`. A pushed update is
+   * `webhook:<page id>/…`, followed by the incident update or component change it
+   * reports, and a network-check entry is `probe:network/<service id>/<epoch ms>`.
+   */
   uri: string
   cid: string
   rkey: string
@@ -76,15 +95,26 @@ export interface StatusPost {
   text: string
   segments: RichSegment[]
   embed: PostEmbed | null
-  /** ISO timestamp from the record itself. */
+  /**
+   * ISO timestamp of when the entry says it was written: the record's own `createdAt`, a
+   * status page's time for the update, or when a check confirmed the change. A record
+   * with no string `createdAt` falls back to `indexedAt`, and failing that to the epoch.
+   */
   createdAt: string
-  /** ISO timestamp from the AppView index; used as a fallback ordering key. */
+  /**
+   * ISO timestamp from the AppView index, or when an entry with no index behind it
+   * reached us; used as a fallback ordering key.
+   */
   indexedAt: string
   severity: Severity
   replyCount: number
   repostCount: number
   likeCount: number
-  /** Public bsky.app permalink. */
+  /**
+   * Where the entry can be read on the web: the public bsky.app permalink for a post, the
+   * incident's or the status page's own page for a pushed update. `''` when there is
+   * nowhere to go, which is every network-check entry, so test it before opening it.
+   */
   url: string
 }
 
@@ -195,7 +225,11 @@ export interface Settings {
   notifyWhenAway: AwayBehaviour
   /** Fold updates that arrive shortly after a banner into one summary. */
   notifyCombineBursts: boolean
-  /** ISO timestamp banners are held until, or null when they are not snoozed. */
+  /**
+   * ISO timestamp banners are held until, or null when nobody has snoozed them. Nothing
+   * clears it when the time comes, so a time already past is a snooze that has ended:
+   * ask `snoozedUntil` in src/shared/notify.ts rather than testing it for null.
+   */
   notificationsSnoozedUntil: string | null
   /** Show the update's text in the banner, rather than only its source and stage. */
   notificationShowBody: boolean
@@ -211,7 +245,10 @@ export interface Settings {
   postsPerAccount: number
   /** Listen for pushed status updates on the local webhook receiver. */
   webhookEnabled: boolean
-  /** Loopback port the receiver binds to. */
+  /**
+   * Loopback port the receiver binds to, or 0 for whichever one the OS offers — which
+   * `WebhookStatus.port` then reports.
+   */
   webhookPort: number
   /** Probe relays, PDSes and AppViews from this machine on a timer. */
   networkChecks: boolean
@@ -255,6 +292,10 @@ export interface WebhookStatus {
    * receiver is not listening. This is the one place the secret is readable.
    */
   url: string | null
+  /**
+   * The port actually bound, which is the OS's choice when the setting is 0, or null when
+   * the receiver is not listening.
+   */
   port: number | null
   error: string | null
   /** Deliveries accepted since launch — the fastest way to tell a tunnel is wired up. */
@@ -326,17 +367,17 @@ export type UpdateStage = 'current' | 'available' | 'ready'
  * It deliberately does not travel as an OS notification. This app's banners mean *the
  * Atmosphere is broken*, and spending that channel on "a new version is out" teaches
  * people that the thing which pages them is routine. See src/main/update.ts.
+ *
+ * `version` is the version on offer, as the release names it — without the `v` a Git tag
+ * usually carries. Which stages may leave it out is part of the type: there is nothing
+ * to name while `current`, `available` only ever comes from a release tag that parsed as
+ * one, and `ready` goes without when the release was not named as a version; see
+ * `downloadedVersion` in src/main/update.ts.
  */
-export interface UpdateStatus {
-  stage: UpdateStage
-  /**
-   * The version on offer, as the release names it — without the `v` a Git tag usually
-   * carries. Null while `current`, and also null when an update is `ready` but the
-   * platform would not say which version it is; see `downloadedVersion` in
-   * src/main/update.ts.
-   */
-  version: string | null
-}
+export type UpdateStatus =
+  | { stage: 'current'; version: null }
+  | { stage: 'available'; version: string }
+  | { stage: 'ready'; version: string | null }
 
 export type SyncStatus = 'idle' | 'syncing' | 'error'
 
@@ -392,13 +433,22 @@ export type ProbeCheckKind = 'http' | 'stream' | 'derived'
 export interface ProbeCheck {
   /** Short name: an XRPC method, `firehose`, `index freshness`… */
   label: string
-  /** What was asked for, for the tooltip. Null for derived checks. */
+  /**
+   * What was asked for, for the tooltip. Null for derived checks, and for a request whose
+   * URL depends on an earlier check's answer until that answer arrives — for good, if it
+   * never does.
+   */
   target: string | null
   kind: ProbeCheckKind
   /** Null while in flight. */
   ok: boolean | null
   /** Why it failed, worded for people. */
   error: string | null
+  /**
+   * How long it took. Null while in flight, for a check that was never started — a
+   * derived one, or one skipped because a check it depends on failed — and for a failure
+   * whose time would only restate a wait or a cancellation.
+   */
   durationMs: number | null
 }
 
@@ -423,7 +473,10 @@ export interface ProbeSample {
 }
 
 export interface ServiceProbe {
-  /** `<kind>:<host>` — stable across launches, and the key a feed entry links back to. */
+  /**
+   * `<kind>:<host>`, or `internet:<check id>` for a control check — stable across
+   * launches, and the key a feed entry links back to.
+   */
   id: string
   group: ProbeGroup
   kind: ProbeKind
@@ -485,7 +538,11 @@ export interface NetworkSummary {
   health: NetworkHealth
   /** Atmosphere services — the control checks are not counted. */
   total: number
-  /** Of those, how many answered on their last observation. */
+  /**
+   * Of those, how many answered on their last observation. A service a sweep is measuring
+   * again is `pending` until it answers, so while one runs this counts only the ones it
+   * has already heard back from.
+   */
   reachable: number
   /** Labels of core services confirmed down. */
   down: string[]

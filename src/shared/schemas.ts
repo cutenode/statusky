@@ -18,12 +18,15 @@ import type {
   Account,
   AccountPatch,
   AppState,
+  AwayBehaviour,
   LoginItemStatus,
   NetworkHealth,
   NetworkReveal,
   NetworkSnapshot,
   MarkReadTrigger,
   NetworkSummary,
+  NotificationSound,
+  NotifyLevel,
   Platform,
   PostEmbed,
   ProbeCheck,
@@ -31,6 +34,7 @@ import type {
   ProbeCondition,
   ProbeGroup,
   ProbeKind,
+  ProbeNotifyScope,
   ProbeSample,
   ProbeState,
   ProbeTier,
@@ -140,10 +144,11 @@ export const shortcutStatusSchema = z.object({
 
 export const updateStageSchema = z.enum(['current', 'available', 'ready'])
 
-export const updateStatusSchema = z.object({
-  stage: updateStageSchema,
-  version: z.string().nullable()
-})
+export const updateStatusSchema = z.discriminatedUnion('stage', [
+  z.object({ stage: z.literal('current'), version: z.null() }),
+  z.object({ stage: z.literal('available'), version: z.string() }),
+  z.object({ stage: z.literal('ready'), version: z.string().nullable() })
+])
 
 export const platformSchema = z.enum([
   'aix',
@@ -172,11 +177,35 @@ export const accountSchema = z.object({
   kind: sourceKindSchema
 })
 
-/** Only the two fields the renderer is allowed to change. */
-export const accountPatchSchema = z.object({
-  notify: notifyLevelSchema.optional(),
-  muted: z.boolean().optional()
-})
+/**
+ * Whether a patch leaves out what it is not changing, rather than sending it as `undefined`.
+ *
+ * `.optional()` accepts a key that is present with nothing in it, structured clone carries
+ * one across IPC intact, and `Partial<>` admits one in the type. But main spreads a patch
+ * over what it has stored, so `{ muted: undefined }` would not leave the field alone: it
+ * would erase it, and every `AppState` pushed after that would fail validation.
+ */
+function leavesOutUnchanged(patch: object): boolean {
+  return Object.values(patch).every((value) => value !== undefined)
+}
+
+/** What `leavesOutUnchanged` says when it refuses a patch. */
+const UNDEFINED_FIELD = 'Leave out a field that is not changing rather than sending undefined'
+
+/**
+ * Only the two fields the renderer is allowed to change, and nothing else.
+ *
+ * Strict, because the generated wiring asks a schema only *whether* an argument is valid
+ * and then hands main the argument as it arrived, not the parsed copy. A key a plain
+ * `z.object` merely strips on parsing — `builtin: false`, say — would pass, and be
+ * spread over the stored account all the same, making a shipped source removable.
+ */
+export const accountPatchSchema = z
+  .strictObject({
+    notify: notifyLevelSchema.optional(),
+    muted: z.boolean().optional()
+  })
+  .refine(leavesOutUnchanged, UNDEFINED_FIELD)
 
 export const richSegmentSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('text'), text: z.string() }),
@@ -405,8 +434,18 @@ export const settingsSchema = z.object({
   probeTargets: probeTargetsSchema.nullable()
 })
 
-/** Every field optional: the renderer sends only what the user actually changed. */
-export const settingsPatchSchema = settingsSchema.partial()
+/**
+ * Every field optional: the renderer sends only what the user actually changed.
+ *
+ * Strict for the reason `accountPatchSchema` is: main spreads the patch it was handed,
+ * not the parsed copy, so a key no setting has would otherwise be persisted beside the
+ * real ones and carried in every `AppState` from then on. The refinement comes after
+ * `.partial()` because `.partial()` drops any it is given.
+ */
+export const settingsPatchSchema = z
+  .strictObject(settingsSchema.shape)
+  .partial()
+  .refine(leavesOutUnchanged, UNDEFINED_FIELD)
 
 /** Named so `schemas/statusky.eipc` can reference it; `Partial<Settings>` is not a name. */
 export type SettingsPatch = Partial<Settings>
@@ -552,8 +591,16 @@ export const resolvedProfileSchema = z.object({
 
 // ------------------------------------------------------- drift guards
 
-/** True only when `A` and `B` are mutually assignable, i.e. the same type. */
-type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
+/**
+ * True only when `A` and `B` are the same type, as the compiler itself decides identity.
+ *
+ * Not mutual assignability, which is what `[A] extends [B]` both ways would test: that
+ * passes when either side is `any`, and cannot see a `readonly` on one side only. The
+ * compiler relates two unresolved `T extends X ? 1 : 2` only when their `X`s are
+ * identical, so comparing one built over each side asks the stricter question.
+ */
+type Exact<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false
 /** Instantiating this with `false` is a compile error, which is the whole point. */
 type Assert<T extends true> = T
 
@@ -566,6 +613,16 @@ export type _MarkReadTriggerMatches = Assert<
   Exact<z.infer<typeof markReadTriggerSchema>, MarkReadTrigger>
 >
 export type _SyncStatusMatches = Assert<Exact<z.infer<typeof syncStatusSchema>, SyncStatus>>
+export type _NotifyLevelMatches = Assert<Exact<z.infer<typeof notifyLevelSchema>, NotifyLevel>>
+export type _NotificationSoundMatches = Assert<
+  Exact<z.infer<typeof notificationSoundSchema>, NotificationSound>
+>
+export type _ProbeNotifyScopeMatches = Assert<
+  Exact<z.infer<typeof probeNotifyScopeSchema>, ProbeNotifyScope>
+>
+export type _AwayBehaviourMatches = Assert<
+  Exact<z.infer<typeof awayBehaviourSchema>, AwayBehaviour>
+>
 export type _SourceKindMatches = Assert<Exact<z.infer<typeof sourceKindSchema>, SourceKind>>
 export type _WebhookStateMatches = Assert<Exact<z.infer<typeof webhookStateSchema>, WebhookState>>
 export type _WebhookStatusMatches = Assert<

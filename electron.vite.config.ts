@@ -2,8 +2,7 @@ import { resolve } from 'node:path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
-import type { RollupLog } from 'rollup'
-import type { Plugin } from 'vite'
+import type { Plugin, Rollup } from 'vite'
 
 const alias = { '@shared': resolve('src/shared'), '@ipc': resolve('src/ipc') }
 
@@ -14,7 +13,10 @@ const alias = { '@shared': resolve('src/shared'), '@ipc': resolve('src/ipc') }
  * are noise; a genuinely missing *value* export would still fail the type-check, which
  * runs before this.
  */
-function quietGeneratedTypeImports(warning: RollupLog, warn: (warning: RollupLog) => void): void {
+function quietGeneratedTypeImports(
+  warning: Rollup.RollupLog,
+  warn: (warning: Rollup.RollupLog) => void
+): void {
   if (warning.code === 'MISSING_EXPORT' && warning.id?.includes('/src/ipc/_internal/')) return
   warn(warning)
 }

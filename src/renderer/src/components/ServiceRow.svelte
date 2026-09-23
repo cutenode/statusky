@@ -189,29 +189,29 @@
                   >{detail}</span
                 >
               {/if}
-              {#if failure}
-                <!-- A failed check answers with why, in the place a passing one gives its time. -->
-                <span
-                  data-failure
-                  class="selectable ml-auto max-w-[65%] shrink-0 truncate text-right text-sev-outage"
-                  title={check.durationMs === null
-                    ? check.error
-                    : `${check.error} · after ${duration}`}
-                  >{#if failure.code}<span class="font-mono font-medium tabular-nums"
-                      >{failure.code}</span
-                    >{' '}{/if}<span class="text-sev-outage/80">{failure.text}</span></span
-                >
-              {:else}
-                <span
-                  class={cn(
-                    'ml-auto shrink-0 tabular-nums',
-                    check.ok === true && (check.durationMs ?? 0) >= SLOW_MS
-                      ? 'text-sev-degraded'
-                      : 'text-muted-foreground'
-                  )}>{duration}</span
-                >
-              {/if}
+              <span
+                class={cn(
+                  'ml-auto shrink-0 tabular-nums',
+                  check.ok === true && (check.durationMs ?? 0) >= SLOW_MS
+                    ? 'text-sev-degraded'
+                    : 'text-muted-foreground'
+                )}>{duration}</span
+              >
             </div>
+            {#if failure}
+              <!-- Why it failed reads as the check's second line, wrapping rather than cut. -->
+              <p
+                data-failure
+                title={check.durationMs === null
+                  ? check.error
+                  : `${check.error} · after ${duration}`}
+                class="selectable pl-3.5 text-[10.5px] leading-snug text-pretty text-sev-outage/85"
+              >
+                {#if failure.code}<span class="font-mono font-medium text-sev-outage tabular-nums"
+                    >{failure.code}</span
+                  >{' '}{/if}{failure.text}
+              </p>
+            {/if}
           </li>
         {/each}
       </ul>

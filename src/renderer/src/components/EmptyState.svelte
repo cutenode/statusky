@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Component } from 'svelte'
+  import type { LucideIcon } from '@lucide/svelte'
   import type { Snippet } from 'svelte'
 
   let {
@@ -7,7 +7,7 @@
     title,
     description,
     action
-  }: { icon: Component; title: string; description: string; action?: Snippet } = $props()
+  }: { icon: LucideIcon; title: string; description: string; action?: Snippet } = $props()
 </script>
 
 <div class="flex flex-col items-center justify-center gap-2 px-8 py-14 text-center">

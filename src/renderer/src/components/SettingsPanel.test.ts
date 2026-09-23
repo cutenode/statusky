@@ -405,7 +405,7 @@ describe('a newer Statusky', () => {
     expect(queryByText('Download')).toBeNull()
   })
 
-  /** Squirrel.Windows does not always name the version it has fetched. */
+  /** A release not named as a version leaves the update unnamed. */
   it('still asks for the restart when the version is not known', async () => {
     const { container } = await renderWith(
       SettingsPanel,

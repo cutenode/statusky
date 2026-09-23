@@ -97,13 +97,13 @@ export class FakeSocket implements ProbeSocket {
   constructor(readonly url: string) {}
 
   addEventListener(
-    type: string,
-    listener: (event: never) => void,
+    type: 'open' | 'message' | 'error' | 'close',
+    listener: (event: Event) => void,
     { signal }: { signal: AbortSignal }
   ): void {
     this.listeners++
     signal.addEventListener('abort', () => this.listeners--, { once: true })
-    this.events.addEventListener(type, (event) => listener(event as never), { signal })
+    this.events.addEventListener(type, listener, { signal })
   }
 
   /** Listeners still attached: none, once the probe is done with the socket. */
@@ -157,6 +157,15 @@ function json(body: unknown, contentType = 'application/json; charset=utf-8'): R
 
 function text(body: string, contentType = 'text/plain; charset=utf-8'): Response {
   return new Response(body, { status: 200, headers: { 'content-type': contentType } })
+}
+
+/**
+ * Whether `host` is in one of the catalogue's lists. They are declared `as const`, so
+ * their own `includes` only takes the hosts already in them; widening the list is sound
+ * where narrowing the host to fit would not be.
+ */
+function listed(hosts: readonly string[], host: string): boolean {
+  return hosts.includes(host)
 }
 
 function abortError(): DOMException {
@@ -492,7 +501,7 @@ export class FakeNetwork implements ProbeTransport {
     const { microcosm, tangled, apps, forYou } = CATALOGUE
     const targets = this.targets
 
-    if (CATALOGUE.jetstreams.includes(host as never) && path === '/') {
+    if (listed(CATALOGUE.jetstreams, host) && path === '/') {
       return text('Welcome to Jetstream')
     }
     if (host === microcosm.ufos) {
@@ -535,7 +544,7 @@ export class FakeNetwork implements ProbeTransport {
         )
       }
     }
-    if (CATALOGUE.constellationHosts.includes(host as never) && path === '/') {
+    if (listed(CATALOGUE.constellationHosts, host) && path === '/') {
       // Climbs on every read: a flat count is what says the index has stopped.
       return json({ stats: { linking_records: this.tick('links'), dids: this.tick('dids') } })
     }
@@ -559,7 +568,7 @@ export class FakeNetwork implements ProbeTransport {
     if (host === tangled.api && path === '/health') {
       return json({ mode: 'indexer', name: 'hydrant', version: '0.1.0' })
     }
-    if (tangled.spindles.includes(host as never) && path === '/_health') {
+    if (listed(tangled.spindles, host) && path === '/_health') {
       return json({ status: 'ok' })
     }
     if (host === apps.pckt && path === '/up') {

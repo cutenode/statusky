@@ -86,6 +86,15 @@ describe('normalizePost', () => {
     ).toBeNull()
   })
 
+  // `record` is `unknown` in the lexicon: a claimed `$type` promises nothing about the rest.
+  it('reads a record whose text and facets are not what a post has as plain and empty', () => {
+    const post = normalizePost({
+      ...raw,
+      record: { ...raw.record, text: 42, facets: { index: { byteStart: 0, byteEnd: 1 } } }
+    })
+    expect(post).toMatchObject({ text: '', segments: [], severity: 'update' })
+  })
+
   it.each([
     ['no post at all', undefined],
     ['a missing uri', { ...raw, uri: undefined }],
@@ -431,6 +440,7 @@ describe('embed normalisation', () => {
       embedOf({
         $type: 'app.bsky.embed.record#view',
         record: {
+          $type: 'app.bsky.embed.record#viewRecord',
           uri: 'at://did:plc:quoted/app.bsky.feed.post/abc',
           author: { did: 'did:plc:quoted', handle: 'someone.bsky.social' },
           value: { $type: 'app.bsky.feed.post', text: 'The upstream report' }
@@ -448,14 +458,70 @@ describe('embed normalisation', () => {
     expect(
       embedOf({
         $type: 'app.bsky.embed.record#view',
-        record: { uri: 'at://x/app.bsky.feed.post/y' }
+        record: { $type: 'app.bsky.embed.record#viewRecord', uri: 'at://x/app.bsky.feed.post/y' }
       })
     ).toMatchObject({ author: 'unknown', text: '' })
   })
 
-  it('drops a quoted record with no uri, such as a blocked or deleted post', () => {
-    expect(embedOf({ $type: 'app.bsky.embed.record#view', record: {} })).toBeNull()
-    expect(embedOf({ $type: 'app.bsky.embed.record#view' })).toBeNull()
+  it('reads a quoted record whose text is not a string as having none', () => {
+    expect(
+      embedOf({
+        $type: 'app.bsky.embed.record#view',
+        record: {
+          $type: 'app.bsky.embed.record#viewRecord',
+          uri: 'at://x/app.bsky.feed.post/y',
+          author: { did: 'did:plc:x', handle: 'x.test' },
+          value: { $type: 'app.bsky.feed.post', text: { not: 'text' } }
+        }
+      })
+    ).toMatchObject({ author: 'x.test', text: '' })
+  })
+
+  // Every member of the `record` union carries a uri, so the uri says nothing about
+  // whether there is a post to show; the `$type` does.
+  it.each([
+    [
+      'a deleted post',
+      {
+        $type: 'app.bsky.embed.record#viewNotFound',
+        uri: 'at://did:plc:x/app.bsky.feed.post/y',
+        notFound: true
+      }
+    ],
+    [
+      'a blocked post',
+      {
+        $type: 'app.bsky.embed.record#viewBlocked',
+        uri: 'at://did:plc:x/app.bsky.feed.post/y',
+        blocked: true,
+        author: { did: 'did:plc:x', viewer: {} }
+      }
+    ],
+    [
+      'a detached quote',
+      {
+        $type: 'app.bsky.embed.record#viewDetached',
+        uri: 'at://did:plc:x/app.bsky.feed.post/y',
+        detached: true
+      }
+    ],
+    [
+      'an embedded feed',
+      {
+        $type: 'app.bsky.feed.defs#generatorView',
+        uri: 'at://did:plc:x/app.bsky.feed.generator/y',
+        cid: 'bafy',
+        did: 'did:web:feed.test',
+        creator: { did: 'did:plc:x', handle: 'x.test' },
+        displayName: 'A feed',
+        indexedAt: '2026-09-05T00:00:00Z'
+      }
+    ],
+    ['a record with no $type', { uri: 'at://did:plc:x/app.bsky.feed.post/y' }],
+    ['an empty record', {}],
+    ['no record at all', undefined]
+  ])('drops %s rather than showing an empty quote', (_name, record) => {
+    expect(embedOf({ $type: 'app.bsky.embed.record#view', record })).toBeNull()
   })
 
   it('drops an external embed with no uri', () => {
@@ -536,6 +602,14 @@ describe('timestamp fallbacks', () => {
   it('defaults engagement counters to zero', () => {
     const post = normalizePost({ ...base, record: { $type: 'app.bsky.feed.post', text: 'x' } })
     expect(post).toMatchObject({ replyCount: 0, repostCount: 0, likeCount: 0 })
+  })
+
+  it('falls back to the index time when createdAt is not a string', () => {
+    const post = normalizePost({
+      ...base,
+      record: { $type: 'app.bsky.feed.post', text: 'Update', createdAt: 1_757_030_400_000 }
+    })
+    expect(post?.createdAt).toBe('2026-09-05T00:00:00.000Z')
   })
 
   it('treats an empty display name as absent', () => {

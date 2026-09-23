@@ -5,7 +5,7 @@
   let { segments, text }: { segments: RichSegment[]; text: string } = $props()
 
   /** Fall back to the raw text if facet segmentation produced nothing. */
-  const parts = $derived(segments.length ? segments : ([{ kind: 'text', text }] as RichSegment[]))
+  const parts = $derived<RichSegment[]>(segments.length ? segments : [{ kind: 'text', text }])
 
   function open(event: MouseEvent, url: string): void {
     event.preventDefault()

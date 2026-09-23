@@ -565,19 +565,25 @@ interface Claimed {
   claim: Claim
 }
 
+/** A source that has posted something, so its claim has a time to attribute. */
+interface Spoken extends Claimed {
+  claim: Claim & { at: string }
+}
+
 /** Sources that have actually said something is wrong; the rest attribute nothing. */
-function speaking(claims: Claimed[]): Claimed[] {
+function speaking(claims: Claimed[]): Spoken[] {
   return claims.filter(
-    (c) => c.claim.at !== null && c.claim.health !== 'operational' && c.claim.health !== 'unknown'
+    (c): c is Spoken =>
+      c.claim.at !== null && c.claim.health !== 'operational' && c.claim.health !== 'unknown'
   )
 }
 
-function newest(claims: Claimed[]): Claimed | null {
-  let best: Claimed | null = null
+function newest(claims: Spoken[]): Spoken | null {
+  let best: Spoken | null = null
   for (const candidate of claims) {
-    const at = Date.parse(candidate.claim.at as string)
+    const at = Date.parse(candidate.claim.at)
     if (Number.isNaN(at)) continue
-    if (!best || at > Date.parse(best.claim.at as string)) best = candidate
+    if (!best || at > Date.parse(best.claim.at)) best = candidate
   }
   return best
 }
@@ -600,7 +606,7 @@ function attributionFor(claims: Claimed[], reported: Health): Attribution | null
   return {
     name: chosen.name,
     health: chosen.claim.health,
-    at: chosen.claim.at as string,
+    at: chosen.claim.at,
     others: agreeing.length - 1,
     stale: chosen.claim.stale
   }

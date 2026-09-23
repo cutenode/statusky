@@ -16,6 +16,25 @@ import {
 /** A field or list in the document, as keys and indices from its root. */
 export type TargetPath = readonly (string | number)[]
 
+/**
+ * A path to one of the document's text fields, which is every field the editor draws:
+ * `['feeds', 0, 'host']`, `['apps', 'leaflet', 'feed', 'rkey']`.
+ *
+ * Narrower than `TargetPath`, which an issue may also use to name a whole list or one
+ * entry in it. Built from `ProbeTargets` itself, so a field the editor names that the
+ * document does not have — a typo, or a field renamed underneath it — fails to compile
+ * rather than drawing an empty box that edits nothing the checks read.
+ */
+export type FieldPath = TextPaths<ProbeTargets>
+
+type TextPaths<T> = T extends string
+  ? []
+  : T extends readonly (infer Item)[]
+    ? [number, ...TextPaths<Item>]
+    : T extends object
+      ? { [K in keyof T & string]: [K, ...TextPaths<T[K]>] }[keyof T & string]
+      : never
+
 /** One string per path, `feeds.0.host`, for looking a field's issue up. */
 export function pathKey(path: TargetPath): string {
   return path.join('.')
@@ -43,7 +62,7 @@ export type SectionKey = (typeof SECTIONS)[number]['key']
 export function sectionOf(path: TargetPath): SectionKey | null {
   const [head, next] = path
   const key = head === 'apps' ? next : head
-  return SECTIONS.some((section) => section.key === key) ? (key as SectionKey) : null
+  return SECTIONS.find((section) => section.key === key)?.key ?? null
 }
 
 /** The first issue at each path, since one sentence beside a field is enough. */

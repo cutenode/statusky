@@ -1,6 +1,6 @@
 import { globalShortcut } from 'electron'
 import { formatAccelerator } from '../shared/defaults'
-import type { Platform, ShortcutStatus } from '../shared/types'
+import type { ShortcutStatus } from '../shared/types'
 
 /**
  * Claim `accelerator` from the whole machine, and report what really happened.
@@ -32,7 +32,7 @@ export function applyGlobalShortcut(accelerator: string, summon: () => void): Sh
   globalShortcut.unregisterAll()
   if (!accelerator) return { registered: false, error: null }
 
-  const shown = formatAccelerator(accelerator, process.platform as Platform)
+  const shown = formatAccelerator(accelerator, process.platform)
 
   try {
     if (globalShortcut.register(accelerator, summon)) return { registered: true, error: null }

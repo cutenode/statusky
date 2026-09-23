@@ -30,8 +30,8 @@
    * Commit the port on blur or Enter rather than on every keystroke: each change
    * rebinds a socket, and typing "8080" would walk through three doomed ports first.
    */
-  function commitPort(event: Event): void {
-    const input = event.currentTarget as HTMLInputElement
+  function commitPort(event: Event & { currentTarget: HTMLInputElement }): void {
+    const input = event.currentTarget
     const port = Number(input.value)
     // An empty or nonsensical box is someone mid-edit, not a request for port 0.
     if (!input.value.trim() || !Number.isFinite(port) || port <= 0) return
@@ -39,10 +39,10 @@
     void app.patchSettings({ webhookPort: port })
   }
 
-  function onPortKey(event: KeyboardEvent): void {
+  function onPortKey(event: KeyboardEvent & { currentTarget: HTMLInputElement }): void {
     if (event.key !== 'Enter') return
     commitPort(event)
-    ;(event.currentTarget as HTMLInputElement).blur()
+    event.currentTarget.blur()
   }
 
   // Only ever read inside the `enabled` branch, so it never has to describe being off.
@@ -114,7 +114,7 @@
             readonly
             spellcheck="false"
             aria-label="Webhook endpoint URL"
-            onfocus={(event) => (event.currentTarget as HTMLInputElement).select()}
+            onfocus={(event) => event.currentTarget.select()}
           />
           <Button variant="outline" size="sm" class="shrink-0" onclick={() => void copy(url)}>
             {#if copied}

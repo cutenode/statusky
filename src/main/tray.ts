@@ -7,6 +7,7 @@ import type { Health } from '../shared/status'
 import type {
   AppState,
   NetworkSummary,
+  Platform,
   Settings,
   TrayUnreadStyle,
   UpdateStatus
@@ -65,7 +66,7 @@ const BADGED = (stem: string): string => `${stem}Dot`
  */
 function resolveStyle(
   style: TrayUnreadStyle,
-  platform: string,
+  platform: Platform,
   reduceMotion: boolean
 ): TrayUnreadStyle {
   if (style === 'count' && platform !== 'darwin') return 'dot'
@@ -430,8 +431,8 @@ export class TrayController {
    * are what to do about health. This is the app talking about itself.
    */
   private updateItems(): Electron.MenuItemConstructorOptions[] {
-    // Squirrel.Windows does not always name the version it has downloaded, so the label
-    // has to read without one. See `downloadedVersion` in src/main/update.ts.
+    // A downloaded update is known by its release's name, which need not be a version,
+    // so the label has to read without one. See `downloadedVersion` in src/main/update.ts.
     const named = this.updateStatus.version ? ` ${this.updateStatus.version}` : ''
 
     switch (this.updateStatus.stage) {

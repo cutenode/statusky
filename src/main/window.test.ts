@@ -118,6 +118,10 @@ describe('create', () => {
   })
 })
 
+/**
+ * `will-navigate` is emitted as Electron emits it: the URL on the event, which is where the
+ * popover reads it, and again as the deprecated positional argument beside it.
+ */
 describe('navigation containment', () => {
   it('sends window.open targets to the real browser and denies the popup', () => {
     const { window } = popoverWithWindow()
@@ -132,9 +136,10 @@ describe('navigation containment', () => {
   // outbound link and must not be handed to the OS.
   it('never hands an app:// URL to the browser', () => {
     const { window } = popoverWithWindow()
-    const event = { preventDefault: vi.fn() }
+    const url = 'app://statusky/settings.html'
+    const event = { preventDefault: vi.fn(), url }
 
-    window.webContents.emit('will-navigate', event, 'app://statusky/settings.html')
+    window.webContents.emit('will-navigate', event, url)
 
     expect(event.preventDefault).toHaveBeenCalled()
     expect(openedExternally).toEqual([])
@@ -142,9 +147,10 @@ describe('navigation containment', () => {
 
   it('blocks in-place navigation away from the app', () => {
     const { window } = popoverWithWindow()
-    const event = { preventDefault: vi.fn() }
+    const url = 'https://evil.test/'
+    const event = { preventDefault: vi.fn(), url }
 
-    window.webContents.emit('will-navigate', event, 'https://evil.test/')
+    window.webContents.emit('will-navigate', event, url)
 
     expect(event.preventDefault).toHaveBeenCalled()
     expect(openedExternally).toEqual(['https://evil.test/'])
@@ -153,9 +159,10 @@ describe('navigation containment', () => {
   it('allows a reload of the page it is already on', () => {
     const { window } = popoverWithWindow()
     window.webContents.url = 'http://localhost:5173/'
-    const event = { preventDefault: vi.fn() }
+    const url = 'http://localhost:5173/'
+    const event = { preventDefault: vi.fn(), url }
 
-    window.webContents.emit('will-navigate', event, 'http://localhost:5173/')
+    window.webContents.emit('will-navigate', event, url)
 
     expect(event.preventDefault).not.toHaveBeenCalled()
     expect(openedExternally).toEqual([])

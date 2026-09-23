@@ -39,19 +39,20 @@ interface ListenerOptions {
   signal: AbortSignal
 }
 
-/** The part of a WebSocket the firehose check uses: Electron's `net.WebSocket` and Node's both fit. */
+/**
+ * The part of a WebSocket the stream checks use, as Electron's `net.WebSocket` and Node's
+ * are both typed, so either can be handed over without a cast.
+ *
+ * Electron's inherits a bare `EventTarget`, which promises a listener an `Event` and
+ * nothing more: no `data` on a message, no `code` on a close. Both are there at runtime,
+ * but a signature claiming them here would be a promise Electron's type does not make, so
+ * they are narrowed where they are read instead.
+ */
 export interface ProbeSocket {
   binaryType: string
-  addEventListener(type: 'open', listener: () => void, options: ListenerOptions): void
   addEventListener(
-    type: 'message',
-    listener: (event: { data: unknown }) => void,
-    options: ListenerOptions
-  ): void
-  addEventListener(type: 'error', listener: () => void, options: ListenerOptions): void
-  addEventListener(
-    type: 'close',
-    listener: (event: { code: number }) => void,
+    type: 'open' | 'message' | 'error' | 'close',
+    listener: (event: Event) => void,
     options: ListenerOptions
   ): void
   close(): void
@@ -597,7 +598,10 @@ function watchStream(ctx: ProbeContext, check: Check, watch: StreamWatch): Promi
     socket.addEventListener('error', () => finish(`${watch.subject} connection failed`), { signal })
     socket.addEventListener(
       'close',
-      (event) => finish(`${watch.subject} connection closed (${event.code})`),
+      (event) => {
+        const code = 'code' in event && typeof event.code === 'number' ? ` (${event.code})` : ''
+        finish(`${watch.subject} connection closed${code}`)
+      },
       { signal }
     )
     socket.addEventListener(
@@ -605,7 +609,8 @@ function watchStream(ctx: ProbeContext, check: Check, watch: StreamWatch): Promi
       (event) => {
         // Anything arriving is proof of a connection, whatever the `open` event did.
         connected = true
-        const message = watch.read(event.data)
+        // A message with nothing on it reads as bytes that would not decode, which it is.
+        const message = watch.read('data' in event ? event.data : undefined)
         if (message.kind === 'undecodable') return finish(watch.undecodable)
         if (message.kind === 'error') return finish(message.message)
         if (message.kind === 'badtime') return finish('Received invalid timestamp')
@@ -835,9 +840,11 @@ function probePds(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promis
     if (!repos.passed || !isObject(body) || !Array.isArray(body.repos)) {
       return records.fail('Skipped because listRepos failed', { timed: false })
     }
+    // `active` is optional in `com.atproto.sync.listRepos#repo`, and a host that leaves it
+    // out has said nothing against the repository; only an explicit `false` rules one out.
     const repo = body.repos.find(
       (entry): entry is { did: string } =>
-        isObject(entry) && entry.active === true && typeof entry.did === 'string'
+        isObject(entry) && entry.active !== false && typeof entry.did === 'string'
     )
     if (!repo) return records.fail('No active repository found', { timed: false })
 

@@ -7,7 +7,7 @@
   import { cn } from '$lib/utils'
   import { HEALTH_NOUN } from '@shared/status'
   import { sinceTime } from '@shared/time'
-  import type { Component } from 'svelte'
+  import type { LucideIcon } from '@lucide/svelte'
   import Activity from '@lucide/svelte/icons/activity'
   import CheckCheck from '@lucide/svelte/icons/check-check'
   import Inbox from '@lucide/svelte/icons/inbox'
@@ -70,7 +70,7 @@
    * test asks for it by. Only the selected tab spells itself out, which fits because
    * exactly one ever does.
    */
-  const TABS: { id: Tab; label: string; icon: Component }[] = [
+  const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'timeline', label: 'Timeline', icon: Inbox },
     { id: 'feed', label: 'Feed', icon: Newspaper },
     { id: 'network', label: 'Network', icon: Activity }

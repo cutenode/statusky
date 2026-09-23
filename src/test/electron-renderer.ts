@@ -6,6 +6,8 @@
  * frame?" before it exposes anything, so the double has to be able to say both yes and
  * no — see `subFrame()`.
  */
+import type * as Real from 'electron/renderer'
+import type { Conforms, Surface } from './electron'
 
 export class FakeWebFrame {
   routingId = 1
@@ -13,7 +15,12 @@ export class FakeWebFrame {
   /** `null` means "I am the top frame". Set it to pretend to be an iframe. */
   parentFrame: FakeWebFrame | null = null
 
-  get top(): FakeWebFrame {
+  /**
+   * Typed as Electron types it, though the double never answers `null`: a real frame
+   * whose top-level page lives in another renderer process — a cross-site iframe, under
+   * site isolation — does, and anything reading this has to cope with that.
+   */
+  get top(): FakeWebFrame | null {
     return this.parentFrame ? this.parentFrame.top : this
   }
 }
@@ -35,3 +42,8 @@ export function resetWebFrame(): void {
 }
 
 export default { webFrame }
+
+/** The frame identity the generated preload compares, held to Electron's. See electron.ts. */
+export type _DriftGuards = [
+  Conforms<FakeWebFrame, Surface<Real.WebFrame, 'routingId' | 'frameToken'>>
+]

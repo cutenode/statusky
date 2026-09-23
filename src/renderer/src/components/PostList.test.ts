@@ -1,5 +1,6 @@
-import { describe, expect, it, vi, type Mock } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fireEvent } from '@testing-library/svelte'
+import type { ComponentProps } from 'svelte'
 import Inbox from '@lucide/svelte/icons/inbox'
 import { makeAccount, makePost, makeSettings } from '../../../test/factories'
 import { pushState, renderWith, settle } from '../test/render'
@@ -36,7 +37,7 @@ const EMPTY = {
 function props(
   posts = [today, yesterday],
   accounts = [accountA, accountB]
-): Record<string, unknown> {
+): ComponentProps<typeof PostList> {
   return { now: NOW, posts, accounts, ...EMPTY }
 }
 
@@ -287,12 +288,12 @@ describe('marking read on open', () => {
 
   it('stops listening once the tab is gone', async () => {
     const { bridge, unmount } = await renderWith(PostList, props(), unreadList)
-    const calls = (bridge.api.Feed.markRead as Mock).mock.calls.length
+    const calls = vi.mocked(bridge.api.Feed.markRead).mock.calls.length
 
     unmount()
     window.dispatchEvent(new Event('focus'))
 
-    expect((bridge.api.Feed.markRead as Mock).mock.calls.length).toBe(calls)
+    expect(vi.mocked(bridge.api.Feed.markRead).mock.calls.length).toBe(calls)
   })
 
   it('sends what scrolled past before the popover was dismissed', async () => {

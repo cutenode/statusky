@@ -196,9 +196,10 @@ export function notifyPosts(posts: StatusPost[], settings: Settings, deps: Notif
         : 'Posted a status update.',
       subtitle: sourceLabel(post.authorDid, post.authorHandle),
       silent: !bannerSound(settings, [post.severity]),
-      // `never` only holds on macOS when Statusky's banners are set to the Alerts style,
-      // which forge.config.ts asks for; everywhere else it is a request the OS may round
-      // down, and the worst it can do is behave like `default`.
+      // Electron reads `timeoutType` on Windows and Linux only, and there it is a request
+      // the OS may round down, the worst of which is behaving like `default`. macOS ignores
+      // it: how long a banner stays is the style picked in System Settings, and the Alerts
+      // style forge.config.ts asks for keeps every banner up, outage or not.
       timeoutType: settings.notifyStickyOutages && post.severity === 'outage' ? 'never' : 'default',
       actions: actions.map((action) => ({ type: 'button' as const, text: action.text })),
       ...collapseKeys(post)

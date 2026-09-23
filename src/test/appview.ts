@@ -132,6 +132,7 @@ export const embeds = {
     return {
       $type: 'app.bsky.embed.record#view',
       record: {
+        $type: 'app.bsky.embed.record#viewRecord',
         uri: 'at://did:plc:quoted/app.bsky.feed.post/abc',
         author: { did: 'did:plc:quoted', handle: author },
         value: { $type: 'app.bsky.feed.post', text }
@@ -172,9 +173,9 @@ export class FakeAppView {
   setFeed(actor: RawProfile, posts: (RawPostView | RawFeedItem | PostSpec)[]): this {
     this.addProfile(actor)
     const items = posts.map((entry) => {
-      if ('post' in entry) return entry as RawFeedItem
-      if ('uri' in entry) return { post: entry as RawPostView }
-      return { post: rawPost(actor, entry as PostSpec) }
+      if ('post' in entry) return entry
+      if ('uri' in entry) return { post: entry }
+      return { post: rawPost(actor, entry) }
     })
     this.feeds.set(actor.did, items)
     this.feeds.set(actor.handle.toLowerCase(), items)
@@ -208,7 +209,7 @@ export class FakeAppView {
 
   install(): () => void {
     this.originalFetch = globalThis.fetch
-    globalThis.fetch = this.fetch as typeof globalThis.fetch
+    globalThis.fetch = this.fetch
     return () => this.uninstall()
   }
 
@@ -229,7 +230,8 @@ export class FakeAppView {
     input: string | URL | Request,
     init: RequestInit = {}
   ): Promise<Response> => {
-    const url = new URL(typeof input === 'string' ? input : input.toString(), PUBLIC_APPVIEW)
+    // A `Request` stringifies as `[object Request]`, not as where it is going.
+    const url = new URL(input instanceof Request ? input.url : input.toString(), PUBLIC_APPVIEW)
 
     // This double stands in for the AppView, not for the whole network. Anything
     // that is not an XRPC call — a test knocking on the app's own webhook socket,

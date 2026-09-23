@@ -1,5 +1,5 @@
 import { app, autoUpdater, net } from 'electron'
-import { updateElectronApp } from 'update-electron-app'
+import { updateElectronApp, type IUpdateInfo } from 'update-electron-app'
 import { LATEST_RELEASE_API, RELEASE_REPO } from '../shared/defaults'
 import type { Platform } from '../shared/types'
 
@@ -41,7 +41,7 @@ import type { Platform } from '../shared/types'
  * a call would log one line and return, leaving nobody updated and nobody told. Which of
  * the two mechanisms runs is a decision this module makes, so it needs the list.
  */
-const SELF_UPDATING_PLATFORMS: ReadonlySet<string> = new Set(['darwin', 'win32'])
+const SELF_UPDATING_PLATFORMS: ReadonlySet<Platform> = new Set(['darwin', 'win32'])
 
 /**
  * How long between checks, for both mechanisms.
@@ -84,8 +84,8 @@ export interface UpdateDeps {
    */
   onAvailable(version: string): void
   /**
-   * An update has been downloaded and applies on the next launch. `version` is null on a
-   * platform that would not say which one; see `downloadedVersion`.
+   * An update has been downloaded and applies on the next launch. `version` is null when
+   * the release was not named as a version; see `downloadedVersion`.
    */
   onReady(version: string | null): void
 }
@@ -236,21 +236,23 @@ export async function latestReleaseTag(): Promise<string | null> {
  * The version a downloaded update will install, as well as it can be known.
  *
  * `update-electron-app` passes Squirrel's own `update-downloaded` arguments straight
- * through, and the two platforms fill them in differently: Squirrel.Mac puts the
- * release's name in `releaseName`, while Squirrel.Windows leaves that empty and puts the
- * version in `releaseNotes`. The package's own `makeUserNotifier` branches on exactly
- * this, which is the only documentation of it there is.
+ * through, and `releaseName` is the one that names the update on both platforms. On
+ * Windows Electron emits the version of the package Squirrel downloaded there, and the
+ * notes in `releaseNotes` — which is what the event's declaration means by "with
+ * Squirrel.Windows only `releaseName` is available". On macOS it is whatever
+ * update.electronjs.org calls the release: the GitHub release's name, or its tag when it
+ * has none. The package's own `makeUserNotifier` does branch on the platform, but only
+ * to choose the dialog's *message*, and on Windows the notes make the better one; it says
+ * nothing about where the version is.
  *
- * Either can still arrive empty, and a menu entry offering to install "" is worse than
- * one that simply offers to install, so anything that does not parse as a version at all
- * becomes null and the menu says less. `parseVersion` is reused rather than a looser test
- * written, so "looks like a version" means one thing in this file.
+ * A release name need not be a version, and a menu entry offering to install "Autumn
+ * release" or "" is worse than one that simply offers to install, so anything that does
+ * not parse as a version at all becomes null and the menu says less. `parseVersion` is
+ * reused rather than a looser test written, so "looks like a version" means one thing in
+ * this file.
  */
-export function downloadedVersion(
-  info: { releaseName?: string; releaseNotes?: string },
-  platform: string
-): string | null {
-  const raw = (platform === 'win32' ? info.releaseNotes : info.releaseName)?.trim() ?? ''
+export function downloadedVersion(info: Pick<IUpdateInfo, 'releaseName'>): string | null {
+  const raw = info.releaseName.trim()
   return parseVersion(raw) ? raw.replace(/^v/i, '') : null
 }
 
@@ -296,7 +298,7 @@ export function restartToUpdate(): void {
  * fallback's failure mode is silence.
  */
 export function watchUpdates(deps: UpdateDeps, options: UpdateOptions = {}): UpdateWatcher {
-  const platform = options.platform ?? (process.platform as Platform)
+  const platform = options.platform ?? process.platform
   const intervalMs = options.intervalMs ?? CHECK_INTERVAL_MS
 
   // Nothing to update: a checkout runs from source, and `release/` is rebuilt by the
@@ -342,7 +344,7 @@ export function watchUpdates(deps: UpdateDeps, options: UpdateOptions = {}): Upd
        * live: `stage: 'ready'` puts a restart entry in the tray menu, and it waits there
        * as long as the user likes. See `TrayController.buildMenu`.
        */
-      onNotifyUser: (info) => deps.onReady(downloadedVersion(info, platform))
+      onNotifyUser: (info) => deps.onReady(downloadedVersion(info))
     })
   } catch (error) {
     // `updateElectronApp` validates its options by assertion and reads `package.json`

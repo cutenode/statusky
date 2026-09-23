@@ -65,6 +65,20 @@ export interface TestBridge {
   restore(): void
 }
 
+/**
+ * `StatuskyBridge` with each method as a plain function type. Methods are compared
+ * bivariantly even under `strictFunctionTypes`, so a double whose handler accepted less
+ * than the schema allows — an `AccountPatch` narrowed to `{ muted: boolean }`, say —
+ * would still satisfy the interface itself; against this it does not.
+ */
+type Strictly<Bridge> = {
+  [I in keyof Bridge]: {
+    [M in keyof Bridge[I]]: Bridge[I][M] extends (...args: infer A) => infer R
+      ? (...args: A) => R
+      : Bridge[I][M]
+  }
+}
+
 /** What crossing the IPC boundary does to a value, in either direction. */
 function across<T>(value: T): T {
   return structuredClone(value)
@@ -105,7 +119,7 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
 
   const account = (did: string): Account | undefined => state.accounts.find((a) => a.did === did)
 
-  const api: StatuskyBridge = {
+  const api = {
     State: {
       get: vi.fn(async () => structuredClone(state)),
 
@@ -274,7 +288,7 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
       sendTestNotification: vi.fn(async () => undefined),
       getPlatform: vi.fn(async () => platform)
     }
-  }
+  } satisfies Strictly<StatuskyBridge>
 
   const target = globalThis as Record<string, unknown>
   const previous = target.statusky

@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Component } from 'svelte'
   import { app } from '$lib/app-state.svelte'
   import { flushSeen } from '$lib/seen.svelte'
   import { cn } from '$lib/utils'
   import { dayLabel } from '@shared/time'
+  import { sourceLabel } from '@shared/webhook'
   import type { Account, StatusPost } from '@shared/types'
+  import type { LucideIcon } from '@lucide/svelte'
   import CircleCheck from '@lucide/svelte/icons/circle-check'
   import EmptyState from './EmptyState.svelte'
   import PostCard from './PostCard.svelte'
@@ -28,7 +29,7 @@
     now: number
     posts: StatusPost[]
     accounts: Account[]
-    emptyIcon: Component
+    emptyIcon: LucideIcon
     emptyTitle: string
     emptyDescription: string
   } = $props()
@@ -136,7 +137,7 @@
           <button
             type="button"
             onclick={() => (accountFilter = accountFilter === account.did ? null : account.did)}
-            title={`@${account.handle}`}
+            title={sourceLabel(account.did, account.handle)}
             class={cn(
               'max-w-[7.5rem] shrink-0 truncate rounded-full border px-2 py-[2px] text-[11px] transition-colors',
               accountFilter === account.did

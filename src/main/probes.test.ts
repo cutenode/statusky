@@ -14,6 +14,7 @@ import {
   tidToMillis,
   type ProbeContext,
   type ProbeCounters,
+  type ProbeSocket,
   type ProbeTimings,
   type ProbeTransport
 } from './probes'
@@ -206,6 +207,40 @@ describe('a relay', () => {
     network.sockets[0]!.emit(frame({ op: 1, t: '#identity' }, { seq: 1, did: 'did:plc:someone' }))
     await done
     expect(check(checks, 'firehose').error).toBe('No commits received')
+  })
+
+  /**
+   * Electron's `net.WebSocket` is typed as a bare `EventTarget`, whose listeners are
+   * promised an `Event` and nothing on it. These are the events that promise allows.
+   */
+  describe('on a socket whose events carry nothing', () => {
+    function bare(): { transport: ProbeTransport; dispatch(type: string): void } {
+      const events = new EventTarget()
+      const socket: ProbeSocket = {
+        binaryType: 'blob',
+        addEventListener: (type, listener, options) =>
+          events.addEventListener(type, listener, options),
+        close: () => {}
+      }
+      return {
+        transport: { fetch: (url, init) => network.fetch(url, init), openSocket: () => socket },
+        dispatch: (type) => void events.dispatchEvent(new Event(type))
+      }
+    }
+
+    it.each([
+      ['close', 'Firehose connection closed'],
+      ['message', 'Failed to decode a firehose frame']
+    ])('reads a %s with nothing on it', async (type, error) => {
+      const { transport, dispatch } = bare()
+      const checks: ProbeCheck[] = []
+      const timings = { ...QUICK, firehoseWindowMs: 2_000 }
+      const done = probeService(service(id), checks, context({ transport, timings }))
+      await vi.waitFor(() => expect(check(checks, 'firehose').ok).toBeNull())
+      dispatch(type)
+      await done
+      expect(check(checks, 'firehose').error).toBe(error)
+    })
   })
 
   it('passes as soon as a fresh commit follows a stale one', async () => {
@@ -439,6 +474,24 @@ describe('a PDS', () => {
     const { checks } = await probe(id)
     expect(check(checks, 'listRepos').ok).toBe(true)
     expect(check(checks, 'listRecords').error).toBe('No active repository found')
+  })
+
+  // `active` is optional in `com.atproto.sync.listRepos#repo`.
+  it('reads a repository whose host does not say whether it is active', async () => {
+    network.fail(
+      host,
+      {
+        kind: 'respond',
+        body: JSON.stringify({ repos: [{ did: 'did:plc:repo', head: 'bafy', rev: tid(0) }] }),
+        contentType: 'application/json'
+      },
+      '/xrpc/com.atproto.sync.listRepos'
+    )
+    const { checks } = await probe(id)
+    expect(check(checks, 'listRecords')).toMatchObject({
+      ok: true,
+      target: expect.stringContaining('repo=did%3Aplc%3Arepo')
+    })
   })
 })
 

@@ -18,6 +18,8 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
     "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": true,
     "types": ["node"],
     "paths": {
       "@shared/*": ["./src/shared/*"],
@@ -34,6 +36,8 @@
     "forge.config.ts",
     "electron.vite.config.ts",
     "vitest.config.ts",
+    ".claude/preview.vite.config.ts",
+    "src/renderer/svelte.config.js",
     "scripts/**/*.mjs"
   ]
 }

@@ -299,28 +299,24 @@ describe('latestReleaseTag against a connection that stalls', () => {
 })
 
 /**
- * The two platforms fill Squirrel's `update-downloaded` arguments in differently, and
- * `makeUserNotifier` inside `update-electron-app` branching on exactly this is the only
- * documentation of it there is.
+ * Electron emits Squirrel.Windows' package version as `releaseName` and its notes as
+ * `releaseNotes`, and Squirrel.Mac's release name as `releaseName`: the name is the one
+ * argument that says which update it is on both.
  */
 describe('downloadedVersion', () => {
-  it('reads the release name on macOS and the notes on Windows', () => {
-    const info = { releaseName: '0.3.0', releaseNotes: '0.4.0' }
-
-    expect(downloadedVersion(info, 'darwin')).toBe('0.3.0')
-    expect(downloadedVersion(info, 'win32')).toBe('0.4.0')
+  it('reads the release name, never the notes', () => {
+    expect(downloadedVersion({ releaseName: '0.3.0' })).toBe('0.3.0')
   })
 
   it('drops the v, so it reads beside AppState.version', () => {
-    expect(downloadedVersion({ releaseName: 'v0.3.0' }, 'darwin')).toBe('0.3.0')
+    expect(downloadedVersion({ releaseName: 'v0.3.0' })).toBe('0.3.0')
   })
 
   /** A menu entry offering to install "" is worse than one that just offers to install. */
-  it('is null when the platform would not say which version', () => {
-    expect(downloadedVersion({}, 'darwin')).toBeNull()
-    expect(downloadedVersion({ releaseName: '  ' }, 'darwin')).toBeNull()
-    expect(downloadedVersion({ releaseName: 'Autumn release' }, 'darwin')).toBeNull()
-    expect(downloadedVersion({ releaseName: '0.3.0' }, 'win32')).toBeNull()
+  it('is null when the release is not named as a version', () => {
+    expect(downloadedVersion({ releaseName: '' })).toBeNull()
+    expect(downloadedVersion({ releaseName: '  ' })).toBeNull()
+    expect(downloadedVersion({ releaseName: 'Autumn release' })).toBeNull()
   })
 })
 
@@ -399,12 +395,13 @@ describe('watchUpdates where Squirrel can do the work', () => {
     expect(on.onAvailable).not.toHaveBeenCalled()
   })
 
-  it('takes the version from the notes on Windows, where the name is empty', () => {
+  /** The version is Squirrel.Windows' `releaseName` too; its notes are only notes. */
+  it('takes the version from the release name on Windows as well', () => {
     app.isPackaged = true
     const on = deps()
     watch(on, { platform: 'win32' })
 
-    lastSelfUpdater().finishDownload({ releaseName: '', releaseNotes: '0.5.0' })
+    lastSelfUpdater().finishDownload({ releaseName: '0.5.0', releaseNotes: '2026-09 fixes' })
 
     expect(on.onReady).toHaveBeenCalledWith('0.5.0')
   })

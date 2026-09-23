@@ -97,6 +97,30 @@ describe('rejecting what should never cross', () => {
     expect(settingsPatchSchema.safeParse({}).success).toBe(true)
   })
 
+  /**
+   * Main is handed the patch as it arrived rather than the parsed copy, so a key Zod would
+   * only strip would still be spread over the stored account or settings.
+   */
+  it('rejects a patch naming a field the renderer may not change', () => {
+    expect(accountPatchSchema.safeParse({ muted: true, builtin: false }).success).toBe(false)
+    expect(accountPatchSchema.safeParse({ did: 'did:plc:someone-else' }).success).toBe(false)
+    expect(settingsPatchSchema.safeParse({ theme: 'dark', schemaVersion: 1 }).success).toBe(false)
+  })
+
+  /** Spread over what main has stored, a present-but-undefined field erases it. */
+  it('rejects a patch that sends a field as undefined rather than leaving it out', () => {
+    expect(accountPatchSchema.safeParse({ muted: undefined }).success).toBe(false)
+    expect(settingsPatchSchema.safeParse({ theme: undefined }).success).toBe(false)
+    expect(settingsPatchSchema.safeParse({ probeTargets: undefined }).success).toBe(false)
+  })
+
+  it('still takes every setting on its own', () => {
+    const settings = makeState().settings
+    for (const [key, value] of Object.entries(settings)) {
+      expect(settingsPatchSchema.safeParse({ [key]: value }).success, key).toBe(true)
+    }
+  })
+
   it.each([null, undefined, 42, 'a string', []])('rejects %s as an app state', (value) => {
     expect(appStateSchema.safeParse(value).success).toBe(false)
   })

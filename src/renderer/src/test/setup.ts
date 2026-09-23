@@ -55,7 +55,7 @@ class FakeIntersectionObserver {
     if (!this.targets.has(target)) return false
     this.callback([
       { target, isIntersecting: ratio > 0, intersectionRatio: ratio }
-    ] as unknown as IntersectionObserverEntry[])
+    ] as IntersectionObserverEntry[])
     return true
   }
 }
@@ -126,7 +126,7 @@ export function mediaListenerCount(query: string): number {
   return listenersFor(query).size
 }
 
-globalThis.ResizeObserver ??= FakeObserver as unknown as typeof ResizeObserver
+globalThis.ResizeObserver ??= FakeObserver
 globalThis.IntersectionObserver ??=
   FakeIntersectionObserver as unknown as typeof IntersectionObserver
 

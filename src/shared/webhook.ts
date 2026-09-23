@@ -108,10 +108,18 @@ const MAINTENANCE_SEVERITY: Record<string, Severity> = {
 }
 
 /**
+ * The component states a delivery can name, after `statusKey`. Both tables below are
+ * keyed by exactly this set, so a state added to one and not the other is a compile
+ * error rather than a feed entry reading "Relay is undefined."
+ */
+type ComponentStatus =
+  'OPERATIONAL' | 'UNDERMAINTENANCE' | 'DEGRADEDPERFORMANCE' | 'PARTIALOUTAGE' | 'MAJOROUTAGE'
+
+/**
  * Component health. `PARTIALOUTAGE` maps to `outage` rather than `degraded`: our scale
  * reads `degraded` as slow-but-working, and a partial outage is not that.
  */
-const COMPONENT_SEVERITY: Record<string, Severity> = {
+const COMPONENT_SEVERITY: Record<ComponentStatus, Severity> = {
   OPERATIONAL: 'resolved',
   UNDERMAINTENANCE: 'maintenance',
   DEGRADEDPERFORMANCE: 'degraded',
@@ -119,7 +127,11 @@ const COMPONENT_SEVERITY: Record<string, Severity> = {
   MAJOROUTAGE: 'outage'
 }
 
-const COMPONENT_LABEL: Record<string, string> = {
+function isComponentStatus(key: string): key is ComponentStatus {
+  return Object.hasOwn(COMPONENT_SEVERITY, key)
+}
+
+const COMPONENT_LABEL: Record<ComponentStatus, string> = {
   OPERATIONAL: 'operational',
   UNDERMAINTENANCE: 'under maintenance',
   DEGRADEDPERFORMANCE: 'seeing degraded performance',
@@ -169,15 +181,28 @@ interface RawComponentUpdate {
   created_at?: unknown
 }
 
+/**
+ * A delivery's top level, once it is known to be an object at all.
+ *
+ * Every part is still whatever the sender put there: `page` is a `RawPage` when the
+ * payload is well formed, and a string, a number or null when it is not, so each one is
+ * only read as its shape after `isObject` has said it is one. The interfaces above are
+ * what a part looks like *after* that check — an object whose fields are unverified.
+ */
 export interface RawWebhookBody {
-  page?: RawPage
-  incident?: RawIncident
-  maintenance?: RawIncident
-  component?: RawComponent
-  component_update?: RawComponentUpdate
+  page?: unknown
+  incident?: unknown
+  maintenance?: unknown
+  component?: unknown
+  component_update?: unknown
 }
 
 // ------------------------------------------------------------- small helpers
+
+/** A JSON object, as opposed to an array, a primitive or null. */
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 function str(value: unknown, max: number): string {
   return typeof value === 'string' ? value.slice(0, max).trim() : ''
@@ -203,9 +228,11 @@ function hostOf(url: string | null): string | null {
 /** Normalise a timestamp to ISO, or null when it is missing or unparseable. */
 function isoOrNull(value: unknown): string | null {
   if (typeof value !== 'string' && typeof value !== 'number') return null
-  const ms = typeof value === 'number' ? value : Date.parse(value)
-  if (!Number.isFinite(ms)) return null
-  return new Date(ms).toISOString()
+  // Checked on the Date rather than the number: a finite number can still lie outside
+  // the range a Date holds, and `toISOString` throws on one of those rather than
+  // answering, which would take the whole delivery down with it.
+  const date = new Date(typeof value === 'number' ? value : Date.parse(value))
+  return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
 /** Statuses arrive in assorted casing and with spaces or underscores between words. */
@@ -443,7 +470,9 @@ function parseSource(page: RawPage | undefined): WebhookSource | null {
 
 function updatesOf(incident: RawIncident): RawUpdate[] {
   const raw = incident.incident_updates ?? incident.maintenance_updates
-  return Array.isArray(raw) ? (raw.slice(0, MAX_UPDATES) as RawUpdate[]) : []
+  // Only the entries that are objects: a `null` in the list would otherwise throw on the
+  // first field read off it, and a number would become an entry with nothing to say.
+  return Array.isArray(raw) ? raw.filter(isObject).slice(0, MAX_UPDATES) : []
 }
 
 /**
@@ -520,8 +549,8 @@ function parseComponent(
   if (!componentId && !name) return []
 
   const status = statusKey(update.new_status) || statusKey(component.status)
+  if (!isComponentStatus(status)) return []
   const severity = COMPONENT_SEVERITY[status]
-  if (!severity) return []
 
   const createdAt = isoOrNull(update.created_at) ?? receivedAt
   return [
@@ -550,16 +579,16 @@ export function parseWebhookDelivery(
   body: unknown,
   receivedAt: string = new Date().toISOString()
 ): WebhookDelivery | null {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return null
-  const payload = body as RawWebhookBody
+  if (!isObject(body)) return null
+  const payload: RawWebhookBody = body
 
-  const source = parseSource(payload.page)
+  const source = parseSource(isObject(payload.page) ? payload.page : undefined)
   if (!source) return null
 
   let posts: StatusPost[] = []
-  if (payload.incident && typeof payload.incident === 'object') {
+  if (isObject(payload.incident)) {
     posts = parseIncident(payload.incident, source, INCIDENT_SEVERITY, 'incident', receivedAt)
-  } else if (payload.maintenance && typeof payload.maintenance === 'object') {
+  } else if (isObject(payload.maintenance)) {
     posts = parseIncident(
       payload.maintenance,
       source,
@@ -567,9 +596,9 @@ export function parseWebhookDelivery(
       'maintenance',
       receivedAt
     )
-  } else if (payload.component_update && typeof payload.component_update === 'object') {
+  } else if (isObject(payload.component_update)) {
     posts = parseComponent(
-      (payload.component as RawComponent | undefined) ?? {},
+      isObject(payload.component) ? payload.component : {},
       payload.component_update,
       source,
       receivedAt

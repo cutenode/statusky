@@ -24,8 +24,12 @@ export interface PersistedShape extends Record<string, unknown> {
    * It is the only credential protecting the receiver, so it is minted once per install
    * and never logged. It used to sit beside this key in the clear, where anything
    * running as the user could read it out of `statusky.json`; schema 5 moved it.
+   *
+   * Optional, like `webhookSecret`, because `writeWebhookSecret` deletes whichever of the
+   * two it did not use, and a deleted key reads back as `undefined` rather than as its
+   * default until the next launch merges the defaults back in.
    */
-  webhookSecretEncrypted: string
+  webhookSecretEncrypted?: string
   /**
    * The same secret in the clear, and only on a machine that has nowhere better to put
    * it: a Linux desktop with no secret service running is a real configuration, and
@@ -33,7 +37,18 @@ export interface PersistedShape extends Record<string, unknown> {
    * two keys ever holds the secret — `writeWebhookSecret` decides which and deletes
    * the other — so a value here is a statement that `safeStorage` had nothing to offer.
    */
-  webhookSecret: string
+  webhookSecret?: string
+}
+
+/**
+ * An account as any build since schema 1 may have left it on disk, which is what
+ * `reconcile` reads before it has had the chance to bring it up to date.
+ */
+type StoredAccount = Omit<Account, 'notify' | 'kind'> & {
+  /** Schema 5 and earlier had a switch here rather than a level. */
+  notify: Account['notify'] | boolean
+  /** Schema 2 predates pushed sources, and wrote none. */
+  kind?: Account['kind']
 }
 
 const SCHEMA_VERSION = 6
@@ -103,7 +118,7 @@ export function reconcile(store: ElectronStore<PersistedShape>): void {
   // version wrote it, and deleting a key that is not there costs nothing.
   store.delete('discovery' as keyof PersistedShape & string)
 
-  const accounts = store.get('accounts') ?? []
+  const accounts: StoredAccount[] = store.get('accounts') ?? []
   const known = new Set(accounts.map((a) => a.did))
   const addedAt = new Date().toISOString()
 
@@ -115,16 +130,27 @@ export function reconcile(store: ElectronStore<PersistedShape>): void {
   }
   // A previously user-added account that later ships with the app becomes builtin.
   const builtinDids = new Set(BUILTIN_ACCOUNTS.map((a) => a.did))
-  for (const account of merged) {
-    if (builtinDids.has(account.did)) account.builtin = true
-    // Schema 2 predates pushed sources; everything it persisted was polled.
-    account.kind ??= 'atproto'
-    // Schema 5 and earlier had a notify switch rather than a level. On meant "whatever
-    // the settings say", which is `default`; off was no banners.
-    const notify = account.notify as unknown
-    if (typeof notify === 'boolean') account.notify = notify ? 'default' : 'off'
-  }
-  store.set('accounts', merged)
+  store.set(
+    'accounts',
+    merged.map((account): Account => {
+      // Typed as `Account`'s own fields rather than inferred, so that a migration writing
+      // a value this build has no name for fails the type-check instead of the next push.
+      const current: Pick<Account, 'builtin' | 'kind' | 'notify'> = {
+        builtin: account.builtin || builtinDids.has(account.did),
+        // Schema 2 predates pushed sources; everything it persisted was polled.
+        kind: account.kind ?? 'atproto',
+        // Schema 5 and earlier had a notify switch rather than a level. On meant
+        // "whatever the settings say", which is `default`; off was no banners.
+        notify:
+          typeof account.notify === 'boolean'
+            ? account.notify
+              ? 'default'
+              : 'off'
+            : account.notify
+      }
+      return Object.assign(account, current)
+    })
+  )
 
   store.set('schemaVersion', SCHEMA_VERSION)
 }
@@ -182,7 +208,12 @@ function migrateRead(store: ElectronStore<PersistedShape>): ReadState {
   // answers the read as convincingly as a stored one would, and both are empty.
   if (store.get('schemaVersion') >= READ_CURSORS_SCHEMA) return store.get('read')
 
-  const unread = (store.get('unread') as string[] | undefined) ?? []
+  // No longer a key of `PersistedShape`, so nothing but this check says what it holds; a
+  // hand-edited `5` here would otherwise throw out of `createStore` and stop the app.
+  const stored = store.get('unread')
+  const unread = Array.isArray(stored)
+    ? stored.filter((uri: unknown): uri is string => typeof uri === 'string')
+    : []
   const read = readStateFromUnread(store.get('posts') ?? [], unread)
   // Schema 3's key has no reader left; leave nothing behind to drift.
   store.delete('unread' as keyof PersistedShape & string)

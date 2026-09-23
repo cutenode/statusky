@@ -40,9 +40,12 @@ export interface ProbeTargetsFile {
   open(): Promise<OpenedFile | null>
 }
 
-/** What went wrong, from Node's file system, which throws nothing but `Error`s. */
+/**
+ * What went wrong. Node's file system throws nothing but `Error`s, but a `catch` is handed
+ * `unknown`, and a cast would turn anything else into "undefined" in front of the user.
+ */
 function reason(error: unknown): string {
-  return (error as Error).message
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**

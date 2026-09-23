@@ -15,7 +15,7 @@ import {
   type IPopoverDispatcher,
   type IStateDispatcher
 } from '@ipc/browser/statusky'
-import type { AccountPatch, AppState, NetworkSnapshot, Platform, Settings } from '../shared/types'
+import type { AppState, NetworkSnapshot } from '../shared/types'
 import { showPostMenu } from './context-menu'
 import type { Model } from './model'
 import { notifyTest } from './notifications'
@@ -57,6 +57,11 @@ export interface IpcController {
  *
  * Failures are thrown rather than returned. The generated client rejects with the
  * message, and the renderer unwraps it back into the text the user sees.
+ *
+ * The parameters below are left unannotated on purpose, so they take their types from
+ * the generated `I*Impl` interfaces. Those declare methods, and TypeScript checks a
+ * method's parameters in both directions, so an annotation here could claim a narrower
+ * type than the validator actually admits and nothing would say so.
  */
 export function registerIpc({
   model,
@@ -82,24 +87,24 @@ export function registerIpc({
     })
 
     Accounts.for(contents).setImplementation({
-      add: (input: string) => model.addAccount(input),
-      remove: (did: string) => model.removeAccount(did),
-      patch: (did: string, patch: AccountPatch) => model.patchAccount(did, patch)
+      add: (input) => model.addAccount(input),
+      remove: (did) => model.removeAccount(did),
+      patch: (did, patch) => model.patchAccount(did, patch)
     })
 
     Preferences.for(contents).setImplementation({
-      patch: (patch: Partial<Settings>) => model.patchSettings(patch)
+      patch: (patch) => model.patchSettings(patch)
     })
 
     Feed.for(contents).setImplementation({
       refresh: () => model.refresh(),
-      markRead: (uris: string[]) => model.markRead(uris),
-      markReadThrough: (uri: string) => model.markReadThrough(uri),
+      markRead: (uris) => model.markRead(uris),
+      markReadThrough: (uri) => model.markReadThrough(uri),
       markAllRead: () => model.markAllRead()
     })
 
     Actors.for(contents).setImplementation({
-      resolve: (input: string) => model.resolveActor(input)
+      resolve: (input) => model.resolveActor(input)
     })
 
     Webhook.for(contents).setImplementation({
@@ -125,7 +130,7 @@ export function registerIpc({
        * offline is ignored outright, because believing it would let the renderer stop
        * the measurements, and the control group is what decides that.
        */
-      online: (up: boolean) => {
+      online: (up) => {
         if (!up || !net.online) return
         model.recheckConnection()
       },
@@ -138,7 +143,7 @@ export function registerIpc({
        * to calm down costs somebody a heartbeat they might have wanted; disbelieving it
        * flashes an icon ten times a second at somebody who asked the entire system not to.
        */
-      reduceMotion: (reduce: boolean) => onReduceMotion(reduce),
+      reduceMotion: (reduce) => onReduceMotion(reduce),
 
       /**
        * A right-click in the feed, answered with a menu the OS drew.
@@ -148,11 +153,11 @@ export function registerIpc({
        * this cannot be used to put a sentence, a link or a source name of the page's
        * choosing in front of the user. See src/main/context-menu.ts.
        */
-      postMenu: (uri: string) => showPostMenu(uri, { model, popover, onShowNetwork })
+      postMenu: (uri) => showPostMenu(uri, { model, popover, onShowNetwork })
     })
 
     Host.for(contents).setImplementation({
-      async openExternal(url: string) {
+      async openExternal(url) {
         // Never hand an arbitrary scheme to the OS — `file:` and custom schemes can
         // launch local handlers, and the URL here ultimately comes from remote posts.
         const parsed = new URL(url)
@@ -164,11 +169,11 @@ export function registerIpc({
       // The webhook endpoint is long, secret and useless retyped, so it has to be
       // copyable — and the renderer's own clipboard access is unreliable inside a
       // popover that loses focus the moment a dialog opens.
-      copyText: (text: string) => clipboard.writeText(text),
+      copyText: (text) => clipboard.writeText(text),
       hideWindow: () => popover.hide(),
       quit: () => onQuit(),
       sendTestNotification: () => notifyTest(model.settings),
-      getPlatform: () => process.platform as Platform
+      getPlatform: () => process.platform
     })
   }
 

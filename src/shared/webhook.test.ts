@@ -315,6 +315,51 @@ describe('incidents', () => {
     expect(posts[0]!.createdAt).toBe('2026-03-01T09:00:00.000Z')
   })
 
+  /** A finite number is not necessarily a date: `toISOString` throws past ±8.64e15 ms. */
+  it('ignores an epoch timestamp too large to be a date rather than throwing on it', () => {
+    const { posts } = delivery({
+      page: PAGE,
+      incident: incident({
+        incident_updates: [{ id: 'u1', status: 'RESOLVED', created_at: 1e20, body: 'x' }]
+      })
+    })
+
+    expect(posts[0]!.createdAt).toBe('2026-03-01T09:00:00.000Z')
+  })
+
+  it('skips update entries that are not objects rather than throwing on them', () => {
+    const { posts } = delivery({
+      page: PAGE,
+      incident: incident({
+        incident_updates: [null, 5, 'text', [], { id: 'u1', status: 'RESOLVED', body: 'Done.' }]
+      })
+    })
+
+    expect(posts.map((post) => post.uri)).toEqual(['webhook:pg_bsky/incident/inc_1/u1'])
+  })
+
+  it('falls back to the incident record when none of its updates is an object', () => {
+    const { posts } = delivery({
+      page: PAGE,
+      incident: incident({ incident_updates: [null] })
+    })
+
+    expect(posts.map((post) => post.uri)).toEqual(['webhook:pg_bsky/incident/inc_1'])
+  })
+
+  it('reads a part that is not an object as absent, whatever else the payload says', () => {
+    expect(parseWebhookDelivery({ page: 'status.bsky.app', incident: incident({}) })).toBeNull()
+    expect(parseWebhookDelivery({ page: PAGE, incident: 'down', maintenance: null })).toBeNull()
+    expect(
+      delivery({
+        page: PAGE,
+        incident: [],
+        component: 'Relay',
+        component_update: { component_id: 'cmp_1', new_status: 'MAJOROUTAGE' }
+      }).posts[0]!.text
+    ).toBe('A component is in a major outage.')
+  })
+
   it('drops a non-http incident link rather than handing it to the shell', () => {
     const { posts } = delivery({
       page: PAGE,

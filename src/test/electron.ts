@@ -12,23 +12,44 @@
  */
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
-import { vi } from 'vitest'
+import { vi, type Mock } from 'vitest'
+// The real declarations, which production code is type-checked against. Type-only, so
+// nothing here ever loads the real package: see `_DriftGuards` at the bottom.
+import type * as Real from 'electron'
 
 // ---------------------------------------------------------------------- types
 
-export interface FakeRect {
-  x: number
-  y: number
-  width: number
-  height: number
-}
+/**
+ * A method as a plain function type. TypeScript compares method parameters bivariantly
+ * even under `strictFunctionTypes`, which would let a double that accepts *less* than the
+ * real method still pass; a function type is compared the strict way round. An overloaded
+ * method collapses to its last overload, so pin one of those only where that is the one
+ * production calls.
+ */
+type Strictly<F> = F extends (...args: infer A) => infer R ? (...args: A) => R : F
 
-export interface FakeDisplay {
-  id: number
-  bounds: FakeRect
-  workArea: FakeRect
-  scaleFactor: number
-}
+/**
+ * The members of a real Electron API named in `Keys`, each held to its real declaration:
+ * parameters contravariantly and results covariantly, so a double that refuses an
+ * argument Electron takes, or answers with something Electron never produces, fails to
+ * type-check. Only the parts production relies on are named, and only those whose types
+ * do not themselves name another Electron object — a double hands out doubles, which the
+ * real types cannot describe.
+ */
+export type Surface<Api, Keys extends keyof Api> = { [K in Keys]: Strictly<Api[K]> }
+
+/** Something constructible with whatever `Class`'s own constructor accepts. */
+export type Constructible<Class extends abstract new (...args: never) => unknown> = new (
+  ...args: ConstructorParameters<Class>
+) => unknown
+
+/** Instantiating this with a `Fake` that is not assignable to `Target` is a compile error. */
+export type Conforms<Fake extends Target, Target> = Fake
+
+export type FakeRect = Real.Rectangle
+
+/** The part of a `Display` the popover positions itself by. */
+export type FakeDisplay = Pick<Real.Display, 'id' | 'bounds' | 'workArea' | 'scaleFactor'>
 
 export interface MenuItemTemplate {
   label?: string
@@ -43,6 +64,12 @@ export interface MenuItemTemplate {
 
 // ------------------------------------------------------------------------ app
 
+/** `app.dock`, as far as the app touches it. */
+interface FakeDock {
+  hide: Mock<() => void>
+  show: Mock<() => Promise<void>>
+}
+
 class FakeApp extends EventEmitter {
   isPackaged = false
   /** Flip to false to exercise the "another copy is already running" path. */
@@ -55,12 +82,16 @@ class FakeApp extends EventEmitter {
    */
   name = 'Statusky'
   userModelId: string | null = null
-  loginItem = { openAtLogin: false, openAsHidden: false }
-  /** Set to null to simulate a platform with no dock (Windows, Linux). */
-  dock: { hide: ReturnType<typeof vi.fn>; show: ReturnType<typeof vi.fn> } | null = {
-    hide: vi.fn(),
-    show: vi.fn()
-  }
+  /**
+   * What the OS has on record, which `getLoginItemSettings` reads back. Only `openAtLogin`:
+   * Electron 44 no longer reports `openAsHidden` at all.
+   */
+  loginItem: { openAtLogin: boolean } = { openAtLogin: false }
+  /**
+   * `undefined` on a platform with no dock (Windows, Linux), as in Electron — not `null`,
+   * which would let an `=== undefined` check pass here and fail on the real thing.
+   */
+  dock: FakeDock | undefined = { hide: vi.fn<() => void>(), show: vi.fn(async () => undefined) }
   /** Throw from `setLoginItemSettings`, the way an unbundled dev binary does. */
   loginItemThrows: Error | null = null
   /**
@@ -85,11 +116,19 @@ class FakeApp extends EventEmitter {
   readonly getVersion = vi.fn(() => this.version)
   readonly getName = vi.fn(() => this.name)
   readonly getPath = vi.fn((name: string) => `/tmp/statusky-test/${name}`)
-  readonly getLoginItemSettings = vi.fn(() => ({ ...this.loginItem }))
-  readonly setLoginItemSettings = vi.fn((settings: { openAtLogin?: boolean }) => {
+  /** The whole answer, as macOS gives it, rather than just the field the app reads. */
+  readonly getLoginItemSettings = vi.fn((): Real.LoginItemSettings => ({
+    openAtLogin: this.loginItem.openAtLogin,
+    wasOpenedAtLogin: false,
+    status: this.loginItem.openAtLogin ? 'enabled' : 'not-registered',
+    executableWillLaunchAtLogin: this.loginItem.openAtLogin,
+    launchItems: []
+  }))
+  readonly setLoginItemSettings = vi.fn((settings: Real.Settings) => {
     if (this.loginItemThrows) throw this.loginItemThrows
     if (this.loginItemRefuses) return
-    this.loginItem = { ...this.loginItem, ...settings }
+    // Electron's default, so a call that leaves it out unregisters, as the real one does.
+    this.loginItem = { openAtLogin: settings.openAtLogin ?? false }
   })
 
   /**
@@ -119,11 +158,11 @@ class FakeApp extends EventEmitter {
   )
 
   /** What the native About panel has been told to say; null until it is configured. */
-  aboutPanel: Record<string, unknown> | null = null
-  readonly setAboutPanelOptions = vi.fn((options: Record<string, unknown>) => {
+  aboutPanel: Real.AboutPanelOptionsOptions | null = null
+  readonly setAboutPanelOptions = vi.fn((options: Real.AboutPanelOptionsOptions) => {
     this.aboutPanel = options
   })
-  readonly showAboutPanel = vi.fn()
+  readonly showAboutPanel = vi.fn<() => void>()
 }
 
 export const app = new FakeApp()
@@ -257,6 +296,24 @@ class FakeIpcRenderer extends EventEmitter {
 
 export const ipcRenderer = new FakeIpcRenderer()
 
+/**
+ * What a renderer-side listener is handed ahead of the payload. Its `sender` is the
+ * `ipcRenderer` the message arrived on, as in Electron — never the main-process
+ * `WebContents` that sent it, which no page can hold.
+ */
+type FakeIpcRendererEvent = Omit<Real.IpcRendererEvent, 'sender'> & {
+  sender: FakeIpcRenderer
+}
+
+function rendererEvent(): FakeIpcRendererEvent {
+  return {
+    sender: ipcRenderer,
+    ports: [],
+    preventDefault: () => undefined,
+    defaultPrevented: false
+  }
+}
+
 // --------------------------------------------------------------- contextBridge
 
 /** Everything the preload script has exposed, keyed by the world name it used. */
@@ -294,29 +351,29 @@ export const openedExternally: string[] = []
 export const clipboardContents = { text: '' }
 
 export const clipboard = {
-  writeText: vi.fn((text: string) => {
+  // A promise, as in Electron 44, which made it follow `navigator.clipboard`: whether the
+  // write worked is only known when it settles.
+  writeText: vi.fn(async (text: string) => {
     clipboardContents.text = text
   })
 }
 
 // ------------------------------------------------------------- protocol / net
 
-export interface FakeScheme {
-  scheme: string
-  privileges?: Record<string, unknown>
-}
-
 /** Schemes `registerSchemesAsPrivileged` was told about, in order. */
-export const privilegedSchemes: FakeScheme[] = []
+export const privilegedSchemes: Real.CustomScheme[] = []
 /** Handlers installed by `protocol.handle`, keyed by scheme. */
 export const protocolHandlers = new Map<string, (request: Request) => Promise<Response>>()
 
 export const protocol = {
-  registerSchemesAsPrivileged: vi.fn((schemes: FakeScheme[]) => {
+  registerSchemesAsPrivileged: vi.fn((schemes: Real.CustomScheme[]) => {
     privilegedSchemes.push(...schemes)
   }),
-  handle: vi.fn((scheme: string, handler: (request: Request) => Promise<Response>) => {
-    protocolHandlers.set(scheme, handler)
+  // Electron takes a handler that answers synchronously as readily as one that returns a
+  // promise, and awaits either. Stored behind an `await` of its own, so whatever a test
+  // does with the answer holds for both.
+  handle: vi.fn((scheme: string, handler: (request: Request) => Response | Promise<Response>) => {
+    protocolHandlers.set(scheme, async (request) => handler(request))
   })
 }
 
@@ -358,8 +415,9 @@ export class FakeNetWebSocket extends EventTarget {
  * `net.fetch` takes one and both callers pass one — the probes their abort signal, the
  * release check its headers — so a test that wraps this one has to be able to pass it on.
  */
-const serveFromDisk = async (input: string, _init?: RequestInit): Promise<Response> => {
-  const path = input.startsWith('file://') ? fileURLToPath(input) : input
+const serveFromDisk = async (input: string | Request, _init?: RequestInit): Promise<Response> => {
+  const url = typeof input === 'string' ? input : input.url
+  const path = url.startsWith('file://') ? fileURLToPath(url) : url
   const body = servedFiles.get(path)
   if (body === undefined) return new Response('Not found', { status: 404 })
   return new Response(body, { status: 200 })
@@ -378,25 +436,6 @@ export const net = {
 
 // --------------------------------------------------------------- notifications
 
-export interface FakeNotificationAction {
-  type: string
-  text?: string
-}
-
-export interface FakeNotificationOptions {
-  title?: string
-  subtitle?: string
-  body?: string
-  silent?: boolean
-  timeoutType?: string
-  /** Buttons on the banner (darwin, win32). See `Notification.act`. */
-  actions?: FakeNotificationAction[]
-  /** macOS: the request identifier. Windows: the toast's `Tag`. */
-  id?: string
-  /** macOS: the thread identifier. Windows: the toast's `Group`. */
-  groupId?: string
-}
-
 export class Notification extends EventEmitter {
   static supported = true
   static isSupported = vi.fn(() => Notification.supported)
@@ -408,7 +447,8 @@ export class Notification extends EventEmitter {
   shown = false
   closed = false
 
-  constructor(readonly options: FakeNotificationOptions = {}) {
+  /** Exactly what the real constructor takes, so a test can only assert on real options. */
+  constructor(readonly options: Real.NotificationConstructorOptions = {}) {
     super()
     notifications.push(this)
   }
@@ -445,7 +485,10 @@ export class Notification extends EventEmitter {
     if (index < 0 || index >= actions.length) {
       throw new Error(`This notification has no action at index ${index}.`)
     }
-    this.emit('action', { actionIndex: index, selectionIndex: -1 })
+    this.emit('action', {
+      actionIndex: index,
+      selectionIndex: -1
+    } satisfies Real.NotificationActionEventParams)
   }
 }
 
@@ -555,13 +598,6 @@ export class FakeMenu {
   }
 }
 
-/** The macOS share sheet's payload: what is being shared, by kind. */
-export interface FakeSharingItem {
-  texts?: string[]
-  urls?: string[]
-  filePaths?: string[]
-}
-
 /**
  * `ShareMenu`: the system share sheet, which is a menu the OS fills in.
  *
@@ -572,7 +608,7 @@ export interface FakeSharingItem {
 export class FakeShareMenu {
   readonly popups: MenuPopupOptions[] = []
 
-  constructor(readonly sharingItem: FakeSharingItem) {
+  constructor(readonly sharingItem: Real.SharingItem) {
     shareMenus.push(this)
   }
 
@@ -686,7 +722,7 @@ export const globalShortcut = new FakeGlobalShortcut()
  * the process was about to go, which is the whole of what the app can promise.
  */
 class FakeAutoUpdater extends EventEmitter {
-  readonly quitAndInstall = vi.fn()
+  readonly quitAndInstall = vi.fn<() => void>()
 
   /** Squirrel refusing, in whatever way it is refusing today. */
   fail(reason: string): void {
@@ -707,7 +743,7 @@ export class Tray extends EventEmitter {
    * proportional font unless asked for `monospacedDigit`, and a count that changes width
    * shoves everything left of the icon sideways — so this is worth being able to assert.
    */
-  titleOptions: { fontType?: string } | null = null
+  titleOptions: Real.TitleOptions | null = null
   destroyed = false
   ignoresDoubleClick = false
   bounds: FakeRect = { x: 900, y: 0, width: 24, height: 24 }
@@ -737,7 +773,7 @@ export class Tray extends EventEmitter {
     this.tooltip = tooltip
   }
 
-  setTitle(title: string, options?: { fontType?: string }): void {
+  setTitle(title: string, options?: Real.TitleOptions): void {
     this.title = title
     this.titleOptions = options ?? null
   }
@@ -824,7 +860,7 @@ class FakeWebContents extends EventEmitter {
     const delivered = structuredClone(args)
     const payload = delivered.length > 1 ? delivered : delivered[0]
     this.sent.push({ channel, payload })
-    rendererBus.emit(channel, { sender: this }, ...delivered)
+    rendererBus.emit(channel, rendererEvent(), ...delivered)
   }
 
   setWindowOpenHandler(handler: (details: { url: string }) => unknown): void {
@@ -856,7 +892,7 @@ export class BrowserWindow extends EventEmitter {
   static instances: BrowserWindow[] = []
 
   readonly webContents = new FakeWebContents()
-  readonly options: Record<string, unknown>
+  readonly options: Real.BrowserWindowConstructorOptions
   readonly loaded: { url?: string; file?: string }[] = []
   visible = false
   focused = false
@@ -865,16 +901,11 @@ export class BrowserWindow extends EventEmitter {
   visibleOnAllWorkspaces = false
   private bounds: FakeRect
 
-  constructor(options: Record<string, unknown> = {}) {
+  constructor(options: Real.BrowserWindowConstructorOptions = {}) {
     super()
     this.options = options
-    this.alwaysOnTop = Boolean(options.alwaysOnTop)
-    this.bounds = {
-      x: 0,
-      y: 0,
-      width: Number(options.width ?? 800),
-      height: Number(options.height ?? 600)
-    }
+    this.alwaysOnTop = options.alwaysOnTop ?? false
+    this.bounds = { x: 0, y: 0, width: options.width ?? 800, height: options.height ?? 600 }
     BrowserWindow.instances.push(this)
   }
 
@@ -993,7 +1024,7 @@ export const screen = new FakeScreen()
 // ---------------------------------------------------------- theme / power / os
 
 export const nativeTheme = Object.assign(new EventEmitter(), {
-  themeSource: 'system' as 'system' | 'light' | 'dark',
+  themeSource: 'system' as Real.NativeTheme['themeSource'],
   shouldUseDarkColors: false,
   /**
    * Windows high contrast, which is an axis of its own rather than a darker dark. Set it
@@ -1003,8 +1034,8 @@ export const nativeTheme = Object.assign(new EventEmitter(), {
   shouldUseHighContrastColors: false
 })
 
-export type FakeThermalState = 'unknown' | 'nominal' | 'fair' | 'serious' | 'critical'
-export type FakeIdleState = 'active' | 'idle' | 'locked' | 'unknown'
+export type FakeThermalState = ReturnType<Real.PowerMonitor['getCurrentThermalState']>
+export type FakeIdleState = ReturnType<Real.PowerMonitor['getSystemIdleState']>
 
 /**
  * `powerMonitor`: an event emitter with three questions it can also be asked.
@@ -1052,8 +1083,13 @@ const cancelledSave = async (
 })
 
 export const dialog = {
-  showErrorBox: vi.fn(),
-  showMessageBox: vi.fn(async () => ({ response: 0 })),
+  showErrorBox: vi.fn<(title: string, content: string) => void>(),
+  showMessageBox: vi.fn(
+    async (_options: Real.MessageBoxOptions): Promise<Real.MessageBoxReturnValue> => ({
+      response: 0,
+      checkboxChecked: false
+    })
+  ),
   showOpenDialog: vi.fn(cancelledOpen),
   showSaveDialog: vi.fn(cancelledSave)
 }
@@ -1103,19 +1139,29 @@ export const safeStorage = new FakeSafeStorage()
 
 // --------------------------------------------------------------------- session
 
+type RealRequestHandler = NonNullable<Parameters<Real.Session['setPermissionRequestHandler']>[0]>
+export type PermissionCheckHandler = NonNullable<
+  Parameters<Real.Session['setPermissionCheckHandler']>[0]
+>
+
+/**
+ * Every permission Chromium can put to each handler, straight from Electron's own
+ * declaration, so a test cannot prove the app refuses one that is never asked for.
+ */
+export type RequestPermission = Parameters<RealRequestHandler>[1]
+export type CheckPermission = Parameters<PermissionCheckHandler>[1]
+
+/**
+ * The prompt handler, as the double calls it. Electron always hands it the asking
+ * page's `WebContents` and a `details` object; there is no page behind `request`, so
+ * both stay loose here, and only the permission is held to the real list.
+ */
 export type PermissionRequestHandler = (
   contents: unknown,
-  permission: string,
+  permission: RequestPermission,
   callback: (granted: boolean) => void,
   details?: unknown
 ) => void
-
-export type PermissionCheckHandler = (
-  contents: unknown,
-  permission: string,
-  origin: string,
-  details?: unknown
-) => boolean
 
 /**
  * One browsing session, and the two questions Chromium asks it about permissions.
@@ -1137,7 +1183,7 @@ class FakeSession {
   })
 
   /** Ask for a permission the way a page would, and report the answer. */
-  request(permission: string, contents: unknown = null): boolean {
+  request(permission: RequestPermission, contents: unknown = null): boolean {
     let granted = true
     this.requestHandler?.(contents, permission, (value) => {
       granted = value
@@ -1145,9 +1191,16 @@ class FakeSession {
     return granted
   }
 
-  /** Ask whether a permission is already held, which Chromium does without a prompt. */
-  check(permission: string, origin = 'app://statusky'): boolean {
-    return this.checkHandler?.(null, permission, origin) ?? true
+  /**
+   * Ask whether a permission is already held, which Chromium does without a prompt —
+   * and, for this one, without necessarily having a page to name, so a `null` sender is
+   * what Electron passes too.
+   */
+  check(permission: CheckPermission, origin = 'app://statusky'): boolean {
+    return (
+      this.checkHandler?.(null, permission, origin, { isMainFrame: true, requestingUrl: origin }) ??
+      true
+    )
   }
 }
 
@@ -1167,10 +1220,10 @@ export function resetElectron(): void {
   app.singleInstanceLock = true
   app.version = '0.1.0-test'
   app.name = 'Statusky'
-  app.loginItem = { openAtLogin: false, openAsHidden: false }
+  app.loginItem = { openAtLogin: false }
   app.loginItemThrows = null
   app.loginItemRefuses = false
-  app.dock = { hide: vi.fn(), show: vi.fn() }
+  app.dock = { hide: vi.fn<() => void>(), show: vi.fn(async () => undefined) }
   app.userModelId = null
   app.quit.mockClear()
   app.whenReady.mockClear()
@@ -1274,7 +1327,7 @@ export function resetElectron(): void {
   dialog.showMessageBox.mockClear()
   // A test that made the dialog never answer must not leave it that way for the next
   // one: `mockClear` forgets the calls but keeps the implementation.
-  dialog.showMessageBox.mockImplementation(async () => ({ response: 0 }))
+  dialog.showMessageBox.mockImplementation(async () => ({ response: 0, checkboxChecked: false }))
   // Likewise a file dialog pointed at a test's own temporary file.
   dialog.showOpenDialog.mockReset()
   dialog.showOpenDialog.mockImplementation(cancelledOpen)
@@ -1305,3 +1358,133 @@ export default {
   safeStorage,
   session
 }
+
+// ---------------------------------------------------------------- drift guards
+
+/**
+ * Every double above, held to the real declaration it stands in for — the one production
+ * code is type-checked against — for exactly the members production calls. An Electron
+ * upgrade that changes one of them, or an edit that makes a double take or return
+ * something the real API does not, is then a type error here instead of a suite that
+ * passes against behaviour no build will ever see.
+ *
+ * What is missing is missing on purpose, because its type names another Electron object
+ * that a double can only answer with another double: `webContents` and the events IPC
+ * handlers receive, the images and menus a tray or window is handed,
+ * `nativeImage.createFromPath`, `screen`'s displays (whose shape `FakeDisplay` pins
+ * instead), the `WebContents` a permission request comes from, and the `on` overloads.
+ * So are `net.fetch`, which takes a `Request` as well as a string, and
+ * `dialog.showMessageBox`, whose answer also carries `checkboxChecked`: both are
+ * narrower here than in Electron, and tests override them with implementations just as
+ * narrow, so widening them is a change for those tests to make first.
+ */
+export type _DriftGuards = [
+  Conforms<
+    typeof app,
+    Surface<
+      Real.App,
+      | 'isPackaged'
+      | 'quit'
+      | 'whenReady'
+      | 'requestSingleInstanceLock'
+      | 'setAppUserModelId'
+      | 'getVersion'
+      | 'getName'
+      | 'getPath'
+      | 'getLoginItemSettings'
+      | 'setLoginItemSettings'
+      | 'setAsDefaultProtocolClient'
+      | 'removeAsDefaultProtocolClient'
+      | 'isDefaultProtocolClient'
+      | 'setAboutPanelOptions'
+      | 'showAboutPanel'
+    >
+  >,
+  Conforms<FakeDock, Surface<Real.Dock, 'hide' | 'show'>>,
+  Conforms<typeof ipcMain, Surface<Real.IpcMain, 'removeHandler'>>,
+  Conforms<FakeScopedIpc, Surface<Real.IpcMain, 'removeHandler'>>,
+  Conforms<typeof ipcRenderer, Surface<Real.IpcRenderer, 'invoke'>>,
+  Conforms<typeof contextBridge, Surface<Real.ContextBridge, 'exposeInMainWorld'>>,
+  Conforms<typeof shell, Surface<Real.Shell, 'openExternal'>>,
+  Conforms<typeof clipboard, Surface<Real.Clipboard, 'writeText'>>,
+  Conforms<typeof protocol, Surface<Real.Protocol, 'registerSchemesAsPrivileged' | 'handle'>>,
+  Conforms<typeof net, Surface<Real.Net, 'online' | 'fetch'>>,
+  Conforms<
+    typeof Notification,
+    Constructible<typeof Real.Notification> & Surface<typeof Real.Notification, 'isSupported'>
+  >,
+  Conforms<Notification, Surface<Real.Notification, 'show' | 'close'>>,
+  Conforms<
+    FakeNativeImage,
+    Surface<Real.NativeImage, 'setTemplateImage' | 'isTemplateImage' | 'isEmpty'>
+  >,
+  Conforms<FakeMenu, Surface<Real.Menu, 'popup' | 'closePopup'>>,
+  Conforms<typeof ShareMenu, Constructible<typeof Real.ShareMenu>>,
+  Conforms<FakeShareMenu, Surface<Real.ShareMenu, 'popup' | 'closePopup'>>,
+  Conforms<
+    typeof globalShortcut,
+    Surface<Real.GlobalShortcut, 'register' | 'unregister' | 'unregisterAll' | 'isRegistered'>
+  >,
+  Conforms<typeof autoUpdater, Surface<Real.AutoUpdater, 'quitAndInstall'>>,
+  Conforms<
+    Tray,
+    Surface<
+      Real.Tray,
+      | 'setToolTip'
+      | 'setTitle'
+      | 'setIgnoreDoubleClickEvents'
+      | 'getBounds'
+      | 'destroy'
+      | 'isDestroyed'
+    >
+  >,
+  Conforms<FakeWebFrameMain, Surface<Real.WebFrameMain, 'url' | 'send'>>,
+  Conforms<
+    BrowserWindow['webContents'],
+    Surface<
+      Real.WebContents,
+      'send' | 'getURL' | 'isDevToolsOpened' | 'isDestroyed' | 'openDevTools'
+    >
+  >,
+  Conforms<typeof BrowserWindow, Constructible<typeof Real.BrowserWindow>>,
+  Conforms<
+    BrowserWindow,
+    Surface<
+      Real.BrowserWindow,
+      | 'show'
+      | 'hide'
+      | 'focus'
+      | 'blur'
+      | 'close'
+      | 'destroy'
+      | 'isVisible'
+      | 'isDestroyed'
+      | 'isFocused'
+      | 'getBounds'
+      | 'setBounds'
+      | 'getPosition'
+      | 'setPosition'
+      | 'setAlwaysOnTop'
+      | 'setVisibleOnAllWorkspaces'
+      | 'loadURL'
+      | 'loadFile'
+    >
+  >,
+  Conforms<
+    typeof nativeTheme,
+    Surface<Real.NativeTheme, 'themeSource' | 'shouldUseDarkColors' | 'shouldUseHighContrastColors'>
+  >,
+  Conforms<
+    typeof powerMonitor,
+    Surface<Real.PowerMonitor, 'isOnBatteryPower' | 'getCurrentThermalState' | 'getSystemIdleState'>
+  >,
+  Conforms<
+    typeof dialog,
+    Surface<Real.Dialog, 'showErrorBox' | 'showMessageBox' | 'showOpenDialog' | 'showSaveDialog'>
+  >,
+  Conforms<
+    typeof safeStorage,
+    Surface<Real.SafeStorage, 'isEncryptionAvailable' | 'encryptString' | 'decryptString'>
+  >,
+  Conforms<typeof session.defaultSession, Surface<Real.Session, 'setPermissionCheckHandler'>>
+]

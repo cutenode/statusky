@@ -148,6 +148,40 @@ describe('segmentRichText', () => {
   })
 })
 
+/**
+ * A post view carries the record as its author wrote it, so the facets are only as
+ * well-formed as whoever wrote them. A throw here loses the account's whole sync, and a
+ * wrong-typed field kept would fail the post's schema on the way to the popover.
+ */
+describe('facets that are not the shape the lexicon says', () => {
+  const text = 'see status.bsky.app'
+  const index = { byteStart: 4, byteEnd: 19 }
+  const LINK = 'app.bsky.richtext.facet#link'
+  const MENTION = 'app.bsky.richtext.facet#mention'
+  const TAG = 'app.bsky.richtext.facet#tag'
+
+  it.each([
+    ['a facet list that is not a list', { 0: link(4, 19, 'https://x.test') }],
+    ['a null facet', [null]],
+    ['a facet that is a string', ['link']],
+    ['an index that is not an object', [{ index: 4, features: [] }]],
+    ['features that are not a list', [{ index, features: { $type: 'x' } }]],
+    ['a null feature', [{ index, features: [null] }]],
+    ['a uri that is not a string', [{ index, features: [{ $type: LINK, uri: 42 }] }]],
+    ['a did that is not a string', [{ index, features: [{ $type: MENTION, did: {} }] }]],
+    ['a tag that is not a string', [{ index, features: [{ $type: TAG, tag: ['x'] }] }]]
+  ])('drops %s, keeping the text whole', (_name, facets) => {
+    expect(segmentRichText(text, facets)).toEqual([{ kind: 'text', text }])
+  })
+
+  it('still reads the well-formed facets beside a malformed one', () => {
+    expect(segmentRichText(text, [null, link(4, 19, 'https://status.bsky.app')])).toEqual([
+      { kind: 'text', text: 'see ' },
+      { kind: 'link', text: 'status.bsky.app', uri: 'https://status.bsky.app' }
+    ])
+  })
+})
+
 describe('facets missing the field their type needs', () => {
   it('drops a mention with no did', () => {
     const text = 'hello @nobody'

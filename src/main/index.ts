@@ -17,7 +17,7 @@ import { configureAboutPanel, installApplicationMenu } from './menu'
 import { Model } from './model'
 import { createNotifier } from './notifications'
 import { watchPower } from './power'
-import type { ProbeSocket, ProbeTransport } from './probes'
+import type { ProbeTransport } from './probes'
 import { denyRendererPermissions, registerAppScheme, serveRenderer } from './protocol'
 import { applyGlobalShortcut, releaseGlobalShortcut } from './shortcut'
 import { handleSquirrelEvent } from './squirrel'
@@ -34,8 +34,7 @@ import { followDisplayChanges, PopoverWindow } from './window'
  */
 const chromiumTransport: ProbeTransport = {
   fetch: (url, init) => net.fetch(url, init),
-  // The DOM's WebSocket types its handlers more narrowly than the checks need.
-  openSocket: (url) => new net.WebSocket(url) as unknown as ProbeSocket
+  openSocket: (url) => new net.WebSocket(url)
 }
 
 /**

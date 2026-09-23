@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent } from '@testing-library/svelte'
+import type { ComponentProps } from 'svelte'
 import type { ServiceProbe } from '@shared/types'
 import { makeCheck, makeService } from '../../../test/factories'
 import { renderWith } from '../test/render'
@@ -8,7 +9,9 @@ import ServiceRow from './ServiceRow.svelte'
 const NOW = Date.parse('2026-01-01T12:00:00Z')
 const PDS = 'pds:amanita.us-east.host.bsky.network'
 
-async function row(service: Partial<ServiceProbe>, props: Record<string, unknown> = {}) {
+type RowProps = Partial<ComponentProps<typeof ServiceRow>>
+
+async function row(service: Partial<ServiceProbe>, props: RowProps = {}) {
   const ontoggle = vi.fn()
   const rendered = await renderWith(ServiceRow, {
     service: makeService(service),
@@ -176,7 +179,7 @@ describe('the open row', () => {
     expect(getByRole('img', { name: 'Recent checks' })).toBeTruthy()
   })
 
-  it.each<[string, Partial<ServiceProbe>, Record<string, unknown>, string, string]>([
+  it.each<[string, Partial<ServiceProbe>, RowProps, string, string]>([
     [
       'down',
       { condition: 'down', since: '2026-01-01T11:48:00Z' },

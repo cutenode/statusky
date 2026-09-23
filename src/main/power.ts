@@ -30,6 +30,9 @@ import type { SweepRestraint } from '../shared/types'
  */
 const IDLE_SECONDS = 300
 
+/** macOS's thermal scale, as Electron reports it both on asking and on change. */
+type ThermalState = ReturnType<typeof powerMonitor.getCurrentThermalState>
+
 /**
  * Thermal states at which a sweep is not worth taking, from macOS's own scale.
  *
@@ -39,7 +42,7 @@ const IDLE_SECONDS = 300
  * latency measured through a machine being thermally throttled reads as latency the
  * services do not have, and this app's whole claim is that it measures honestly.
  */
-const THERMAL_TROUBLE: ReadonlySet<string> = new Set(['serious', 'critical'])
+const THERMAL_TROUBLE: ReadonlySet<ThermalState> = new Set(['serious', 'critical'])
 
 /**
  * A CPU ceiling below this, in percent, counts as the machine being held back hard.

@@ -10,7 +10,8 @@
  * The calls go through the generated IPC wiring, origin validation included, so a
  * harness test proves the real boundary works and not just the model behind it.
  */
-import { vi } from 'vitest'
+import { vi, type Mock } from 'vitest'
+import ElectronStore from 'electron-store'
 import { registerIpc, type IpcController } from '../main/ipc'
 import { Model, type ModelOptions } from '../main/model'
 import { notifyPosts } from '../main/notifications'
@@ -21,9 +22,16 @@ import { PopoverWindow } from '../main/window'
 import type { StatuskyBridge } from '../shared/bridge'
 import type { Account, AppState, NetworkSnapshot, Settings, StatusPost } from '../shared/types'
 import { BUILTIN_ACCOUNTS, DEFAULT_SETTINGS } from '../shared/defaults'
-import { app as electronApp, exposed, nativeTheme, published, trays } from './electron'
-import type { BrowserWindow, Tray } from './electron'
-import FakeElectronStore, { seedStore } from './electron-store'
+import {
+  BrowserWindow,
+  app as electronApp,
+  exposed,
+  nativeTheme,
+  published,
+  trays
+} from './electron'
+import type { Tray } from './electron'
+import { fakeStore, seedStore, type default as FakeElectronStore } from './electron-store'
 import { FakeAppView, rawPost, type PostSpec, type RawProfile } from './appview'
 import { makeSettings } from './factories'
 
@@ -71,7 +79,7 @@ export interface Harness {
   /** The preload bridge, exactly as the renderer receives it on `window.statusky`. */
   readonly api: StatuskyBridge
   readonly ipc: IpcController
-  readonly quit: ReturnType<typeof vi.fn>
+  readonly quit: Mock<() => void>
   /** Every state pushed to the renderer, oldest first. */
   readonly pushes: AppState[]
   /** Every batch of posts handed to the notification layer. */
@@ -147,7 +155,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   if (options.read) seed.read = options.read
   else if (options.unread) seed.read = readStateFromUnread(options.posts ?? [], options.unread)
   if (options.cursors) seed.cursors = options.cursors
-  if (Object.keys(seed).length) seedStore('statusky', seed as Record<string, unknown>)
+  if (Object.keys(seed).length) seedStore('statusky', seed)
 
   const appview = new FakeAppView()
   if (seedAppView) {
@@ -161,8 +169,9 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
   // that did not say so would be turned away before reaching a single handler.
   electronApp.isPackaged = packaged
 
-  const store = createStore() as unknown as FakeElectronStore<PersistedShape>
-  const model = new Model(store as never, version, { network: options.network })
+  const opened = createStore()
+  const store = fakeStore(opened)
+  const model = new Model(opened, version, { network: options.network })
   const popover = new PopoverWindow()
 
   const pushes: AppState[] = []
@@ -255,7 +264,13 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     dropped,
     state: () => model.getState(),
     trayIcon: () => trays.at(-1) ?? null,
-    browserWindow: () => popover.browserWindow as unknown as BrowserWindow | null,
+    browserWindow: () => {
+      // Typed as the real class, because window.ts is checked against the real package;
+      // what the alias in vitest.config.ts actually made is this double, and this says so.
+      const window = popover.browserWindow
+      if (window === null || window instanceof BrowserWindow) return window
+      throw new TypeError('Expected the BrowserWindow double: is its alias in vitest.config.ts?')
+    },
     dispose(): void {
       model.stop()
       model.removeAllListeners()
@@ -278,7 +293,9 @@ export function createModel(
   version = '0.1.0-test',
   options: ModelOptions = {}
 ): { model: Model; store: FakeElectronStore<PersistedShape> } {
-  const store = new FakeElectronStore<PersistedShape>({
+  // Opened the way src/main/store.ts opens one, so the options are held to the real
+  // package's and the model gets the type it asks for; the alias makes it the double.
+  const store = new ElectronStore<PersistedShape>({
     name: `model-${Math.random().toString(36).slice(2)}`,
     defaults: {
       schemaVersion: 4,
@@ -295,7 +312,7 @@ export function createModel(
       ...overrides
     }
   })
-  return { model: new Model(store as never, version, options), store }
+  return { model: new Model(store, version, options), store: fakeStore(store) }
 }
 
 /** Register an actor's author feed on the fake AppView, one post per spec, newest last. */

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { isReachable } from '@shared/network'
-  import type { ServiceProbe } from '@shared/types'
+  import type { ProbeGroup, ServiceProbe } from '@shared/types'
   import ServiceRow from './ServiceRow.svelte'
 
   let {
@@ -14,7 +14,8 @@
     offline = false,
     ontoggle
   }: {
-    id: string
+    /** Also the section's anchor, `#group-<id>`, which the dashboard's summary jumps to. */
+    id: ProbeGroup
     title: string
     /** Shown under the title; only the control group needs explaining. */
     blurb?: string | null

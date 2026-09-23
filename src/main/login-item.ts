@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { app } from 'electron'
-import type { LoginItemStatus } from '../shared/types'
+import type { LoginItemStatus, Platform } from '../shared/types'
 
 /**
  * Registering Statusky to come back at login, and finding out whether it worked.
@@ -179,7 +179,7 @@ function message(error: unknown): string {
 export function explainLoginItemFailure(
   openAtLogin: boolean,
   raw: string | null,
-  platform: string = process.platform
+  platform: Platform = process.platform
 ): string {
   const verb = openAtLogin ? 'open Statusky at login' : 'stop opening Statusky at login'
 

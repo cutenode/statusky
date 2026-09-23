@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/**
+/*
  * Generates every icon the app ships with, so the binary assets in the repo are
  * reproducible from source rather than opaque blobs.
  *
@@ -34,12 +34,17 @@ const CRC_TABLE = (() => {
   return table
 })()
 
+/** @param {Buffer} buf */
 function crc32(buf) {
   let c = -1
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8)
+  for (const byte of buf) c = /** @type {number} */ (CRC_TABLE[(c ^ byte) & 0xff]) ^ (c >>> 8)
   return (c ^ -1) >>> 0
 }
 
+/**
+ * @param {string} type
+ * @param {Buffer} data
+ */
 function chunk(type, data) {
   const len = Buffer.alloc(4)
   len.writeUInt32BE(data.length)
@@ -49,7 +54,12 @@ function chunk(type, data) {
   return Buffer.concat([len, body, crc])
 }
 
-/** Encode straight (non-premultiplied) RGBA pixels as a PNG. */
+/**
+ * Encode straight (non-premultiplied) RGBA pixels as a PNG.
+ * @param {number} width
+ * @param {number} height
+ * @param {Buffer} rgba
+ */
 function encodePng(width, height, rgba) {
   const ihdr = Buffer.alloc(13)
   ihdr.writeUInt32BE(width, 0)
@@ -78,9 +88,18 @@ function encodePng(width, height, rgba) {
 
 // ------------------------------------------------------------------- geometry
 
+/** @param {number} v */
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v)
 
-/** Distance from p to the segment ab. */
+/**
+ * Distance from p to the segment ab.
+ * @param {number} px
+ * @param {number} py
+ * @param {number} ax
+ * @param {number} ay
+ * @param {number} bx
+ * @param {number} by
+ */
 function distToSegment(px, py, ax, ay, bx, by) {
   const abx = bx - ax
   const aby = by - ay
@@ -93,16 +112,34 @@ function distToSegment(px, py, ax, ay, bx, by) {
   return Math.hypot(dx, dy)
 }
 
+/** @typedef {readonly [x: number, y: number]} Point */
+
+/**
+ * @param {number} px
+ * @param {number} py
+ * @param {readonly Point[]} points
+ */
 function distToPolyline(px, py, points) {
   let best = Infinity
   for (let i = 0; i < points.length - 1; i++) {
-    const d = distToSegment(px, py, points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+    const a = /** @type {Point} */ (points[i])
+    const b = /** @type {Point} */ (points[i + 1])
+    const d = distToSegment(px, py, a[0], a[1], b[0], b[1])
     if (d < best) best = d
   }
   return best
 }
 
-/** Signed distance to a rounded rectangle centred at (cx, cy). Negative inside. */
+/**
+ * Signed distance to a rounded rectangle centred at (cx, cy). Negative inside.
+ * @param {number} px
+ * @param {number} py
+ * @param {number} cx
+ * @param {number} cy
+ * @param {number} halfW
+ * @param {number} halfH
+ * @param {number} radius
+ */
 function sdRoundedRect(px, py, cx, cy, halfW, halfH, radius) {
   const qx = Math.abs(px - cx) - (halfW - radius)
   const qy = Math.abs(py - cy) - (halfH - radius)
@@ -110,17 +147,29 @@ function sdRoundedRect(px, py, cx, cy, halfW, halfH, radius) {
   return outside + Math.min(Math.max(qx, qy), 0) - radius
 }
 
+/**
+ * @param {number} px
+ * @param {number} py
+ * @param {number} cx
+ * @param {number} cy
+ * @param {number} r
+ */
 function sdCircle(px, py, cx, cy, r) {
   return Math.hypot(px - cx, py - cy) - r
 }
 
-/** Convert a signed distance to coverage, antialiased over roughly one pixel. */
+/**
+ * Convert a signed distance to coverage, antialiased over roughly one pixel.
+ * @param {number} dist
+ * @param {number} feather
+ */
 function coverage(dist, feather) {
   return clamp01(0.5 - dist / feather)
 }
 
 // The pulse glyph, in unit coordinates (0..1). A flat baseline broken by one
 // sharp spike reads as "monitoring" even at 16px.
+/** @type {Point[]} */
 const PULSE = [
   [0.05, 0.5],
   [0.28, 0.5],
@@ -134,6 +183,7 @@ const PULSE = [
 
 // At 16px the app icon's four direction changes smear into a blob, so the tray
 // uses a single spike: one clear up-stroke and one down-stroke.
+/** @type {Point[]} */
 const TRAY_PULSE = [
   [0.06, 0.5],
   [0.33, 0.5],
@@ -143,21 +193,35 @@ const TRAY_PULSE = [
   [0.94, 0.5]
 ]
 
+/**
+ * @param {Buffer} dst
+ * @param {number} i
+ * @param {number} r
+ * @param {number} g
+ * @param {number} b
+ * @param {number} a
+ */
 function blend(dst, i, r, g, b, a) {
   if (a <= 0) return
-  const da = dst[i + 3] / 255
+  const da = /** @type {number} */ (dst[i + 3]) / 255
   const outA = a + da * (1 - a)
   if (outA <= 0) {
     dst[i] = dst[i + 1] = dst[i + 2] = dst[i + 3] = 0
     return
   }
-  dst[i] = Math.round((r * a + dst[i] * (da / 255) * (1 - a) * 255) / outA)
-  dst[i + 1] = Math.round((g * a + dst[i + 1] * (da / 255) * (1 - a) * 255) / outA)
-  dst[i + 2] = Math.round((b * a + dst[i + 2] * (da / 255) * (1 - a) * 255) / outA)
+  dst[i] = Math.round((r * a + /** @type {number} */ (dst[i]) * (da / 255) * (1 - a) * 255) / outA)
+  dst[i + 1] = Math.round(
+    (g * a + /** @type {number} */ (dst[i + 1]) * (da / 255) * (1 - a) * 255) / outA
+  )
+  dst[i + 2] = Math.round(
+    (b * a + /** @type {number} */ (dst[i + 2]) * (da / 255) * (1 - a) * 255) / outA
+  )
   dst[i + 3] = Math.round(outA * 255)
 }
 
 // ---------------------------------------------------------------- tray icons
+
+/** @typedef {readonly [r: number, g: number, b: number]} Colour */
 
 /**
  * Bare pulse glyph on transparent background.
@@ -167,6 +231,8 @@ function blend(dst, i, r, g, b, a) {
  * glyph, which is what carries the beat at menu bar size — a 16px shape can
  * only shrink so far before the change stops registering. `dot` adds the unread
  * badge, which is the quiet alternative to the beat.
+ * @param {number} size
+ * @param {Colour | null} colour
  */
 function renderTray(size, colour, scale = 1, alpha = 1, dot = false) {
   const rgba = Buffer.alloc(size * size * 4)
@@ -194,7 +260,10 @@ function renderTray(size, colour, scale = 1, alpha = 1, dot = false) {
   return encodePng(size, size, rgba)
 }
 
-/** The unread badge, as [centre x, centre y, radius] in unit glyph space. */
+/**
+ * The unread badge, as [centre x, centre y, radius] in unit glyph space.
+ * @type {readonly [x: number, y: number, radius: number]}
+ */
 const BADGE = [0.845, 0.155, 0.135]
 
 // ---------------------------------------------------------------- the beat
@@ -217,15 +286,23 @@ const S2 = 3 / BEAT_FRAMES
  * How contracted the heart is at phase `t` (0..1) of one beat: a full S1, a weaker
  * S2 a moment later, then diastole. Sampling this on frame boundaries is what makes
  * it read as lub-dub rather than a sine wave.
+ * @param {number} t
  */
 function contraction(t) {
+  /** @type {(centre: number, width: number) => number} */
   const bump = (centre, width) => Math.exp(-(((t - centre) / width) ** 2))
   return Math.min(1, bump(S1, 0.08) + 0.55 * bump(S2, 0.07))
 }
 
 // ----------------------------------------------------------------- app icon
 
-/** Vertical gradient between two colours. */
+/**
+ * Vertical gradient between two colours.
+ * @param {number} t
+ * @param {Colour} from
+ * @param {Colour} to
+ * @returns {Colour}
+ */
 function gradient(t, from, to) {
   return [
     from[0] + (to[0] - from[0]) * t,
@@ -234,6 +311,7 @@ function gradient(t, from, to) {
   ]
 }
 
+/** @param {number} size */
 function renderAppIcon(size) {
   const rgba = Buffer.alloc(size * size * 4)
   const feather = 1.5 / size
@@ -251,7 +329,9 @@ function renderAppIcon(size) {
   const pulse = size <= 32 ? TRAY_PULSE : PULSE
   const stroke = Math.max(size * 0.042, 1.2)
 
+  /** @type {Colour} */
   const top = [0x6d, 0x5c, 0xf6] // indigo
+  /** @type {Colour} */
   const bottom = [0x38, 0x2c, 0xc4] // deeper indigo
 
   for (let y = 0; y < size; y++) {
@@ -304,6 +384,7 @@ function renderAppIcon(size) {
  * back to back. Every entry here is a PNG, which Vista and later read directly; the older
  * BMP form would mean a second encoder, bottom-up rows, and a padded 1-bit AND mask for
  * the transparency the alpha channel already carries.
+ * @param {{ size: number, png: Buffer }[]} images
  */
 function encodeIco(images) {
   const header = Buffer.alloc(6)
@@ -336,6 +417,7 @@ function encodeIco(images) {
  * by typed chunks of [4-byte OSType][4-byte length, counting these 8 bytes][payload], all
  * big-endian. The ic07–ic14 types take a PNG as their payload verbatim, so there is no
  * .iconset directory to lay out and no `iconutil` to invoke.
+ * @param {{ type: string, png: Buffer }[]} entries
  */
 function encodeIcns(entries) {
   const body = Buffer.concat(
@@ -360,6 +442,7 @@ function encodeIcns(entries) {
  * 16pt@1x and 32pt@1x are missing because their types predate PNG in this format — they
  * are the RLE `is32`/`il32` bitmaps with a separate `s8mk`/`l8mk` alpha mask, which would
  * mean a second encoder for the two sizes macOS is happy to scale ic11 and ic12 down to.
+ * @type {[type: string, size: number][]}
  */
 const ICNS_TYPES = [
   ['ic11', 32], // 16pt @2x
@@ -382,6 +465,10 @@ const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
 
 // --------------------------------------------------------------------- write
 
+/**
+ * @param {string} path
+ * @param {Buffer} buffer
+ */
 function write(path, buffer) {
   const full = join(root, path)
   mkdirSync(dirname(full), { recursive: true })
@@ -393,8 +480,10 @@ function write(path, buffer) {
  * The two containers ask for sizes the loose PNGs and each other already want, and a
  * 1024px render is most of this script's running time. So each size is drawn once and
  * handed out, which is also how ic08/ic13 and ic09/ic14 come to share one buffer.
+ * @type {Map<number, Buffer>}
  */
 const APP_ICONS = new Map()
+/** @param {number} size */
 function appIconAt(size) {
   const existing = APP_ICONS.get(size)
   if (existing !== undefined) return existing
@@ -403,10 +492,15 @@ function appIconAt(size) {
   return png
 }
 
+/** @type {Colour} */
 const INCIDENT = [0xf4, 0x3f, 0x5e] // rose
+/** @type {Colour} */
 const MONITORING = [0xf5, 0x9e, 0x0b] // amber
 
-/** The three health icons, each in a plain and a badged form. */
+/**
+ * The three health icons, each in a plain and a badged form.
+ * @type {[stem: string, colour: Colour | null][]}
+ */
 const HEALTH_ICONS = [
   ['trayTemplate', null],
   ['trayIncident', INCIDENT],

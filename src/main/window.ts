@@ -98,7 +98,9 @@ export class PopoverWindow {
     // The popover is a single page: it never navigates itself. Anything that tries is
     // either a link the user clicked or a page trying to move somewhere it should not
     // be trusted from, and either way it belongs in the real browser.
-    window.webContents.on('will-navigate', (event, url) => {
+    // The URL is read off the event rather than the deprecated positional argument.
+    window.webContents.on('will-navigate', (event) => {
+      const { url } = event
       if (url === window.webContents.getURL()) return
       event.preventDefault()
       if (url.startsWith(APP_ORIGIN)) return

@@ -1,4 +1,6 @@
 import { vi } from 'vitest'
+import type * as Real from 'update-electron-app'
+import type { Conforms } from './electron'
 
 /**
  * `update-electron-app`, which cannot run here and cannot be made to.
@@ -19,23 +21,6 @@ import { vi } from 'vitest'
  * download it is waiting for finally lands.
  */
 
-/** What Squirrel hands `onNotifyUser`, and the package passes straight through. */
-export interface FakeUpdateInfo {
-  event: unknown
-  releaseNotes: string
-  releaseName: string
-  releaseDate: Date
-  updateURL: string
-}
-
-/** The subset of the package's options this app actually supplies. */
-export interface FakeUpdateOptions {
-  updateInterval?: string
-  notifyUser?: boolean
-  onNotifyUser?: (info: FakeUpdateInfo) => void
-  [key: string]: unknown
-}
-
 /**
  * One call to `updateElectronApp`, and the handle it returned.
  *
@@ -44,10 +29,10 @@ export interface FakeUpdateOptions {
  * background downloading; here it is a method call, which is the only way a test can
  * reach the restart prompt at all.
  */
-export class FakeSelfUpdater {
+export class FakeSelfUpdater implements Real.IUpdateElectronApp {
   stopped = false
 
-  constructor(readonly options: FakeUpdateOptions) {}
+  constructor(readonly options: Real.IUpdateElectronAppOptions) {}
 
   readonly stopUpdates = vi.fn((): void => {
     this.stopped = true
@@ -58,9 +43,10 @@ export class FakeSelfUpdater {
    * release name and empty notes — because the two platforms fill these in differently
    * and a test about Windows has to say so explicitly rather than inherit it.
    */
-  finishDownload(info: Partial<FakeUpdateInfo> = {}): void {
+  finishDownload(info: Partial<Real.IUpdateInfo> = {}): void {
     this.options.onNotifyUser?.({
-      event: {},
+      // What Squirrel's `update-downloaded` hands over first, and the package passes on.
+      event: { preventDefault: () => undefined, defaultPrevented: false },
       releaseNotes: '',
       releaseName: '',
       releaseDate: new Date('2026-01-01T00:00:00.000Z'),
@@ -80,12 +66,14 @@ export const selfUpdaters: FakeSelfUpdater[] = []
  */
 export const selfUpdateFailure: { error: unknown } = { error: null }
 
-export const updateElectronApp = vi.fn((options: FakeUpdateOptions = {}): FakeSelfUpdater => {
-  if (selfUpdateFailure.error) throw selfUpdateFailure.error
-  const updater = new FakeSelfUpdater(options)
-  selfUpdaters.push(updater)
-  return updater
-})
+export const updateElectronApp = vi.fn(
+  (options: Real.IUpdateElectronAppOptions = {}): FakeSelfUpdater => {
+    if (selfUpdateFailure.error) throw selfUpdateFailure.error
+    const updater = new FakeSelfUpdater(options)
+    selfUpdaters.push(updater)
+    return updater
+  }
+)
 
 /** The most recent call, for the common case of there being exactly one. */
 export function lastSelfUpdater(): FakeSelfUpdater {
@@ -99,3 +87,9 @@ export function resetUpdateElectronApp(): void {
   selfUpdateFailure.error = null
   updateElectronApp.mockClear()
 }
+
+/**
+ * Held to the package's own declaration: the double takes every option the real one
+ * does and hands back what it promises, down to the `event` in what `onNotifyUser` gets.
+ */
+export type _DriftGuards = [Conforms<typeof updateElectronApp, typeof Real.updateElectronApp>]

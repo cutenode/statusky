@@ -127,7 +127,7 @@ describe('bootstrap', () => {
   it('survives a platform with no dock', async () => {
     const { electron } = await boot({
       prepare: (e) => {
-        e.app.dock = null
+        e.app.dock = undefined
       }
     })
     expect(electron.trays).toHaveLength(1)
@@ -325,9 +325,7 @@ describe('IPC wiring mismatch', () => {
     const { electron, appview } = await boot({
       prepare: (e) => {
         // A dialog nobody dismisses.
-        e.dialog.showMessageBox.mockImplementation(
-          () => new Promise<{ response: number }>(() => {})
-        )
+        e.dialog.showMessageBox.mockImplementation(() => new Promise<never>(() => {}))
       }
     })
 
@@ -1278,10 +1276,10 @@ describe('the global shortcut', () => {
  */
 function serveLatestRelease(electron: Electron, tag: string): void {
   const original = electron.net.fetch.getMockImplementation()!
-  electron.net.fetch.mockImplementation(async (url: string, init?: RequestInit) =>
-    url.startsWith('https://api.github.com/')
+  electron.net.fetch.mockImplementation(async (input: string | Request, init?: RequestInit) =>
+    (typeof input === 'string' ? input : input.url).startsWith('https://api.github.com/')
       ? new Response(JSON.stringify({ tag_name: tag }), { status: 200 })
-      : original(url, init)
+      : original(input, init)
   )
 }
 

@@ -6,7 +6,7 @@ import CloudOff from '@lucide/svelte/icons/cloud-off'
 import TriangleAlert from '@lucide/svelte/icons/triangle-alert'
 import Wrench from '@lucide/svelte/icons/wrench'
 import Megaphone from '@lucide/svelte/icons/megaphone'
-import type { Component } from 'svelte'
+import type { LucideIcon } from '@lucide/svelte'
 import type { ProbeState, Severity } from '@shared/types'
 import type { Health } from '@shared/status'
 
@@ -27,7 +27,7 @@ export interface SeverityStyle {
    * a flat disc — the same two-stop trick the dashboard lights its LEDs with.
    */
   glow: string
-  icon: Component
+  icon: LucideIcon
 }
 
 export const SEVERITY_STYLE: Record<Severity, SeverityStyle> = {

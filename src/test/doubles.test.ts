@@ -63,14 +63,18 @@ import {
 const { resetPage } = await import('./page')
 resetPage()
 await import('../preload/index')
-const PRELOAD = exposed.get('statusky') as Record<string, Record<string, unknown>>
+const PRELOAD: unknown = exposed.get('statusky')
 
-/** Every interface the preload exposes, and every method on each, in a stable order. */
-function surface(api: Record<string, Record<string, unknown>>): Record<string, string[]> {
+/**
+ * Every interface an API object exposes, and every method on each, in a stable order.
+ * Takes whatever it is given, because the point is to read what is actually there.
+ */
+function surface(api: unknown): Record<string, string[]> {
+  const interfaces: [string, object][] = Object.entries(api ?? {})
   return Object.fromEntries(
-    Object.keys(api)
-      .toSorted()
-      .map((name) => [name, Object.keys(api[name]!).toSorted()])
+    interfaces
+      .toSorted(([a], [b]) => a.localeCompare(b))
+      .map(([name, methods]) => [name, Object.keys(methods).toSorted()])
   )
 }
 
@@ -255,7 +259,7 @@ describe('the electron-store double', () => {
     const store = new FakeElectronStore({ name: 'a', defaults: { count: 1, list: [] } })
     expect(store.get('count')).toBe(1)
     expect(store.has('count')).toBe(true)
-    expect(store.get('missing' as never, 'fallback' as never)).toBe('fallback')
+    expect(store.get('missing', 'fallback')).toBe('fallback')
   })
 
   it('copies on read and on write, like a JSON-backed store', () => {
@@ -299,7 +303,7 @@ describe('the electron-store double', () => {
     expect(store.has('a')).toBe(false)
     expect(new FakeElectronStore({ name: 'c', defaults: { a: 1 } }).get('a')).toBe(1)
 
-    store.set({ a: 5, b: 6 } as never)
+    store.set({ a: 5, b: 6 })
     expect(store.store).toEqual({ a: 5, b: 6 })
 
     store.clear()
@@ -455,7 +459,7 @@ describe('the renderer bridge double', () => {
   it('implements exactly the real preload surface', () => {
     const bridge = installBridge()
     try {
-      expect(surface(bridge.api as never)).toEqual(surface(PRELOAD))
+      expect(surface(bridge.api)).toEqual(surface(PRELOAD))
     } finally {
       bridge.restore()
     }

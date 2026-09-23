@@ -1,5 +1,5 @@
 import { PUBLIC_APPVIEW } from './defaults'
-import { segmentRichText, type RawFacet } from './richtext'
+import { segmentRichText } from './richtext'
 import { classifySeverity } from './status'
 import type { PostEmbed, ResolvedProfile, StatusPost } from './types'
 
@@ -25,11 +25,17 @@ interface RawAuthor {
   postsCount?: number
 }
 
+/**
+ * A record as a view carries it. The lexicon types `postView.record` and
+ * `embed.record#viewRecord.value` as `unknown` — they are the author's own record, passed
+ * through as written — so nothing here is promised, and each field is narrowed where it
+ * is read rather than trusted to be what a post's would be.
+ */
 interface RawRecord {
-  $type?: string
-  text?: string
-  createdAt?: string
-  facets?: RawFacet[]
+  $type?: unknown
+  text?: unknown
+  createdAt?: unknown
+  facets?: unknown
   reply?: unknown
 }
 
@@ -47,7 +53,11 @@ interface RawPost {
 
 interface RawFeedItem {
   post?: RawPost
-  /** Present when the item is a repost rather than the author's own post. */
+  /**
+   * Present when the item is a repost rather than the author's own post. The union also
+   * has `#reasonPin`, but pins only come back when `includePins` is asked for, and this
+   * never asks.
+   */
   reason?: unknown
   reply?: unknown
 }
@@ -119,7 +129,8 @@ function normalizeEmbed(embed: Record<string, unknown> | undefined): PostEmbed |
   }
 
   if (embed.$type === 'app.bsky.embed.images#view') {
-    const images = (embed.images as { thumb?: string; fullsize?: string; alt?: string }[]) ?? []
+    const images =
+      (embed.images as { thumb?: string; fullsize?: string; alt?: string }[] | undefined) ?? []
     const mapped = images
       .filter((i) => i.thumb && i.fullsize)
       .map((i) => ({ thumb: i.thumb!, fullsize: i.fullsize!, alt: i.alt ?? '' }))
@@ -131,14 +142,18 @@ function normalizeEmbed(embed: Record<string, unknown> | undefined): PostEmbed |
   }
 
   if (embed.$type === 'app.bsky.embed.record#view') {
+    // `record` is a union, and every member of it has a `uri`: a quote that was deleted
+    // (`#viewNotFound`), blocked or detached, and an embedded feed, list, labeler or
+    // starter pack, as well as a post. Only `#viewRecord` has an author and text to show.
     const record = embed.record as
-      { uri?: string; author?: RawAuthor; value?: RawRecord } | undefined
-    if (!record?.uri) return null
+      { $type?: string; uri?: string; author?: RawAuthor; value?: RawRecord } | undefined
+    if (record?.$type !== 'app.bsky.embed.record#viewRecord' || !record.uri) return null
+    const text = record.value?.text
     return {
       kind: 'record',
       uri: record.uri,
       author: record.author?.handle ?? 'unknown',
-      text: record.value?.text ?? ''
+      text: typeof text === 'string' ? text : ''
     }
   }
 
@@ -162,9 +177,13 @@ export function normalizePost(raw: RawPost | undefined): StatusPost | null {
   if (!raw?.uri || !raw.cid || !raw.author?.did || !raw.record) return null
   if (raw.record.$type !== 'app.bsky.feed.post') return null
 
-  const text = raw.record.text ?? ''
+  // One post that is not what its `$type` says must not throw, or it takes every other
+  // post from the same account down with it.
+  const { text: rawText, createdAt: rawCreatedAt, facets } = raw.record
+  const text = typeof rawText === 'string' ? rawText : ''
   const handle = raw.author.handle ?? raw.author.did
-  const createdAt = raw.record.createdAt ?? raw.indexedAt ?? new Date(0).toISOString()
+  const createdAt =
+    typeof rawCreatedAt === 'string' ? rawCreatedAt : (raw.indexedAt ?? new Date(0).toISOString())
 
   return {
     uri: raw.uri,
@@ -175,7 +194,7 @@ export function normalizePost(raw: RawPost | undefined): StatusPost | null {
     authorDisplayName: raw.author.displayName || handle,
     authorAvatar: raw.author.avatar ?? null,
     text,
-    segments: segmentRichText(text, raw.record.facets),
+    segments: segmentRichText(text, facets),
     embed: normalizeEmbed(raw.embed),
     createdAt,
     indexedAt: raw.indexedAt ?? createdAt,

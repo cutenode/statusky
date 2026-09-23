@@ -13,7 +13,7 @@ import {
 import { withPlatform } from '../test/harness'
 import { PROBE_SOURCE_DID, probeAccount } from '../shared/network'
 import { formatClock } from '../shared/notify'
-import type { AppState, Settings } from '../shared/types'
+import type { AppState, Settings, UpdateStatus } from '../shared/types'
 import { PopoverWindow } from './window'
 import { TrayController } from './tray'
 
@@ -897,8 +897,8 @@ describe('the context menu', () => {
 })
 
 /** State whose only interesting feature is what the app has learned about itself. */
-function withUpdate(stage: 'current' | 'available' | 'ready', version: string | null): AppState {
-  return makeState({ update: { stage, version } })
+function withUpdate(update: UpdateStatus): AppState {
+  return makeState({ update })
 }
 
 /**
@@ -910,7 +910,7 @@ function withUpdate(stage: 'current' | 'available' | 'ready', version: string | 
 describe('the update entry', () => {
   it('is absent entirely while there is nothing to offer', () => {
     const { tray } = build()
-    tray.update(withUpdate('current', null))
+    tray.update(withUpdate({ stage: 'current', version: null }))
     trays[0]!.emit('right-click')
 
     // Nothing between the status pages and About — not an entry, not a separator.
@@ -929,7 +929,7 @@ describe('the update entry', () => {
    */
   it('restarts into a downloaded update, naming the version', () => {
     const { tray } = build()
-    tray.update(withUpdate('ready', '0.5.0'))
+    tray.update(withUpdate({ stage: 'ready', version: '0.5.0' }))
     trays[0]!.emit('right-click')
 
     menus.at(-1)!.click('Restart to update 0.5.0')
@@ -937,10 +937,10 @@ describe('the update entry', () => {
     expect(autoUpdater.quitAndInstall).toHaveBeenCalledTimes(1)
   })
 
-  /** Squirrel.Windows does not always say which version it has downloaded. */
+  /** A release named something other than a version leaves the update unnamed. */
   it('still offers the restart when the version is not known', () => {
     const { tray } = build()
-    tray.update(withUpdate('ready', null))
+    tray.update(withUpdate({ stage: 'ready', version: null }))
     trays[0]!.emit('right-click')
 
     menus.at(-1)!.click('Restart to update')
@@ -955,7 +955,7 @@ describe('the update entry', () => {
    */
   it('sends the user to the download page where nothing can install for them', () => {
     const { tray } = build()
-    tray.update(withUpdate('available', '0.2.0'))
+    tray.update(withUpdate({ stage: 'available', version: '0.2.0' }))
     trays[0]!.emit('right-click')
 
     menus.at(-1)!.click('Download Statusky 0.2.0')
@@ -966,7 +966,7 @@ describe('the update entry', () => {
 
   it('sits above About rather than at the top, because it is never why you opened this', () => {
     const { tray } = build()
-    tray.update(withUpdate('available', '0.2.0'))
+    tray.update(withUpdate({ stage: 'available', version: '0.2.0' }))
     trays[0]!.emit('right-click')
 
     const labels = menus.at(-1)!.template.map((entry) => entry.label ?? entry.type)
@@ -976,8 +976,8 @@ describe('the update entry', () => {
 
   it('goes away again if the news is withdrawn', () => {
     const { tray } = build()
-    tray.update(withUpdate('available', '0.2.0'))
-    tray.update(withUpdate('current', null))
+    tray.update(withUpdate({ stage: 'available', version: '0.2.0' }))
+    tray.update(withUpdate({ stage: 'current', version: null }))
     trays[0]!.emit('right-click')
 
     expect(menus.at(-1)!.item('Download Statusky 0.2.0')).toBeUndefined()

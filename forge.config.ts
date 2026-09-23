@@ -9,6 +9,7 @@ import { MakerSquirrel, type MakerSquirrelConfig } from '@electron-forge/maker-s
 import { MakerZIP } from '@electron-forge/maker-zip'
 import { PublisherGithub } from '@electron-forge/publisher-github'
 import type { ForgeConfig } from '@electron-forge/shared-types'
+import type { MakerAppImageConfig } from '@reforged/maker-appimage'
 
 import { assertProductionWiring } from './src/main/packed-wiring'
 
@@ -52,7 +53,7 @@ const PRODUCT_NAME = 'Statusky'
  * `registerProtocolClient`.
  */
 const URL_SCHEME = 'statusky'
-const LINUX_MIME_TYPES = [`x-scheme-handler/${URL_SCHEME}`]
+const LINUX_MIME_TYPES = [`x-scheme-handler/${URL_SCHEME}` as const]
 
 // Derived from the config type rather than imported from `@electron/packager`,
 // `@electron/osx-sign` and `@electron/windows-sign`, so each one always matches the
@@ -62,6 +63,7 @@ type MacSignOptions = Exclude<NonNullable<PackagerOptions['osxSign']>, true>
 type MacSignFileOptions = ReturnType<NonNullable<MacSignOptions['optionsForFile']>>
 type MacNotarizeOptions = NonNullable<PackagerOptions['osxNotarize']>
 type WindowsSignOptions = Exclude<NonNullable<PackagerOptions['windowsSign']>, true>
+type WindowsSignHash = NonNullable<WindowsSignOptions['hashes']>[number]
 
 /**
  * What ends up inside the asar.
@@ -367,8 +369,9 @@ function windowsSignOptions(): WindowsSignOptions | undefined {
     ],
     timestampServer: 'http://timestamp.acs.microsoft.com',
     // `hashes` is typed as an ambient `const enum`, whose members `isolatedModules`
-    // forbids reading, so the string the enum is built from is asserted into place.
-    hashes: ['sha256' as unknown as NonNullable<WindowsSignOptions['hashes']>[number]],
+    // forbids reading, so the string the enum is built from is asserted into place —
+    // once `satisfies` has checked that it is one of the enum's values.
+    hashes: ['sha256' satisfies `${WindowsSignHash}` as WindowsSignHash],
     // signtool's /a would pick a certificate out of the local store; the dlib supplies
     // the certificate, and letting signtool guess instead is how a build ends up signed
     // by a stale developer certificate somebody left installed.
@@ -499,7 +502,8 @@ const config: ForgeConfig = {
     // @reforged/maker-appimage is ESM-only, and this config is loaded by jiti into a
     // CommonJS-shaped world. Forge resolves a maker named by string at the point it
     // actually needs it, which is the one place an ESM-only package loads cleanly, so
-    // this one is never imported at the top of the file.
+    // this one is never imported at the top of the file. Its config type is, because
+    // `import type` is erased before jiti sees it, and Forge types `config` as `any`.
     {
       name: '@reforged/maker-appimage',
       platforms: ['linux'],
@@ -512,7 +516,7 @@ const config: ForgeConfig = {
           mimeType: LINUX_MIME_TYPES,
           icon: join(root, 'build', 'icon.png')
         }
-      }
+      } satisfies MakerAppImageConfig
     }
   ],
 

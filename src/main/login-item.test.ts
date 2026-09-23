@@ -254,7 +254,7 @@ describe('the native login item', () => {
   })
 
   it('notices a refusal to *stop* opening at login', async () => {
-    app.loginItem = { openAtLogin: true, openAsHidden: false }
+    app.loginItem = { openAtLogin: true }
     app.loginItemRefuses = true
 
     const status = await withPlatform('darwin', () => applyLoginItem(false))
@@ -326,7 +326,7 @@ describe('the native login item', () => {
   // take it away again.
   it('still lets a source checkout remove an entry an earlier one left behind', async () => {
     app.isPackaged = false
-    app.loginItem = { openAtLogin: true, openAsHidden: false }
+    app.loginItem = { openAtLogin: true }
 
     const status = await withPlatform('darwin', () => applyLoginItem(false))
 
@@ -335,7 +335,7 @@ describe('the native login item', () => {
   })
 
   it('reports what the OS says, without writing anything', async () => {
-    app.loginItem = { openAtLogin: true, openAsHidden: false }
+    app.loginItem = { openAtLogin: true }
 
     expect(await withPlatform('darwin', () => readLoginItem())).toBe(true)
     expect(app.setLoginItemSettings).not.toHaveBeenCalled()

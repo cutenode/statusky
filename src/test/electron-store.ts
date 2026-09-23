@@ -18,12 +18,23 @@
  * src/main/store.test.ts still runs `reconcile()` over stores with no `read` default,
  * which hands `set('read', …)` an `undefined` no real config file can produce.
  */
+import type ElectronStore from 'electron-store'
+import type { Conforms, Constructible, Surface } from './electron'
 
 /** Contents to pretend are already on disk the next time a store is constructed. */
 const seeds = new Map<string, Record<string, unknown>>()
 
+/**
+ * What any store can be asked whatever its shape, which is all a registry of stores of
+ * every shape can promise.
+ */
+type AnyStore = Pick<
+  FakeElectronStore<Record<string, unknown>>,
+  'name' | 'path' | 'data' | 'writes'
+>
+
 /** Every store constructed, newest last, for assertions about persistence. */
-export const stores: FakeElectronStore<Record<string, unknown>>[] = []
+export const stores: AnyStore[] = []
 
 export interface FakeStoreOptions<T> {
   name?: string
@@ -63,13 +74,15 @@ export default class FakeElectronStore<T extends Record<string, unknown>> {
   constructor(options: FakeStoreOptions<T> = {}) {
     this.name = options.name ?? 'config'
     this.path = `/tmp/statusky-test/${this.name}.json`
-    this.defaults = viaJson(options.defaults ?? ({} as T))
+    this.defaults = viaJson<Partial<T>>(options.defaults ?? {})
     this.data = viaJson({ ...this.defaults, ...seeds.get(this.name) })
-    stores.push(this as unknown as FakeElectronStore<Record<string, unknown>>)
+    stores.push(this)
   }
 
   get<K extends keyof T>(key: K): T[K]
-  get<K extends keyof T>(key: K, fallback: T[K]): T[K]
+  get<K extends keyof T>(key: K, fallback: Required<T>[K]): Required<T>[K]
+  /** A key the shape does not declare, which `conf` answers too: whatever is there. */
+  get<V = unknown>(key: string, fallback?: V): V
   get(key: string, fallback?: unknown): unknown {
     return key in this.data ? viaJson(this.data[key]) : fallback
   }
@@ -103,10 +116,10 @@ export default class FakeElectronStore<T extends Record<string, unknown>> {
     this.data = viaJson({ ...this.defaults })
   }
 
-  reset(...keys: string[]): void {
+  reset<K extends keyof T>(...keys: K[]): void {
     for (const key of keys) {
-      const fallback = (this.defaults as Record<string, unknown>)[key]
-      if (fallback !== undefined) this.set(key, fallback)
+      const fallback = this.defaults[key]
+      if (fallback !== undefined) this.set(String(key), fallback)
     }
   }
 
@@ -130,7 +143,7 @@ export default class FakeElectronStore<T extends Record<string, unknown>> {
     return () => {}
   }
 
-  openInEditor(): void {}
+  async openInEditor(): Promise<void> {}
 
   private write(key: string, value: unknown): void {
     this.data[key] = viaJson(value)
@@ -143,7 +156,42 @@ export function seedStore(name: string, data: Record<string, unknown>): void {
   seeds.set(name, data)
 }
 
+/**
+ * The double behind a store production code opened. Production is type-checked against
+ * the real package, so what `createStore()` hands back is typed as the real class even
+ * though the alias in vitest.config.ts made it this one; this says so out loud, and
+ * fails loudly if the alias is ever not in place.
+ */
+export function fakeStore<T extends Record<string, unknown>>(
+  store: ElectronStore<T>
+): FakeElectronStore<T> {
+  if (store instanceof FakeElectronStore) return store
+  throw new TypeError('Expected the electron-store double: is its alias in vitest.config.ts?')
+}
+
 export function resetStores(): void {
   seeds.clear()
   stores.length = 0
 }
+
+/** A shape to hold the double to the real class at: one of each kind of value kept. */
+interface Sample extends Record<string, unknown> {
+  count: number
+  list: string[]
+  nested: { on: boolean }
+  optional?: string
+}
+
+/**
+ * The double held to `electron-store`'s own declarations, for what production calls and
+ * what the harness reads back. `get`, `set`, `delete` and `has` are overloaded generics,
+ * which only compare the lenient way round; the rest are held strictly. See electron.ts.
+ */
+export type _DriftGuards = [
+  Conforms<typeof FakeElectronStore<Sample>, Constructible<typeof ElectronStore<Sample>>>,
+  Conforms<
+    FakeElectronStore<Sample>,
+    Pick<ElectronStore<Sample>, 'get' | 'set' | 'delete' | 'has'> &
+      Surface<ElectronStore<Sample>, 'clear' | 'reset' | 'openInEditor' | 'store' | 'size' | 'path'>
+  >
+]
