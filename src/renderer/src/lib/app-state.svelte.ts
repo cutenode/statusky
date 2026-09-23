@@ -6,11 +6,14 @@ import type {
   NetworkSnapshot,
   NetworkSummary,
   Platform,
+  ProbeTargets,
+  ResolvedProfile,
   Settings,
   StatusPost,
   UpdateStatus,
   WebhookStatus
 } from '@shared/types'
+import type { OpenedFile } from '@ipc/common/statusky'
 import { isProbeSource, networkAsHealth, reportHeadline, type Headline } from '@shared/network'
 import { isWebhookSource } from '@shared/webhook'
 import { deriveHealth, type Health } from '@shared/status'
@@ -47,6 +50,9 @@ const EMPTY: AppState = {
   update: { stage: 'current', version: null },
   version: '0.0.0'
 }
+
+/** What a call answered, or why it failed, for a control that reports its own failures. */
+export type Outcome<T> = { ok: true; value: T } | { ok: false; error: string }
 
 const EMPTY_SNAPSHOT: NetworkSnapshot = {
   running: false,
@@ -315,6 +321,23 @@ class AppStore {
     }
   }
 
+  /**
+   * Run an IPC call for a control that reports its own failures.
+   *
+   * `#run` puts a failure on `actionError`, which the Accounts tab shows under its add
+   * field. That is right for what that tab does and wrong for the check targets editor
+   * in Settings, whose lookups and file dialogs fail beside the field or button that
+   * asked — and would otherwise leave the same sentence waiting in another tab. This
+   * hands the reason back instead, and leaves `actionError` and `busy` alone.
+   */
+  async #ask<T>(fn: () => Promise<T>): Promise<Outcome<T>> {
+    try {
+      return { ok: true, value: await fn() }
+    } catch (error) {
+      return { ok: false, error: ipcErrorMessage(error) }
+    }
+  }
+
   clearError(): void {
     this.#actionError = null
   }
@@ -337,6 +360,31 @@ class AppStore {
 
   patchSettings(patch: Partial<Settings>): Promise<Settings | null> {
     return this.#run(() => bridge().Preferences.patch(patch))
+  }
+
+  /** Both halves of an account's identity from either one, without tracking it. */
+  lookUpActor(input: string): Promise<Outcome<ResolvedProfile>> {
+    return this.#ask(() => bridge().Actors.resolve(input))
+  }
+
+  /**
+   * Replace what the network checks read, or go back to the defaults with null.
+   *
+   * Check the document with `validateProbeTargets` first: the IPC boundary refuses an
+   * invalid one too, but only with a sentence about the whole patch.
+   */
+  setProbeTargets(targets: ProbeTargets | null): Promise<Outcome<Settings>> {
+    return this.#ask(() => bridge().Preferences.patch({ probeTargets: targets }))
+  }
+
+  /** Save the targets in force to a file the user picks: its name, or null if cancelled. */
+  exportProbeTargets(): Promise<Outcome<string | null>> {
+    return this.#ask(() => bridge().ProbeTargetsFile.save())
+  }
+
+  /** Read a file the user picks, unparsed, or null if they cancelled. */
+  openProbeTargetsFile(): Promise<Outcome<OpenedFile | null>> {
+    return this.#ask(() => bridge().ProbeTargetsFile.open())
   }
 
   markRead(uris: string[]): Promise<void | null> {

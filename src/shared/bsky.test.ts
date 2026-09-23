@@ -89,6 +89,7 @@ describe('normalizePost', () => {
   it.each([
     ['no post at all', undefined],
     ['a missing uri', { ...raw, uri: undefined }],
+    ['a missing cid', { ...raw, cid: undefined }],
     ['a missing author did', { ...raw, author: { handle: 'x' } }],
     ['a missing record', { ...raw, record: undefined }]
   ])('returns null for %s', (_name, input) => {
@@ -170,6 +171,15 @@ describe('sortPosts', () => {
       make('2026-09-05T00:00:00Z', '2026-09-05T00:00:09Z')
     ])
     expect(sorted[0]?.indexedAt).toBe('2026-09-05T00:00:09Z')
+  })
+
+  // A record's `createdAt` is whatever its author's client wrote, so it can be garbage.
+  it('falls back to the index time when a record timestamp does not parse', () => {
+    const sorted = sortPosts([
+      make('whenever', '2026-09-05T00:00:01Z'),
+      make('whenever', '2026-09-05T00:00:09Z')
+    ])
+    expect(sorted.map((p) => p.indexedAt)).toEqual(['2026-09-05T00:00:09Z', '2026-09-05T00:00:01Z'])
   })
 
   it('does not mutate its input', () => {
@@ -327,7 +337,22 @@ describe('fetchAuthorPosts', () => {
   it('lets an abort propagate rather than masking it as a network error', async () => {
     const abort = Object.assign(new Error('aborted'), { name: 'AbortError' })
     const fetchImpl = (() => Promise.reject(abort)) as unknown as typeof fetch
-    await expect(fetchAuthorPosts('did:plc:aaa', 30, { fetchImpl })).rejects.toThrow('aborted')
+    // The very same error: a wrapped one would still mention "aborted" in its message.
+    await expect(fetchAuthorPosts('did:plc:aaa', 30, { fetchImpl })).rejects.toBe(abort)
+  })
+
+  // The caller's timeout is the only thing that ends a request the AppView never answers.
+  it('hands the caller’s abort signal to fetch', async () => {
+    const controller = new AbortController()
+    let seen: AbortSignal | null | undefined
+    const fetchImpl = (async (_input: URL, init?: RequestInit) => {
+      seen = init?.signal
+      return { ok: true, status: 200, json: async () => ({ feed: [] }) } as Response
+    }) as unknown as typeof fetch
+
+    await fetchAuthorPosts('did:plc:aaa', 30, { fetchImpl, signal: controller.signal })
+
+    expect(seen).toBe(controller.signal)
   })
 })
 

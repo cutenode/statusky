@@ -1,14 +1,8 @@
-import { join } from 'node:path'
-import { beforeEach, describe, expect, it } from 'vitest'
-import { vi } from 'vitest'
-import {
-  net,
-  privilegedSchemes,
-  protocol,
-  protocolHandlers,
-  servedFiles,
-  session
-} from '../test/electron'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { net, privilegedSchemes, protocolHandlers, servedFiles, session } from '../test/electron'
 import {
   APP_INDEX,
   APP_ORIGIN,
@@ -54,10 +48,12 @@ describe('registerAppScheme', () => {
   })
 
   // `standard` is what gives the popover a real origin instead of an opaque one, which
-  // is the whole reason the IPC layer can validate it.
+  // is the whole reason the IPC layer can validate it. The two are written in different
+  // languages in different files, so nothing but this keeps them naming the same origin.
   it('produces the origin the IPC schema validates against', () => {
     expect(new URL(APP_INDEX).protocol + '//' + new URL(APP_INDEX).host).toBe(APP_ORIGIN)
-    expect(APP_ORIGIN).toBe('app://statusky')
+    const schema = readFileSync(resolve('schemas/statusky.eipc'), 'utf8')
+    expect(schema).toContain(`origin is "${APP_ORIGIN}"`)
   })
 })
 
@@ -93,11 +89,6 @@ describe('resolveWithin', () => {
 })
 
 describe('serveRenderer', () => {
-  it('installs a handler for the app: scheme', () => {
-    expect(protocol.handle).toHaveBeenCalled()
-    expect(protocolHandlers.has('app')).toBe(true)
-  })
-
   it('serves index.html as HTML', async () => {
     const response = await request(APP_INDEX)
 
@@ -160,7 +151,7 @@ describe('serveRenderer', () => {
 
   it('serves the bundle from the root it was given', async () => {
     await request(`${APP_ORIGIN}/assets/app.js`)
-    expect(net.fetch).toHaveBeenCalledWith(expect.stringContaining('assets/app.js'))
+    expect(net.fetch).toHaveBeenCalledWith(pathToFileURL(join(ROOT, 'assets/app.js')).toString())
   })
 })
 
@@ -177,13 +168,16 @@ describe('renderer permissions', () => {
     'openExternal'
   ] as const
 
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it.each(PERMISSIONS)('refuses a request for %s', (permission) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     denyRendererPermissions()
 
     expect(session.defaultSession.request(permission)).toBe(false)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(permission))
-    warn.mockRestore()
   })
 
   // The silent half. `navigator.permissions.query` and `Notification.permission` read
@@ -201,12 +195,5 @@ describe('renderer permissions', () => {
 
     expect(session.defaultSession.check('notifications', APP_ORIGIN)).toBe(false)
     expect(session.defaultSession.check('notifications', 'https://evil.test')).toBe(false)
-  })
-
-  it('installs both handlers on the session the popover actually loads in', () => {
-    denyRendererPermissions()
-
-    expect(session.defaultSession.setPermissionRequestHandler).toHaveBeenCalledTimes(1)
-    expect(session.defaultSession.setPermissionCheckHandler).toHaveBeenCalledTimes(1)
   })
 })

@@ -50,9 +50,12 @@ describe('decode', () => {
   })
 
   it('keeps byte strings as views onto the input', () => {
-    const value = decode(encode(new Uint8Array([1, 2, 3])))
+    const input = encode(new Uint8Array([1, 2, 3]))
+    const value = decode(input)
     expect(value).toBeInstanceOf(Uint8Array)
     expect([...(value as Uint8Array)]).toEqual([1, 2, 3])
+    // A view, not a copy: a firehose frame's CAR blocks are never duplicated to be skipped.
+    expect((value as Uint8Array).buffer).toBe(input.buffer)
   })
 
   it('reads a CID link without interpreting it', () => {

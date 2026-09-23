@@ -1,6 +1,7 @@
 import { safeStorage } from 'electron'
 import ElectronStore from 'electron-store'
 import { BUILTIN_ACCOUNTS, DEFAULT_SETTINGS } from '../shared/defaults'
+import { sanitizeProbeTargets } from '../shared/probe-targets'
 import type { Account, Settings, StatusPost } from '../shared/types'
 import { EMPTY_READ, readStateFromUnread, type Cursors, type ReadState } from './state'
 import { generateWebhookSecret } from './webhook'
@@ -13,6 +14,8 @@ export interface PersistedShape extends Record<string, unknown> {
   /** How far through each source the user has read. See `ReadState`. */
   read: ReadState
   cursors: Cursors
+  /** Incidents whose start got a banner, so their follow-ups can. See `applyFollowUps`. */
+  openIncidents: string[]
   /**
    * The unguessable path segment of the webhook endpoint, sealed by the OS credential
    * store — Keychain on macOS, libsecret on Linux, DPAPI on Windows — and held here as
@@ -33,7 +36,7 @@ export interface PersistedShape extends Record<string, unknown> {
   webhookSecret: string
 }
 
-const SCHEMA_VERSION = 5
+const SCHEMA_VERSION = 6
 
 /**
  * The schema version that replaced the flat `unread` list with read cursors.
@@ -59,6 +62,7 @@ export function createStore(): ElectronStore<PersistedShape> {
       posts: [],
       read: { ...EMPTY_READ },
       cursors: {},
+      openIncidents: [],
       // Minted by `readWebhookSecret` rather than here, so that one place decides
       // whether it is written sealed or in the clear, and so that nothing is minted
       // at all on an install that never turns the receiver on. See `writeWebhookSecret`.
@@ -115,6 +119,10 @@ export function reconcile(store: ElectronStore<PersistedShape>): void {
     if (builtinDids.has(account.did)) account.builtin = true
     // Schema 2 predates pushed sources; everything it persisted was polled.
     account.kind ??= 'atproto'
+    // Schema 5 and earlier had a notify switch rather than a level. On meant "whatever
+    // the settings say", which is `default`; off was no banners.
+    const notify = account.notify as unknown
+    if (typeof notify === 'boolean') account.notify = notify ? 'default' : 'off'
   }
   store.set('accounts', merged)
 
@@ -128,18 +136,21 @@ export function reconcile(store: ElectronStore<PersistedShape>): void {
  * beat the icon instead; schema 4 makes that a choice of four, so each of those two
  * booleans maps onto the style it used to mean, oldest first. Someone who turned the
  * count off wanted a quiet menu bar, and still does. `notifyOnlyIncidents` is gone
- * entirely; drop it rather than persist a key nothing reads.
+ * entirely; drop it rather than persist a key nothing reads. Schema 6 made the sound a
+ * choice of three, and a stored boolean maps onto the two ends of it.
  */
 function migrateSettings(stored: Settings | undefined): Settings {
   const {
     showTrayCount,
     beatWhenUnread,
     notifyOnlyIncidents: _dropped,
+    notificationSound: sound,
     ...rest
-  } = (stored ?? {}) as Partial<Settings> & {
+  } = (stored ?? {}) as Omit<Partial<Settings>, 'notificationSound'> & {
     showTrayCount?: boolean
     beatWhenUnread?: boolean
     notifyOnlyIncidents?: boolean
+    notificationSound?: Settings['notificationSound'] | boolean
   }
 
   const inherited = beatWhenUnread ?? showTrayCount
@@ -147,7 +158,22 @@ function migrateSettings(stored: Settings | undefined): Settings {
     rest.trayUnreadStyle ??
     (inherited === undefined ? DEFAULT_SETTINGS.trayUnreadStyle : inherited ? 'beat' : 'none')
 
-  return { ...DEFAULT_SETTINGS, ...rest, trayUnreadStyle }
+  // Schema 5 played the sound for every banner or for none. Someone who had it on chose
+  // to hear every banner, and keeps doing so rather than being moved to the new default.
+  const notificationSound =
+    typeof sound === 'boolean'
+      ? sound
+        ? 'all'
+        : 'never'
+      : (sound ?? DEFAULT_SETTINGS.notificationSound)
+
+  // An override that no longer validates — edited by hand, or written against a schema
+  // this build does not share — must reach neither the probes nor the popover, whose
+  // state carries every setting and is validated whole on every push. It is dropped for
+  // the checked-in defaults, with a warning, rather than allowed to stop the app.
+  const probeTargets = sanitizeProbeTargets(rest.probeTargets)
+
+  return { ...DEFAULT_SETTINGS, ...rest, trayUnreadStyle, notificationSound, probeTargets }
 }
 
 /** Rebuild schema 3's flat `unread` list as read cursors, and drop the old key. */

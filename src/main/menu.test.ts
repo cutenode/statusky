@@ -4,7 +4,7 @@ import type { MenuItemTemplate } from '../test/electron'
 import { withPlatform } from '../test/harness'
 import { configureAboutPanel, installApplicationMenu } from './menu'
 
-/** Install the menu as the given platform would see it, and hand back what was built. */
+/** Install the menu as the given platform would see it; `applicationMenu` holds the result. */
 async function install(platform: NodeJS.Platform = 'darwin'): Promise<void> {
   await withPlatform(platform, () => installApplicationMenu())
 }

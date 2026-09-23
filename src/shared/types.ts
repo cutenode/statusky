@@ -28,8 +28,8 @@ export interface Account {
   displayName: string
   avatar: string | null
   description: string | null
-  /** Emit an OS notification when this account posts. */
-  notify: boolean
+  /** How much of this source is worth a banner. See `NotifyLevel`. */
+  notify: NotifyLevel
   /** Hide this account's posts from the feed without forgetting it. */
   muted: boolean
   /** ISO timestamp of when the user added this account. */
@@ -91,6 +91,40 @@ export interface StatusPost {
 export type ThemePreference = 'system' | 'light' | 'dark'
 
 /**
+ * How much of one source is worth a banner.
+ *
+ * `default` follows the stages chosen in Settings, which is what almost every source
+ * wants. The other three override them for this source alone: `all` is every update it
+ * posts, `outages` is only the stages that mean something is broken right now, and `off`
+ * is no banners at all while the source stays in the feed. Muting is a separate thing,
+ * because it hides the source from the feed too.
+ */
+export type NotifyLevel = 'default' | 'all' | 'outages' | 'off'
+
+/** When a banner makes a sound: every time, only for outages, or never. */
+export type NotificationSound = 'all' | 'urgent' | 'never'
+
+/**
+ * Which services the network checks may raise a banner about.
+ *
+ * `core` is the Atmosphere proper, the same services that are allowed to set the tray's
+ * health (see `ProbeTier`). `all` adds community infrastructure. `pinned` is only the
+ * services the user has starred on the dashboard, for someone who runs a PDS and cares
+ * about that and nothing else.
+ */
+export type ProbeNotifyScope = 'core' | 'all' | 'pinned'
+
+/**
+ * What happens to banners that would go up while nobody is at the machine.
+ *
+ * `digest` holds them and says once, on the way back, how many there were. `deliver`
+ * shows them as they arrive anyway, for anyone who reads Notification Center later or
+ * works on a second screen. `drop` holds them and then says nothing. In every case the
+ * updates stay unread, so the tray and the Timeline still have them.
+ */
+export type AwayBehaviour = 'digest' | 'deliver' | 'drop'
+
+/**
  * How unread updates are announced in the menu bar.
  *
  * `beat` plays one cardiac cycle on a loop in red, over the top of the health colour.
@@ -121,8 +155,52 @@ export interface Settings {
   pollIntervalSec: number
   /** Master switch; per-account `notify` still applies. */
   notificationsEnabled: boolean
-  /** Play the system notification sound. */
-  notificationSound: boolean
+  /** When a banner plays the system notification sound. */
+  notificationSound: NotificationSound
+  /** Leave outage banners on screen until dismissed rather than letting them time out. */
+  notifyStickyOutages: boolean
+  /** The incident stages worth a banner, for sources left on `NotifyLevel` `default`. */
+  notifySeverities: Severity[]
+  /**
+   * Announce *Monitoring* and *Resolved* only for incidents whose start got a banner.
+   *
+   * On, the two follow-up stages ignore `notifySeverities` and are shown exactly when the
+   * incident they follow was: the all-clear always reaches whoever heard about the
+   * outage, and nobody is told something is fixed that they never knew was broken.
+   */
+  notifyFollowUpsOnly: boolean
+  /** The kinds of source allowed to raise a banner at all. */
+  notifySources: SourceKind[]
+  /** Which measured services may raise a banner. See `ProbeNotifyScope`. */
+  notifyProbeScope: ProbeNotifyScope
+  /**
+   * How long a service has to stay down before the banner goes up, in seconds. Zero is
+   * as soon as the checks have confirmed it, which is already one re-check after the
+   * first failure. A recovery inside the window cancels both banners.
+   */
+  notifyProbeGraceSec: number
+  /** Raise a banner when a measured service comes back. */
+  notifyProbeRecovery: boolean
+  /** Raise a banner when a measured service is only partly failing. */
+  notifyProbePartial: boolean
+  /** Hold banners between `quietHoursStart` and `quietHoursEnd`, local time. */
+  quietHoursEnabled: boolean
+  /** `HH:MM`, 24-hour, local time. */
+  quietHoursStart: string
+  /** `HH:MM`, 24-hour, local time. Earlier than the start means the window spans midnight. */
+  quietHoursEnd: string
+  /** Let outages through during quiet hours. */
+  quietHoursBreakthrough: boolean
+  /** What happens to banners while nobody is at the machine. */
+  notifyWhenAway: AwayBehaviour
+  /** Fold updates that arrive shortly after a banner into one summary. */
+  notifyCombineBursts: boolean
+  /** ISO timestamp banners are held until, or null when they are not snoozed. */
+  notificationsSnoozedUntil: string | null
+  /** Show the update's text in the banner, rather than only its source and stage. */
+  notificationShowBody: boolean
+  /** Service ids starred on the dashboard. See `ProbeNotifyScope`. */
+  pinnedServices: string[]
   theme: ThemePreference
   launchAtLogin: boolean
   /** How unread updates are announced in the menu bar. */
@@ -149,6 +227,18 @@ export interface Settings {
    * separate question, answered by `AppState.shortcut` rather than by this field.
    */
   globalShortcut: string
+  /**
+   * The user's own choice of what the network checks read, or null for the checked-in
+   * defaults in `src/shared/probeTargets.json`.
+   *
+   * Always the whole document when set, never a patch over the defaults: that is what
+   * makes exporting it the same thing as saving it, and "reset to defaults" nothing more
+   * than null. An override identical to the defaults is stored as null, so somebody who
+   * opened the editor and saved without changing anything still gets whatever the next
+   * release ships. Read it through `effectiveProbeTargets` in
+   * src/shared/probe-targets.ts, never directly.
+   */
+  probeTargets: ProbeTargets | null
 }
 
 export type WebhookState = 'off' | 'listening' | 'error'
@@ -419,6 +509,100 @@ export interface NetworkSummary {
 /** Main asking the popover to show the dashboard, optionally scrolled to one service. */
 export interface NetworkReveal {
   serviceId: string | null
+}
+
+// ------------------------------------------------------------- probe targets
+
+/**
+ * An account the AppView checks read, by both halves of its identity.
+ *
+ * Every AppView is asked for each one's profile by DID, for its handle to be resolved —
+ * which must come back as exactly this DID — and for its newest posts. Keeping the two
+ * halves together is what makes that resolution checkable at all, and is why a handle
+ * cannot be listed without the DID it belongs to.
+ */
+export interface ProbeAccount {
+  did: string
+  handle: string
+}
+
+/** A custom feed, asked for one post of its skeleton. One row on the dashboard each. */
+export interface ProbeFeed {
+  label: string
+  /** The feed generator's host, which the skeleton is asked of directly. */
+  host: string
+  /** The `app.bsky.feed.generator` record that names the feed. */
+  uri: string
+}
+
+/** One record, by the repository it lives in and its key. */
+export interface ProbeRecord {
+  did: string
+  rkey: string
+}
+
+/** One image blob on the CDN, by whose repository it is in and its CID. */
+export interface ProbeImage {
+  did: string
+  cid: string
+}
+
+/**
+ * Everything the network checks read that somebody could delete or edit out from under
+ * them: particular accounts, feeds, images, repositories and documents.
+ *
+ * Hostnames are not in here. They are the services themselves, and live in `CATALOGUE`
+ * in src/shared/network.ts; these are only the things each service is asked about. The
+ * checked-in defaults are `src/shared/probeTargets.json`, and a user may replace the
+ * whole document through `Settings.probeTargets` when one of them disappears.
+ */
+export interface ProbeTargets {
+  /**
+   * The accounts every AppView is asked about. Prolific posters on purpose: between
+   * them somebody has always posted recently, which is what the newest-post comparison
+   * between AppViews needs. The defaults are every account the three separate lists
+   * this replaced — author feeds, profiles and handles — ever named.
+   */
+  accounts: ProbeAccount[]
+  feeds: ProbeFeed[]
+  forYou: {
+    /** What the generator record points at, and what an AppView resolves before calling. */
+    did: string
+    /** The feed itself, as the `app.bsky.feed.generator` record that names it. */
+    feed: string
+  }
+  /** Images whose first chunk the CDN is asked for. */
+  cdnImages: ProbeImage[]
+  tangled: {
+    /**
+     * A Go vanity route, `?go-get=1` and all. A static 92-byte answer: routing only, no
+     * database behind it. It has to name the same repository as `repoPath`.
+     */
+    goGetPath: string
+    /**
+     * A repository page, as `/<owner handle>/<name>`. The full path: routing, database,
+     * identity resolution and render. The page titles itself with this path minus its
+     * leading slash, so that is what the check looks for — and why the owner has to be
+     * written as the handle, which is what a DID or `@` path would redirect to.
+     */
+    repoPath: string
+    /** The same repository's own DID, as minted by its knot, for Bobbin to look up. */
+    repoDid: string
+    /** Who owns the repository: Tangled's own account, which runs the default spindle too. */
+    ownerDid: string
+  }
+  apps: {
+    leaflet: {
+      /** A published document, whose well-known route is a 77-byte index read. */
+      publication: ProbeRecord
+      /** A busy publication, for its feed's `<updated>`. */
+      feed: ProbeRecord
+    }
+    offprint: {
+      /** What the publication host's well-known route answers with: an AT-URI. */
+      publication: string
+    }
+  }
 }
 
 /** Everything the renderer needs to draw itself. Pushed on every change. */

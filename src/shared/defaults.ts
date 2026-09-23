@@ -8,7 +8,7 @@ export const BUILTIN_ACCOUNTS: readonly Omit<Account, 'addedAt'>[] = [
     displayName: 'Bluesky Status',
     avatar: null,
     description: 'Status page for the Bluesky AppView, PDS fleet and relay.',
-    notify: true,
+    notify: 'default',
     muted: false,
     builtin: true,
     kind: 'atproto'
@@ -19,7 +19,7 @@ export const BUILTIN_ACCOUNTS: readonly Omit<Account, 'addedAt'>[] = [
     displayName: 'Blacksky Status',
     avatar: null,
     description: 'Status page for outages or updates affecting Blacksky.',
-    notify: true,
+    notify: 'default',
     muted: false,
     builtin: true,
     kind: 'atproto'
@@ -35,7 +35,25 @@ export const DEFAULT_WEBHOOK_PORT = 7385
 export const DEFAULT_SETTINGS: Settings = {
   pollIntervalSec: 120,
   notificationsEnabled: true,
-  notificationSound: true,
+  notificationSound: 'urgent',
+  notifyStickyOutages: true,
+  // Every stage but routine *Update* and *Maintenance* posts: the `incidents` preset.
+  notifySeverities: ['outage', 'degraded', 'investigating', 'identified', 'monitoring', 'resolved'],
+  notifyFollowUpsOnly: true,
+  notifySources: ['atproto', 'webhook', 'probe'],
+  notifyProbeScope: 'core',
+  notifyProbeGraceSec: 0,
+  notifyProbeRecovery: true,
+  notifyProbePartial: true,
+  quietHoursEnabled: false,
+  quietHoursStart: '22:00',
+  quietHoursEnd: '08:00',
+  quietHoursBreakthrough: true,
+  notifyWhenAway: 'digest',
+  notifyCombineBursts: true,
+  notificationsSnoozedUntil: null,
+  notificationShowBody: true,
+  pinnedServices: [],
   theme: 'system',
   launchAtLogin: false,
   trayUnreadStyle: 'beat',
@@ -45,7 +63,9 @@ export const DEFAULT_SETTINGS: Settings = {
   webhookPort: DEFAULT_WEBHOOK_PORT,
   networkChecks: true,
   networkIntervalSec: 600,
-  globalShortcut: ''
+  globalShortcut: '',
+  // The checked-in `probeTargets.json`, until somebody replaces it. See `Settings`.
+  probeTargets: null
 }
 
 /**

@@ -1,5 +1,7 @@
 import { MAX_STORED_POSTS } from '../shared/defaults'
 import { sortPosts } from '../shared/bsky'
+import { wantsBanner } from '../shared/notify'
+import { sanitizeProbeTargets } from '../shared/probe-targets'
 import type { Account, Settings, StatusPost } from '../shared/types'
 
 /**
@@ -34,7 +36,9 @@ export function mergePosts(
 }
 
 /**
- * Posts worth raising a notification for: newer than the account's cursor.
+ * Posts worth raising a notification for: newer than the account's cursor, and the kind
+ * of update the user asked to hear about (see `wantsBanner`). Follow-ups are settled
+ * afterwards by `applyFollowUps`, which needs to know which incidents are open.
  *
  * Using a timestamp cursor rather than a "have I seen this URI" set means a cold
  * start after the cache has been trimmed cannot re-notify about old incidents,
@@ -48,14 +52,12 @@ export function selectNotifiable(
 ): StatusPost[] {
   if (!settings.notificationsEnabled) return []
 
-  const notifiable = new Map<string, Account>()
-  for (const account of accounts) {
-    if (account.notify && !account.muted) notifiable.set(account.did, account)
-  }
+  const byDid = new Map(accounts.map((account) => [account.did, account]))
 
   return incoming
     .filter((post) => {
-      if (!notifiable.has(post.authorDid)) return false
+      const account = byDid.get(post.authorDid)
+      if (!account || !wantsBanner(post, account, settings)) return false
 
       const cursor = cursors[post.authorDid]
       // No cursor means this account has never synced; seed silently instead.
@@ -332,11 +334,18 @@ export function visiblePosts(posts: StatusPost[], accounts: Account[]): StatusPo
 export function sanitizeSettings(settings: Settings): Settings {
   return {
     ...settings,
+    notifyProbeGraceSec: Math.min(Math.max(Math.round(settings.notifyProbeGraceSec) || 0, 0), 3600),
+    // Order carries nothing, and duplicates would only make presets fail to match.
+    notifySeverities: [...new Set(settings.notifySeverities)],
+    notifySources: [...new Set(settings.notifySources)],
+    pinnedServices: [...new Set(settings.pinnedServices)],
     pollIntervalSec: Math.min(Math.max(Math.round(settings.pollIntervalSec), 15), 3600),
     postsPerAccount: Math.min(Math.max(Math.round(settings.postsPerAccount), 5), 100),
     webhookPort: sanitizePort(settings.webhookPort),
     // A sweep is a hundred requests: no more often than once a minute.
-    networkIntervalSec: Math.min(Math.max(Math.round(settings.networkIntervalSec), 60), 3600)
+    networkIntervalSec: Math.min(Math.max(Math.round(settings.networkIntervalSec), 60), 3600),
+    // Normalised, or dropped with a warning if it is not valid; see `sanitizeProbeTargets`.
+    probeTargets: sanitizeProbeTargets(settings.probeTargets)
   }
 }
 

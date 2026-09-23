@@ -4,7 +4,8 @@ import { HEALTH_LABEL } from '@shared/status'
 import { nav } from '$lib/nav.svelte'
 import { probeAccount } from '@shared/network'
 import { makeAccount, makeNetworkSummary, makePost } from '../../../test/factories'
-import { renderWith } from '../test/render'
+import { NOTIFY_LEVEL_CHOICES } from '@shared/notify'
+import { chooseOption, openSelect, renderWith } from '../test/render'
 import AccountRow from './AccountRow.svelte'
 
 const account = makeAccount({
@@ -135,45 +136,68 @@ describe('the controls', () => {
     expect(bridge.api.Accounts.patch).toHaveBeenCalledWith(account.did, { muted: true })
   })
 
-  it('toggles notifications for the account', async () => {
+  it('sets how much of the account is worth a banner', async () => {
     const { bridge, getByLabelText } = await renderWith(
       AccountRow,
       { account },
       { accounts: [account] }
     )
 
-    await fireEvent.click(getByLabelText('Notifications for @status.bsky.app'))
+    await chooseOption(getByLabelText('Notifications for @status.bsky.app'), 'Outages only')
 
-    expect(bridge.api.Accounts.patch).toHaveBeenCalledWith(account.did, { notify: false })
+    expect(bridge.api.Accounts.patch).toHaveBeenCalledWith(account.did, { notify: 'outages' })
+  })
+
+  it('offers every level', async () => {
+    const { getByLabelText } = await renderWith(AccountRow, { account }, { accounts: [account] })
+
+    const listbox = await openSelect(getByLabelText('Notifications for @status.bsky.app'))
+    const options = [...listbox.querySelectorAll('[role="option"]')].map((o) =>
+      o.textContent?.trim()
+    )
+
+    expect(options).toEqual(NOTIFY_LEVEL_CHOICES.map((choice) => choice.label))
   })
 
   it.each([
-    [true, 'Notifying you about new posts'],
-    [false, 'Notifications off']
-  ])('explains the notify state (%s) in its tooltip', async (notify, tooltip) => {
-    const subject = { ...account, notify }
-    const { getByLabelText, findAllByText } = await renderWith(
-      AccountRow,
-      { account: subject },
-      { accounts: [subject] }
-    )
+    ['default', 'Default'],
+    ['all', 'All'],
+    ['outages', 'Outages'],
+    ['off', 'Off']
+  ] as const)(
+    'names the %s level on the control, and explains it on hover',
+    async (notify, label) => {
+      const subject = { ...account, notify }
+      const { getByLabelText } = await renderWith(
+        AccountRow,
+        { account: subject },
+        { accounts: [subject] }
+      )
 
-    await fireEvent.pointerEnter(getByLabelText('Toggle notifications'))
-    await fireEvent.focus(getByLabelText('Toggle notifications'))
+      const control = getByLabelText('Notifications for @status.bsky.app')
+      expect(control.textContent).toContain(label)
+      expect(control.getAttribute('title')).toBe(
+        NOTIFY_LEVEL_CHOICES.find((choice) => choice.value === notify)!.hint
+      )
+    }
+  )
 
-    expect((await findAllByText(tooltip)).length).toBeGreaterThan(0)
-  })
+  it('crosses the bell out only when banners are off', async () => {
+    const silent = { ...account, notify: 'off' as const }
+    const off = await renderWith(AccountRow, { account: silent }, { accounts: [silent] })
+    const control = off.getByLabelText('Notifications for @status.bsky.app')
+    expect(control.querySelector('svg.lucide-bell-off')).not.toBeNull()
+    off.unmount()
 
-  it('shows a bell that reflects the notify state', async () => {
-    const silent = { ...account, notify: false }
+    const outages = { ...account, notify: 'outages' as const }
     const { getByLabelText } = await renderWith(
       AccountRow,
-      { account: silent },
-      { accounts: [silent] }
+      { account: outages },
+      { accounts: [outages] }
     )
-
-    const toggle = getByLabelText('Notifications for @status.bsky.app')
-    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    const lit = getByLabelText('Notifications for @status.bsky.app')
+    expect(lit.querySelector('svg.lucide-bell-off')).toBeNull()
+    expect(lit.querySelector('svg.lucide-bell')).not.toBeNull()
   })
 
   it('offers to stop tracking a user-added account', async () => {
@@ -247,7 +271,7 @@ describe('a pushed source', () => {
     expect(bridge.api.Accounts.remove).toHaveBeenCalledWith(pushed.did)
   })
 
-  it('labels its notification switch without an @ either', async () => {
+  it('labels its notification control without an @ either', async () => {
     const { getByLabelText } = await renderWith(
       AccountRow,
       { account: pushed },
@@ -259,16 +283,20 @@ describe('a pushed source', () => {
 })
 
 describe('the mute tooltip', () => {
-  it('says which way the toggle currently sits', async () => {
+  it.each([
+    [false, 'Hide from feed', 'Showing in feed'],
+    [true, 'Show in feed', 'Hidden from feed']
+  ])('says which way the toggle currently sits (muted: %s)', async (muted, control, tooltip) => {
+    const subject = { ...account, muted }
     const { getByLabelText, findByText } = await renderWith(
       AccountRow,
-      { account },
-      { accounts: [account] }
+      { account: subject },
+      { accounts: [subject] }
     )
 
-    await fireEvent.focus(getByLabelText('Hide from feed'))
+    await fireEvent.focus(getByLabelText(control))
 
-    expect(await findByText('Showing in feed')).toBeTruthy()
+    expect(await findByText(tooltip)).toBeTruthy()
   })
 })
 

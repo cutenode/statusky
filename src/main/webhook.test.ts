@@ -290,7 +290,7 @@ describe('refusing everything else', () => {
     expect(onDelivery).not.toHaveBeenCalled()
   })
 
-  it('gives up on a body the client abandons half way through', async () => {
+  it('gives up on a body the client abandons half way through, and carries on', async () => {
     const { receiver, onDelivery, port } = await start()
 
     await new Promise<void>((resolve) => {
@@ -310,9 +310,10 @@ describe('refusing everything else', () => {
       }, 20)
     })
 
-    await new Promise((resolve) => setTimeout(resolve, 50))
-    expect(onDelivery).not.toHaveBeenCalled()
-    expect(receiver.status().deliveries).toBe(0)
+    // The next delivery is the witness: it is taken, and it is the only one counted.
+    expect((await post(endpoint(port), JSON.stringify(PAYLOAD))).status).toBe(200)
+    expect(onDelivery.mock.calls).toEqual([[PAYLOAD]])
+    expect(receiver.status().deliveries).toBe(1)
   })
 
   it('refuses an oversized body on the declared length alone', async () => {

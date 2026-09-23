@@ -54,7 +54,7 @@ describe('identifying a pushed source', () => {
       handle: 'status.bsky.app',
       displayName: 'status.bsky.app',
       description: 'OK',
-      notify: true,
+      notify: 'default',
       muted: false,
       builtin: false,
       kind: 'webhook'
@@ -170,18 +170,36 @@ describe('incidents', () => {
   })
 
   it('accepts the same statuses in Statuspage casing and spelling', () => {
-    const { posts } = delivery({
-      page: PAGE,
-      incident: incident({ incident_updates: [{ id: 'u1', status: 'in progress', body: 'x' }] })
-    })
-    // Not an incident status, so it falls through to the incident's own.
-    expect(posts[0]!.severity).toBe('investigating')
-
     const resolved = delivery({
       page: PAGE,
       incident: incident({ incident_updates: [{ id: 'u1', status: 'resolved', body: 'x' }] })
     })
     expect(resolved.posts[0]!.severity).toBe('resolved')
+
+    // Statuspage writes its multi-word states in snake case.
+    const underway = delivery({
+      page: PAGE,
+      maintenance: {
+        id: 'mnt_1',
+        name: 'Upgrade',
+        maintenance_updates: [{ id: 'u1', status: 'in_progress', body: 'x' }]
+      }
+    })
+    const broken = delivery({
+      page: PAGE,
+      component: { id: 'cmp_1', name: 'AppView' },
+      component_update: { new_status: 'partial_outage' }
+    })
+    expect(underway.posts[0]!.severity).toBe('maintenance')
+    expect(broken.posts[0]!.severity).toBe('outage')
+  })
+
+  it('falls through to the incident’s own stage for an update status it does not know', () => {
+    const { posts } = delivery({
+      page: PAGE,
+      incident: incident({ incident_updates: [{ id: 'u1', status: 'in progress', body: 'x' }] })
+    })
+    expect(posts[0]!.severity).toBe('investigating')
   })
 
   it('classifies the prose when neither the update nor the incident names a stage', () => {

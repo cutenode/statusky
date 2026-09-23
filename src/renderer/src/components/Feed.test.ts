@@ -61,7 +61,15 @@ describe('the feed tab', () => {
   })
 
   it('offers chips for the status accounts only', async () => {
-    const { queryByText } = await renderWith(Feed, { now: NOW }, mixed)
+    // A second status account, so there is a row of chips to look along at all.
+    const other = makeAccount({ did: 'did:plc:b', displayName: 'Other Status' })
+    const { queryByText } = await renderWith(
+      Feed,
+      { now: NOW },
+      { ...mixed, accounts: [...mixed.accounts, other] }
+    )
+    expect(queryByText('Example Status')).not.toBeNull()
+    expect(queryByText('Other Status')).not.toBeNull()
     expect(queryByText('status.hosted.test')).toBeNull()
     expect(queryByText('Network checks')).toBeNull()
   })

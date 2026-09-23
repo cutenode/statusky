@@ -77,9 +77,6 @@ class FakeApp extends EventEmitter {
   readonly quit = vi.fn(() => {
     this.emit('quit')
   })
-  readonly exit = vi.fn()
-  readonly relaunch = vi.fn()
-  readonly focus = vi.fn()
   readonly whenReady = vi.fn(async () => undefined)
   readonly requestSingleInstanceLock = vi.fn(() => this.singleInstanceLock)
   readonly setAppUserModelId = vi.fn((id: string) => {
@@ -152,13 +149,6 @@ class FakeIpcMain extends EventEmitter {
     this.handlers.set(channel, handler)
   }
 
-  handleOnce(channel: string, handler: IpcHandler): void {
-    this.handle(channel, (event, ...args) => {
-      this.handlers.delete(channel)
-      return handler(event, ...args)
-    })
-  }
-
   removeHandler(channel: string): void {
     this.handlers.delete(channel)
   }
@@ -209,21 +199,33 @@ function senderFrame(): FakeWebFrameMain | null {
 
 class FakeIpcRenderer extends EventEmitter {
   async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+    // Electron serializes the arguments with the structured clone algorithm on the way
+    // out, so main never holds an object the page can still change, and anything that
+    // cannot be cloned — a function, a Svelte state proxy — fails here as it would there.
+    const sent = structuredClone(args)
     const frame = senderFrame()
-    const handler = frame?.webContents.ipc.handlers.get(channel) ?? ipcMain.handlers.get(channel)
+    // The same search Electron makes: the frame, then its page, then `ipcMain`.
+    const handler =
+      frame?.ipc.handlers.get(channel) ??
+      frame?.webContents.ipc.handlers.get(channel) ??
+      ipcMain.handlers.get(channel)
     if (!handler) {
-      throw new Error(`Error invoking remote method '${channel}': no handler registered`)
+      throw new Error(
+        `Error invoking remote method '${channel}': Error: No handler registered for '${channel}'`
+      )
     }
+    let result: unknown
     try {
-      return await handler({ sender: frame?.webContents ?? null, senderFrame: frame }, ...args)
+      result = await handler({ sender: frame?.webContents ?? null, senderFrame: frame }, ...sent)
     } catch (error) {
-      // Electron re-wraps handler failures on the way back across the boundary, and
-      // the renderer has to unwrap them again; keep that shape so it is exercised.
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`Error invoking remote method '${channel}': Error: ${message}`, {
-        cause: error
-      })
+      // All that crosses back is the failure as a string — `Error: …`, `TypeError: …`, or
+      // whatever a non-Error stringifies to — which the renderer wraps in a fresh `Error`
+      // behind the channel name. No class, no `cause`, no custom fields: the renderer has
+      // to make do with the sentence, so here it has to as well.
+      // oxlint-disable-next-line preserve-caught-error
+      throw new Error(`Error invoking remote method '${channel}': ${String(error)}`)
     }
+    return structuredClone(result)
   }
 
   override on(channel: string, listener: (...args: unknown[]) => void): this {
@@ -240,15 +242,6 @@ class FakeIpcRenderer extends EventEmitter {
     if (channel) rendererBus.removeAllListeners(channel)
     else rendererBus.removeAllListeners()
     return this
-  }
-
-  send(channel: string, ...args: unknown[]): void {
-    void ipcMain.handlers.get(channel)?.({ sender: null }, ...args)
-  }
-
-  /** Listener count on the renderer side, for leak assertions. */
-  listenerCountFor(channel: string): number {
-    return rendererBus.listenerCount(channel)
   }
 
   /**
@@ -281,9 +274,6 @@ export const contextBridge = {
     exposed.set(key, api)
     published.set(key, api)
     ;(globalThis as Record<string, unknown>)[key] = api
-  }),
-  exposeInIsolatedWorld: vi.fn((_worldId: number, key: string, api: unknown) => {
-    exposed.set(key, api)
   })
 }
 
@@ -292,10 +282,7 @@ export const contextBridge = {
 export const shell = {
   openExternal: vi.fn(async (url: string) => {
     openedExternally.push(url)
-  }),
-  openPath: vi.fn(async () => ''),
-  showItemInFolder: vi.fn(),
-  beep: vi.fn()
+  })
 }
 
 /** Every URL handed to the OS, in order. */
@@ -309,8 +296,7 @@ export const clipboardContents = { text: '' }
 export const clipboard = {
   writeText: vi.fn((text: string) => {
     clipboardContents.text = text
-  }),
-  readText: vi.fn(() => clipboardContents.text)
+  })
 }
 
 // ------------------------------------------------------------- protocol / net
@@ -331,9 +317,6 @@ export const protocol = {
   }),
   handle: vi.fn((scheme: string, handler: (request: Request) => Promise<Response>) => {
     protocolHandlers.set(scheme, handler)
-  }),
-  unhandle: vi.fn((scheme: string) => {
-    protocolHandlers.delete(scheme)
   })
 }
 
@@ -487,15 +470,10 @@ export class FakeNativeImage {
   isEmpty(): boolean {
     return false
   }
-
-  resize(): FakeNativeImage {
-    return this
-  }
 }
 
 export const nativeImage = {
-  createFromPath: vi.fn((path: string) => new FakeNativeImage(path)),
-  createEmpty: vi.fn(() => new FakeNativeImage(''))
+  createFromPath: vi.fn((path: string) => new FakeNativeImage(path))
 }
 
 // ----------------------------------------------------------------------- menu
@@ -529,7 +507,6 @@ export class FakeMenu {
    */
   popup(options: MenuPopupOptions = {}): void {
     this.popups.push(options)
-    poppedUp.push(this)
   }
 
   /** Whether this menu is on screen right now. */
@@ -615,9 +592,6 @@ export class FakeShareMenu {
 
 /** Every share sheet constructed, in order. */
 export const shareMenus: FakeShareMenu[] = []
-
-/** Every menu put on screen with `popup`, in order. */
-export const poppedUp: FakeMenu[] = []
 
 /**
  * The menu Electron would install over the whole application, or null where the app
@@ -712,8 +686,6 @@ export const globalShortcut = new FakeGlobalShortcut()
  * the process was about to go, which is the whole of what the app can promise.
  */
 class FakeAutoUpdater extends EventEmitter {
-  readonly setFeedURL = vi.fn()
-  readonly checkForUpdates = vi.fn()
   readonly quitAndInstall = vi.fn()
 
   /** Squirrel refusing, in whatever way it is refusing today. */
@@ -847,9 +819,12 @@ class FakeWebContents extends EventEmitter {
     // Electron throws rather than quietly dropping the message when the page is gone,
     // which is the whole reason anything holding a dispatcher has to ask first.
     if (this.destroyed) throw new TypeError('Object has been destroyed')
-    const payload = args.length > 1 ? args : args[0]
+    // Serialized on the way across, like `invoke`: the page gets a copy, so main changing
+    // an object after pushing it cannot reach into what the renderer already holds.
+    const delivered = structuredClone(args)
+    const payload = delivered.length > 1 ? delivered : delivered[0]
     this.sent.push({ channel, payload })
-    rendererBus.emit(channel, { sender: this }, ...args)
+    rendererBus.emit(channel, { sender: this }, ...delivered)
   }
 
   setWindowOpenHandler(handler: (details: { url: string }) => unknown): void {
@@ -875,17 +850,10 @@ class FakeWebContents extends EventEmitter {
   openDevTools(): void {
     this.devToolsOpen = true
   }
-
-  closeDevTools(): void {
-    this.devToolsOpen = false
-  }
-
-  setZoomFactor(): void {}
 }
 
 export class BrowserWindow extends EventEmitter {
   static instances: BrowserWindow[] = []
-  static getAllWindows = vi.fn(() => BrowserWindow.instances.filter((w) => !w.destroyed))
 
   readonly webContents = new FakeWebContents()
   readonly options: Record<string, unknown>
@@ -969,10 +937,6 @@ export class BrowserWindow extends EventEmitter {
     this.bounds = { ...this.bounds, x, y }
   }
 
-  setSize(width: number, height: number): void {
-    this.bounds = { ...this.bounds, width, height }
-  }
-
   setAlwaysOnTop(value: boolean): void {
     this.alwaysOnTop = value
   }
@@ -1010,10 +974,6 @@ class FakeScreen extends EventEmitter {
     return this.displays[0]!
   }
 
-  getAllDisplays(): FakeDisplay[] {
-    return this.displays
-  }
-
   /** Pick the display whose bounds contain the point, else the primary one. */
   getDisplayNearestPoint(point: { x: number; y: number }): FakeDisplay {
     return (
@@ -1025,10 +985,6 @@ class FakeScreen extends EventEmitter {
           point.y < display.bounds.y + display.bounds.height
       ) ?? this.getPrimaryDisplay()
     )
-  }
-
-  getCursorScreenPoint(): { x: number; y: number } {
-    return { x: 0, y: 0 }
   }
 }
 
@@ -1081,14 +1037,25 @@ class FakePowerMonitor extends EventEmitter {
 export const powerMonitor = new FakePowerMonitor()
 powerMonitor.setMaxListeners(0)
 
+/** What the file dialogs answer until a test says otherwise: somebody pressed Cancel. */
+const cancelledOpen = async (
+  _options?: unknown
+): Promise<{ canceled: boolean; filePaths: string[] }> => ({
+  canceled: true,
+  filePaths: []
+})
+const cancelledSave = async (
+  _options?: unknown
+): Promise<{ canceled: boolean; filePath: string }> => ({
+  canceled: true,
+  filePath: ''
+})
+
 export const dialog = {
   showErrorBox: vi.fn(),
   showMessageBox: vi.fn(async () => ({ response: 0 })),
-  showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] }))
-}
-
-export const systemPreferences = {
-  getMediaAccessStatus: vi.fn(() => 'granted')
+  showOpenDialog: vi.fn(cancelledOpen),
+  showSaveDialog: vi.fn(cancelledSave)
 }
 
 // ----------------------------------------------------------------- safeStorage
@@ -1199,6 +1166,7 @@ export function resetElectron(): void {
   app.isPackaged = false
   app.singleInstanceLock = true
   app.version = '0.1.0-test'
+  app.name = 'Statusky'
   app.loginItem = { openAtLogin: false, openAsHidden: false }
   app.loginItemThrows = null
   app.loginItemRefuses = false
@@ -1221,11 +1189,9 @@ export function resetElectron(): void {
   contextBridge.exposeInMainWorld.mockClear()
 
   shell.openExternal.mockClear()
-  shell.openPath.mockClear()
   openedExternally.length = 0
 
   clipboard.writeText.mockClear()
-  clipboard.readText.mockClear()
   clipboardContents.text = ''
 
   sender.frame = null
@@ -1255,7 +1221,6 @@ export function resetElectron(): void {
   Menu.setApplicationMenu.mockClear()
   applicationMenu.current = undefined
   menus.length = 0
-  poppedUp.length = 0
   shareMenus.length = 0
   trays.length = 0
 
@@ -1273,8 +1238,6 @@ export function resetElectron(): void {
   globalShortcut.isRegistered.mockClear()
 
   autoUpdater.removeAllListeners()
-  autoUpdater.setFeedURL.mockClear()
-  autoUpdater.checkForUpdates.mockClear()
   autoUpdater.quitAndInstall.mockClear()
 
   app.aboutPanel = null
@@ -1293,7 +1256,6 @@ export function resetElectron(): void {
   session.defaultSession.setPermissionCheckHandler.mockClear()
 
   BrowserWindow.instances.length = 0
-  BrowserWindow.getAllWindows.mockClear()
 
   screen.displays = [structuredClone(DEFAULT_DISPLAY)]
   screen.removeAllListeners()
@@ -1313,6 +1275,11 @@ export function resetElectron(): void {
   // A test that made the dialog never answer must not leave it that way for the next
   // one: `mockClear` forgets the calls but keeps the implementation.
   dialog.showMessageBox.mockImplementation(async () => ({ response: 0 }))
+  // Likewise a file dialog pointed at a test's own temporary file.
+  dialog.showOpenDialog.mockReset()
+  dialog.showOpenDialog.mockImplementation(cancelledOpen)
+  dialog.showSaveDialog.mockReset()
+  dialog.showSaveDialog.mockImplementation(cancelledSave)
 }
 
 export default {
@@ -1335,7 +1302,6 @@ export default {
   nativeTheme,
   powerMonitor,
   dialog,
-  systemPreferences,
   safeStorage,
   session
 }

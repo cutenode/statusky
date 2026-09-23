@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { app, dialog, nativeTheme, net } from 'electron'
 import { IPC_ENVIRONMENT } from '@ipc/environment'
 import { probeServiceId } from '../shared/network'
+import { snoozeEnd } from '../shared/notify'
 import type { AppState } from '../shared/types'
 import {
   deepLinkFromCommandLine,
@@ -214,6 +215,12 @@ async function bootstrap(): Promise<void> {
     onRunNetworkChecks: () => void model.runNetworkChecks(),
     onShowNetwork: () => showNetwork(null),
     onDropText: watchDropped,
+    onSnooze: (choice) =>
+      void model.patchSettings({
+        notificationsSnoozedUntil: choice
+          ? snoozeEnd(choice, model.settings, new Date()).toISOString()
+          : null
+      }),
     onQuit: quit
   })
 
@@ -290,6 +297,10 @@ async function bootstrap(): Promise<void> {
   })
 
   model.on('notify', (posts) => notifier.notify(posts))
+  // Resuming from a snooze or shortening quiet hours in Settings should not leave what
+  // they were holding back waiting for a timer. Cheap when nothing is held, which is
+  // nearly always, so every state change can ask.
+  model.on('change', () => notifier.reconsider())
 
   tray.create()
   const ipc = registerIpc({
@@ -421,6 +432,8 @@ async function bootstrap(): Promise<void> {
   app.on('before-quit', () => {
     model.stop()
     updates.stop()
+    // A banner held for a snooze or a grace period has no business going up on the way out.
+    notifier.dispose()
   })
 
   // A global shortcut is held against the whole session rather than against this

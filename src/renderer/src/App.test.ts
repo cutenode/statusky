@@ -7,7 +7,8 @@ import {
   makeSettings,
   makeSnapshot
 } from '../../test/factories'
-import { setMediaQuery } from './test/setup'
+import { app } from '$lib/app-state.svelte'
+import { mediaListenerCount, setMediaQuery } from './test/setup'
 import { pushState, renderApp, settle } from './test/render'
 import App from './App.svelte'
 
@@ -99,9 +100,28 @@ describe('startup', () => {
   })
 
   it('shows a loading indicator until the first state arrives', async () => {
-    const { container } = await renderApp(App, populated)
-    // Ready by the time the harness settles; the placeholder is gone.
-    expect(container.querySelector('.animate-pulse')).toBeNull()
+    // Hold the store's first answer back, the way a main process still starting up would.
+    let answer!: () => void
+    const held = new Promise<void>((resolve) => (answer = resolve))
+    const init = app.init.bind(app)
+    const spy = vi.spyOn(app, 'init').mockImplementationOnce(async () => {
+      await held
+      return init()
+    })
+    try {
+      const { container, queryByText } = await renderApp(App, populated)
+      expect(container.querySelector('.animate-pulse')).not.toBeNull()
+      expect(queryByText('We are investigating elevated error rates.')).toBeNull()
+
+      answer()
+      await settle()
+      await settle()
+
+      expect(container.querySelector('.animate-pulse')).toBeNull()
+      expect(queryByText('We are investigating elevated error rates.')).not.toBeNull()
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('mirrors the system colour scheme onto the document', async () => {
@@ -113,12 +133,19 @@ describe('startup', () => {
 
   it('unsubscribes everything when the popover unmounts', async () => {
     const { bridge, unmount } = await renderApp(App, populated)
-    expect(bridge.listenerCount()).toBe(1)
+    const subscriptions = (): number[] => [
+      bridge.listenerCount(),
+      bridge.pushListenerCount(),
+      mediaListenerCount('(prefers-color-scheme: dark)'),
+      mediaListenerCount('(prefers-reduced-motion: reduce)')
+    ]
+    // State; the dashboard, reveals and catch-ups; the theme; reduced motion.
+    expect(subscriptions()).toEqual([1, 3, 1, 1])
 
     unmount()
     await settle()
 
-    expect(bridge.listenerCount()).toBe(0)
+    expect(subscriptions()).toEqual([0, 0, 0, 0])
   })
 })
 
@@ -370,7 +397,9 @@ describe('the network tab', () => {
     expect(old.bridge.api.Network.run).toHaveBeenCalledTimes(1)
     old.unmount()
 
-    const fresh = await renderApp(App, { ...populated, snapshot })
+    // Stamped now rather than when the file loaded, so a slow run cannot age it.
+    const recent = makeSnapshot({ finishedAt: new Date().toISOString() })
+    const fresh = await renderApp(App, { ...populated, snapshot: recent })
     await fireEvent.focus(window)
     expect(fresh.bridge.api.Network.run).not.toHaveBeenCalled()
   })

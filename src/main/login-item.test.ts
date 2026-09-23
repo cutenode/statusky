@@ -30,6 +30,14 @@ function readEntry(): Promise<string> {
   return readFile(entryPath(), 'utf8')
 }
 
+/**
+ * Everything after `Exec=`, exactly. Compared whole rather than with `toContain`, so a
+ * field code or a second argument trailing the quoted path would be caught.
+ */
+async function execValue(): Promise<string> {
+  return /^Exec=(.*)$/m.exec(await readEntry())?.[1] ?? ''
+}
+
 beforeEach(async () => {
   config = await mkdtemp(join(tmpdir(), 'statusky-xdg-'))
   process.env.XDG_CONFIG_HOME = config
@@ -62,6 +70,9 @@ describe('XDG autostart', () => {
     expect(entry).toContain('[Desktop Entry]')
     expect(entry).toContain('Type=Application')
     expect(entry).toContain('Name=Statusky')
+    // What GNOME's startup-applications UI writes when a user switches an entry off
+    // there. Saying it outright makes switching it back on from here a real re-enable.
+    expect(entry).toContain('X-GNOME-Autostart-enabled=true')
   })
 
   // The .deb's own menu entry says so, for the same reason: Statusky has no window to
@@ -123,7 +134,9 @@ describe('XDG autostart', () => {
 
       await withPlatform('linux', () => applyLoginItem(true))
 
-      expect(await readEntry()).toContain('Exec="/home/u/Applications/Statusky.AppImage"')
+      // Nothing after the path, either: no `%U` or other field code, because nothing
+      // hands this app a file or a URL at login.
+      expect(await execValue()).toBe('"/home/u/Applications/Statusky.AppImage"')
     })
 
     it('falls back to the absolute path of a packaged binary', async () => {
@@ -133,7 +146,7 @@ describe('XDG autostart', () => {
 
       // Absolute rather than the bare `statusky` the .deb's menu entry uses, so it does
       // not depend on what the session put on PATH.
-      expect(await readEntry()).toContain(`Exec="${process.execPath}"`)
+      expect(await execValue()).toBe(`"${process.execPath}"`)
     })
 
     it('quotes a path with spaces rather than writing two arguments', async () => {
@@ -142,7 +155,7 @@ describe('XDG autostart', () => {
 
       await withPlatform('linux', () => applyLoginItem(true))
 
-      expect(await readEntry()).toContain('Exec="/home/u/My Apps/Statusky.AppImage"')
+      expect(await execValue()).toBe('"/home/u/My Apps/Statusky.AppImage"')
     })
 
     it('escapes the characters the desktop entry format reserves', async () => {
@@ -151,7 +164,7 @@ describe('XDG autostart', () => {
 
       await withPlatform('linux', () => applyLoginItem(true))
 
-      const exec = /^Exec=(.*)$/m.exec(await readEntry())?.[1] ?? ''
+      const exec = await execValue()
       // Unescaping the file format first (`\\` -> `\`) and then the Exec tokeniser's own
       // quoting has to land back on the path we started from.
       const unescapedFile = exec.replace(/\\\\/g, '\\')
@@ -250,13 +263,17 @@ describe('the native login item', () => {
     expect(status.error).toContain('stop opening Statusky at login')
   })
 
+  // Windows, where the OS's own wording is the only clue there is. On macOS the same
+  // throw is explained in terms of SMAppService instead, as the refusals above are.
   it('carries a thrown refusal through instead of crashing the change handler', async () => {
     app.loginItemThrows = new Error('not a bundled app')
 
-    const status = await withPlatform('darwin', () => applyLoginItem(true))
+    const status = await withPlatform('win32', () => applyLoginItem(true))
 
-    expect(status.registered).toBe(false)
-    expect(status.error).toBeTruthy()
+    expect(status).toEqual({
+      registered: false,
+      error: 'The system would not open Statusky at login: not a bundled app'
+    })
   })
 
   // A native binding is not obliged to throw an `Error`, and the sentence the user ends

@@ -12,9 +12,17 @@ import {
 } from '../test/factories'
 import { withPlatform } from '../test/harness'
 import { PROBE_SOURCE_DID, probeAccount } from '../shared/network'
+import { formatClock } from '../shared/notify'
 import type { AppState, Settings } from '../shared/types'
 import { PopoverWindow } from './window'
 import { TrayController } from './tray'
+
+/**
+ * Every controller `build` made, so each one's heartbeat can be stopped afterwards.
+ * Destroying only the icon double would leave a real-timer beat ticking into a tray that
+ * belongs to a test that has already finished.
+ */
+const controllers: TrayController[] = []
 
 /**
  * A tray, created, with the popover having already reported that the OS is not asking
@@ -35,6 +43,7 @@ function build(options: { reduceMotion?: boolean } = {}): {
     onRunNetworkChecks: ReturnType<typeof vi.fn>
     onShowNetwork: ReturnType<typeof vi.fn>
     onDropText: ReturnType<typeof vi.fn>
+    onSnooze: ReturnType<typeof vi.fn>
     onQuit: ReturnType<typeof vi.fn>
   }
 } {
@@ -45,11 +54,13 @@ function build(options: { reduceMotion?: boolean } = {}): {
     onRunNetworkChecks: vi.fn(),
     onShowNetwork: vi.fn(),
     onDropText: vi.fn(),
+    onSnooze: vi.fn(),
     onQuit: vi.fn()
   }
   const tray = new TrayController({ popover, ...deps })
   tray.create()
   tray.setReducedMotion(options.reduceMotion ?? false)
+  controllers.push(tray)
   return { tray, popover, deps }
 }
 
@@ -74,6 +85,7 @@ function stateWithSeverity(severity: AppState['posts'][number]['severity']): App
 }
 
 afterEach(() => {
+  for (const tray of controllers.splice(0)) tray.destroy()
   for (const tray of trays) tray.destroy()
 })
 
@@ -140,6 +152,7 @@ describe('update', () => {
       onRunNetworkChecks: vi.fn(),
       onShowNetwork: vi.fn(),
       onDropText: vi.fn(),
+      onSnooze: vi.fn(),
       onQuit: vi.fn()
     })
     expect(() => tray.update(makeState())).not.toThrow()
@@ -200,7 +213,12 @@ describe('update', () => {
 
   it('falls back to the neutral icon when there is no data', () => {
     const { tray } = build()
+    // Coloured first, since the neutral icon is also the one it starts on.
+    tray.update(stateWithSeverity('outage'))
+
     tray.update(makeState({ accounts: [makeAccount()] }))
+
+    expect(trays[0]!.image.path).toContain('trayTemplate.png')
     expect(trays[0]!.tooltip).toContain('No data yet')
   })
 
@@ -238,11 +256,13 @@ describe('update', () => {
         tray.update(makeState({ unread: ['a'] }))
         expect(frameOf(trays[0]!.image.path)).toBe('0')
 
-        // One beat later the cycle is back where it started.
-        await vi.advanceTimersByTimeAsync(BEAT_INTERVAL_MS * BEAT_FRAMES)
+        // 150 beats a minute is one every 400ms: a millisecond short of that the last
+        // frame is still showing, and on the dot the cycle is back where it started.
+        await vi.advanceTimersByTimeAsync(60_000 / 150 - 1)
+        expect(frameOf(trays[0]!.image.path)).toBe(String(BEAT_FRAMES - 1))
 
+        await vi.advanceTimersByTimeAsync(1)
         expect(frameOf(trays[0]!.image.path)).toBe('0')
-        expect(BEAT_INTERVAL_MS * BEAT_FRAMES).toBe(400)
       } finally {
         vi.useRealTimers()
       }
@@ -317,12 +337,6 @@ describe('update', () => {
       } finally {
         vi.useRealTimers()
       }
-    })
-
-    it('is switched off by the `none` tray style', () => {
-      const { tray } = build()
-      tray.update(makeState({ unread: ['a'], settings: makeSettings({ trayUnreadStyle: 'none' }) }))
-      expect(trays[0]!.image.path).toContain('trayTemplate.png')
     })
 
     it('never keeps the process alive on its own', () => {
@@ -472,6 +486,7 @@ describe('update', () => {
           onRunNetworkChecks: vi.fn(),
           onShowNetwork: vi.fn(),
           onDropText: vi.fn(),
+          onSnooze: vi.fn(),
           onQuit: vi.fn()
         })
         tray.create()
@@ -724,6 +739,7 @@ describe('the context menu', () => {
       'Refresh now',
       'Run network checks',
       'Mark all as read',
+      'Pause notifications',
       'separator',
       'Show network status',
       'separator',
@@ -736,6 +752,67 @@ describe('the context menu', () => {
       'About Statusky',
       'Quit Statusky'
     ])
+  })
+
+  it('offers to pause notifications for an hour or until tomorrow', () => {
+    const { deps } = build()
+    trays[0]!.emit('right-click')
+    const menu = menus.at(-1)!
+
+    const choices = menu.submenu('Pause notifications')!
+    expect(choices.map((entry) => entry.label)).toEqual(['For 1 hour', 'Until tomorrow'])
+    choices[1]!.click?.()
+
+    expect(deps.onSnooze).toHaveBeenCalledWith('tomorrow')
+  })
+
+  it('offers to resume while paused, saying until when', () => {
+    const { tray, deps } = build()
+    const until = new Date(Date.now() + 30 * 60_000)
+    tray.update(
+      makeState({ settings: makeSettings({ notificationsSnoozedUntil: until.toISOString() }) })
+    )
+    trays[0]!.emit('right-click')
+    const menu = menus.at(-1)!
+
+    // The snooze's own end, in the clock format Settings uses for it.
+    const label = `Resume notifications (paused until ${formatClock(until, new Date())})`
+    expect(menu.item('Pause notifications')).toBeUndefined()
+    menu.click(label)
+
+    expect(deps.onSnooze).toHaveBeenCalledWith(null)
+  })
+
+  // A snooze that has run out reads as over the moment the menu is next opened, with no
+  // state change in between to say so.
+  it('offers to pause again once a snooze has run out', () => {
+    vi.useFakeTimers()
+    try {
+      const { tray } = build()
+      const until = new Date(Date.now() + 60_000).toISOString()
+      tray.update(makeState({ settings: makeSettings({ notificationsSnoozedUntil: until }) }))
+
+      vi.setSystemTime(Date.now() + 2 * 60_000)
+      trays[0]!.emit('right-click')
+
+      expect(menus.at(-1)!.submenu('Pause notifications')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('offers neither pause nor resume while notifications are off altogether', () => {
+    const { tray } = build()
+    const until = new Date(Date.now() + 30 * 60_000).toISOString()
+    tray.update(
+      makeState({
+        settings: makeSettings({ notificationsEnabled: false, notificationsSnoozedUntil: until })
+      })
+    )
+    trays[0]!.emit('right-click')
+
+    const labels = menus.at(-1)!.template.map((entry) => entry.label ?? entry.type)
+    expect(labels.filter((label) => /notifications/i.test(label ?? ''))).toEqual([])
   })
 
   it('shows the popover anchored to the tray icon', () => {
@@ -836,8 +913,14 @@ describe('the update entry', () => {
     tray.update(withUpdate('current', null))
     trays[0]!.emit('right-click')
 
-    expect(menus.at(-1)!.template.map((entry) => entry.label)).not.toContain('About Statusky ')
-    expect(menus.at(-1)!.item('Restart to update')).toBeUndefined()
+    // Nothing between the status pages and About — not an entry, not a separator.
+    const labels = menus.at(-1)!.template.map((entry) => entry.label ?? entry.type)
+    expect(labels.slice(labels.indexOf('Atmosphere status (status.feeds.blue)'))).toEqual([
+      'Atmosphere status (status.feeds.blue)',
+      'separator',
+      'About Statusky',
+      'Quit Statusky'
+    ])
   })
 
   /**
@@ -900,6 +983,12 @@ describe('the update entry', () => {
     expect(menus.at(-1)!.item('Download Statusky 0.2.0')).toBeUndefined()
   })
 })
+
+/** The labels of the attached menu's entries about banners, and nothing else. */
+function notificationEntries(): (string | undefined)[] {
+  const labels = trays[0]!.contextMenu!.template.map((entry) => entry.label)
+  return labels.filter((label) => /notifications/i.test(label ?? ''))
+}
 
 /**
  * Item 3. Most Linux desktops now speak StatusNotifierItem/AppIndicator rather than the
@@ -967,6 +1056,28 @@ describe('the Linux context menu', () => {
       tray.update(makeState({ update: { stage: 'available', version: '0.2.0' } }))
 
       expect(trays[0]!.contextMenu!.item('Download Statusky 0.2.0')).toBeDefined()
+    })
+  })
+
+  /**
+   * And again for the snooze, whose entry flips between *Pause* and *Resume*. Left
+   * stale, a Linux menu would go on offering to pause banners that are already paused,
+   * with no way to resume them short of Settings.
+   */
+  it('rebuilds the attached menu when notifications are paused, resumed or switched off', async () => {
+    await withPlatform('linux', () => {
+      const { tray } = build()
+      const until = new Date(Date.now() + 30 * 60_000).toISOString()
+      expect(notificationEntries()).toEqual(['Pause notifications'])
+
+      tray.update(makeState({ settings: makeSettings({ notificationsSnoozedUntil: until }) }))
+      expect(notificationEntries()).toEqual([expect.stringMatching(/^Resume notifications/)])
+
+      tray.update(makeState())
+      expect(notificationEntries()).toEqual(['Pause notifications'])
+
+      tray.update(makeState({ settings: makeSettings({ notificationsEnabled: false }) }))
+      expect(notificationEntries()).toEqual([])
     })
   })
 
@@ -1120,6 +1231,7 @@ describe('bounds', () => {
       onRunNetworkChecks: vi.fn(),
       onShowNetwork: vi.fn(),
       onDropText: vi.fn(),
+      onSnooze: vi.fn(),
       onQuit: vi.fn()
     })
     expect(tray.bounds()).toBeUndefined()

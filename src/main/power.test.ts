@@ -82,7 +82,9 @@ describe('what the machine is coping with', () => {
   ] as const)('reads %s as %s', (state, expected) => {
     const watched = watch()
     powerMonitor.emit('thermal-state-change', { state })
-    expect(watched.restraints().at(-1)).toBe(expected)
+    // The whole list rather than the last entry: startup already said null, so `.at(-1)`
+    // would pass for the null rows even if the event were never listened for.
+    expect(watched.restraints()).toEqual([null, expected])
   })
 
   it('treats a CPU ceiling cut well below full speed the same way', () => {
@@ -95,10 +97,14 @@ describe('what the machine is coping with', () => {
     expect(watched.restraints().at(-1)).toBeNull()
   })
 
+  /** Anything from half speed up is coping, and half speed itself is the boundary. */
   it('leaves a machine merely coping alone', () => {
     const watched = watch()
+
     powerMonitor.emit('speed-limit-change', { limit: 90 })
-    expect(watched.restraints().at(-1)).toBeNull()
+    powerMonitor.emit('speed-limit-change', { limit: 50 })
+
+    expect(watched.restraints()).toEqual([null, null, null])
   })
 
   it('outranks the battery, and hands it back when the machine cools', () => {
@@ -120,10 +126,13 @@ describe('a machine going away and coming back', () => {
     powerMonitor.emit('suspend')
     expect(watched.deps.suspend).toHaveBeenCalledTimes(1)
     expect(watched.deps.resume).not.toHaveBeenCalled()
+    // A machine going to sleep is also nobody at it, whatever the idle clock last said.
+    expect(watched.away()).toBe(true)
 
     powerMonitor.emit('resume')
     expect(watched.deps.resume).toHaveBeenCalledTimes(1)
     expect(watched.deps.returned).toHaveBeenCalledTimes(1)
+    expect(watched.away()).toBe(false)
   })
 
   it('leaves the schedules alone for a locked screen, which is a machine still awake', () => {

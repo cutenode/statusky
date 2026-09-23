@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AppState } from '../shared/types'
 import { menus, notifications, openedExternally, trays } from './electron'
+import { seedStore } from './electron-store'
 import { BUILTIN_PROFILES, createHarness, flush, seedFeed, type Harness } from './harness'
 
 /**
@@ -42,12 +43,13 @@ function rendered(h: Harness): AppState {
 describe('a first launch', () => {
   it('tracks the shipped accounts, fills the feed and shows a healthy tray', async () => {
     harness = await createHarness()
+    // Recent enough to speak for the present, so the tray's colour is these posts' doing.
     seedFeed(harness.appview, BSKY, [
-      { text: 'Scheduled maintenance tonight', createdAt: '2026-01-01T09:00:00Z' },
-      { text: 'This incident has been resolved.', createdAt: '2026-01-01T10:00:00Z' }
+      { text: 'Scheduled maintenance tonight', createdAt: ago(120) },
+      { text: 'This incident has been resolved.', createdAt: ago(60) }
     ])
     seedFeed(harness.appview, BLACKSKY, [
-      { text: 'All systems are operational', createdAt: '2026-01-01T08:00:00Z' }
+      { text: 'All systems are operational', createdAt: ago(180) }
     ])
 
     await harness.api.Feed.refresh()
@@ -209,6 +211,8 @@ describe('tracking another account', () => {
     harness = await createHarness()
     seedFeed(harness.appview, BSKY, [{ text: 'Outage' }])
     await harness.api.Feed.refresh()
+    // Coloured by the outage for as long as the account is heard.
+    expect(trays[0]?.image.path).toContain('trayIncident.png')
 
     await expect(harness.api.Accounts.remove(BSKY.did)).rejects.toThrow(/muted but not removed/)
 
@@ -230,12 +234,12 @@ describe('settings', () => {
       pollIntervalSec: 900,
       trayUnreadStyle: 'dot'
     })
+    const onDisk = harness.store.data
     harness.dispose()
 
-    // A "restart": the same config file, a brand new process.
-    harness = await createHarness({
-      settings: { theme: 'dark', pollIntervalSec: 900, trayUnreadStyle: 'dot' }
-    })
+    // A "restart": the same config file, a brand new process that is told nothing else.
+    seedStore('statusky', onDisk)
+    harness = await createHarness()
 
     expect(harness.state().settings).toMatchObject({
       theme: 'dark',

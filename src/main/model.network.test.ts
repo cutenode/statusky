@@ -6,8 +6,10 @@
  * what lands in the feed, what becomes unread, what raises a notification, and which
  * settings start and stop it all.
  */
-import { afterEach, describe, expect, it } from 'vitest'
-import { PROBE_SOURCE_DID, SERVICES, isControl } from '../shared/network'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { PROBE_SOURCE_DID, SERVICES, isControl, reportHeadline } from '../shared/network'
+import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
+import type { ProbeTargets } from '../shared/types'
 import { createHarness, flush, waitFor, type Harness } from '../test/harness'
 import { FakeNetwork } from '../test/network'
 import type { MonitorTimings } from './network'
@@ -61,6 +63,7 @@ afterEach(() => {
   harness?.dispose()
   harness = null
   network.reset()
+  vi.restoreAllMocks()
 })
 
 describe('what the popover is told', () => {
@@ -165,10 +168,17 @@ describe('settings', () => {
     expect(network.requests.length).toBeGreaterThan(0)
   })
 
-  it('stops sweeping when the app stops', async () => {
-    const h = await started()
+  it('abandons the sweep in flight when the app stops', async () => {
+    network.fail('eurosky.social', { kind: 'hang' })
+    const h = await boot()
+    h.model.start()
+    await waitFor(() => h.model.networkSnapshot().running, 'the first sweep to start')
+
     h.model.stop()
+
+    // Not when the hung request times out: now.
     expect(h.model.networkSnapshot().running).toBe(false)
+    expect(h.model.networkSnapshot().finishedAt).toBeNull()
   })
 })
 
@@ -183,7 +193,7 @@ describe('what lands in the feed', () => {
     expect(source).toMatchObject({
       kind: 'probe',
       builtin: true,
-      notify: true,
+      notify: 'default',
       muted: false,
       displayName: 'Network checks'
     })
@@ -224,7 +234,7 @@ describe('what lands in the feed', () => {
   it('stays quiet about outages once its source is silenced, but keeps them unread', async () => {
     const h = await started()
     await outage(h)
-    await h.api.Accounts.patch(PROBE_SOURCE_DID, { notify: false })
+    await h.api.Accounts.patch(PROBE_SOURCE_DID, { notify: 'off' })
     const notified = h.notified.length
 
     network.heal()
@@ -238,9 +248,16 @@ describe('what lands in the feed', () => {
   it('stops counting the checks towards health once their source is hidden', async () => {
     const h = await started()
     await outage(h)
+    const headline = (): string => {
+      const { accounts, posts, network: summary } = h.state()
+      return reportHeadline(accounts, posts, summary, Date.now()).label
+    }
+    expect(headline()).toBe('europe.firehose.network is unreachable')
+
     await h.api.Accounts.patch(PROBE_SOURCE_DID, { muted: true })
 
     expect(h.state().posts.some((p) => p.authorDid === PROBE_SOURCE_DID)).toBe(false)
+    expect(headline()).not.toMatch(/unreachable/)
   })
 
   it('will not remove its source, which would only come back', async () => {
@@ -256,5 +273,111 @@ describe('what lands in the feed', () => {
     await h.model.refresh()
     expect(h.appview.requests.some((r) => r.actor === PROBE_SOURCE_DID)).toBe(false)
     expect(h.appview.requests.some((r) => r.actors.includes(PROBE_SOURCE_DID))).toBe(false)
+  })
+})
+
+/** Which actors one AppView's author feeds were last asked for. */
+function feedActors(h: Harness): (string | null)[] {
+  return h.model
+    .networkSnapshot()
+    .services.find((s) => s.id === 'appview:api.bsky.app')!
+    .checks.filter((c) => c.label === 'getAuthorFeed')
+    .map((c) => new URL(c.target!).searchParams.get('actor'))
+}
+
+describe('probe targets', () => {
+  /** The checked-in targets with the accounts replaced, as a user's override would be. */
+  const override: ProbeTargets = {
+    ...structuredClone(DEFAULT_PROBE_TARGETS),
+    accounts: [{ did: 'did:plc:alice', handle: 'alice.test' }]
+  }
+
+  it('are the checked-in ones until somebody says otherwise', async () => {
+    const h = await started()
+    expect(h.state().settings.probeTargets).toBeNull()
+    expect(feedActors(h)).toEqual(DEFAULT_PROBE_TARGETS.accounts.map((a) => a.did))
+  })
+
+  it('are changed through the ordinary settings patch, and measured at once', async () => {
+    const h = await started()
+    network.useTargets(override)
+    network.requests.length = 0
+
+    const settings = await h.api.Preferences.patch({ probeTargets: override })
+    expect(settings.probeTargets).toEqual(override)
+    expect(h.store.get('settings').probeTargets).toEqual(override)
+
+    // Nobody asked for a sweep: the change itself is what starts one.
+    await waitFor(
+      () => h.model.networkSnapshot().finishedAt !== null && feedActors(h).length === 1,
+      'a sweep of the new accounts'
+    )
+    expect(feedActors(h)).toEqual(['did:plc:alice'])
+    await waitFor(() => h.state().network.health === 'operational', 'the new sweep to settle')
+  })
+
+  it('go back to the defaults when set to none', async () => {
+    network.useTargets(override)
+    const h = await started({ settings: { probeTargets: override } })
+    expect(feedActors(h)).toEqual(['did:plc:alice'])
+
+    network.reset()
+    await h.api.Preferences.patch({ probeTargets: null })
+    await h.model.runNetworkChecks()
+    expect(h.state().settings.probeTargets).toBeNull()
+    expect(feedActors(h)).toEqual(DEFAULT_PROBE_TARGETS.accounts.map((a) => a.did))
+  })
+
+  it('are refused at the boundary when invalid, and nothing changes', async () => {
+    const h = await started()
+    network.requests.length = 0
+    await expect(
+      h.api.Preferences.patch({ probeTargets: { ...override, accounts: [] } })
+    ).rejects.toThrow(/failed to pass validation/)
+    await flush()
+    expect(h.state().settings.probeTargets).toBeNull()
+    expect(network.requests).toHaveLength(0)
+  })
+
+  it('are stored as none when they say exactly what the defaults say', async () => {
+    const h = await started()
+    const settings = await h.api.Preferences.patch({
+      probeTargets: structuredClone(DEFAULT_PROBE_TARGETS)
+    })
+    expect(settings.probeTargets).toBeNull()
+  })
+
+  it('do not start a sweep when a patch leaves them as they were', async () => {
+    // Answering for these accounts matters: a handle that failed to resolve would book a
+    // re-check, whose requests would land in the middle of this.
+    network.useTargets(override)
+    const h = await started({ settings: { probeTargets: override } })
+    network.requests.length = 0
+    await h.api.Preferences.patch({ probeTargets: structuredClone(override), theme: 'dark' })
+    await flush()
+    expect(network.requests).toHaveLength(0)
+  })
+
+  it('take the pin off a feed they no longer list, and leave the other pins be', async () => {
+    const [discover] = DEFAULT_PROBE_TARGETS.feeds
+    const kept = SERVICES.find((s) => s.kind === 'relay')!.id
+    const h = await started({
+      settings: { notifyProbeScope: 'pinned', pinnedServices: [`feed:${discover!.host}`, kept] }
+    })
+    network.useTargets({ ...override, feeds: [] })
+
+    const settings = await h.api.Preferences.patch({ probeTargets: { ...override, feeds: [] } })
+
+    expect(settings.pinnedServices).toEqual([kept])
+    expect(h.store.get('settings').pinnedServices).toEqual([kept])
+  })
+
+  it('fall back to the defaults, not a crash, when the stored ones are broken', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const broken = { ...override, accounts: 'nope' } as unknown as ProbeTargets
+    const h = await started({ settings: { probeTargets: broken } })
+    expect(h.state().settings.probeTargets).toBeNull()
+    expect(feedActors(h)).toEqual(DEFAULT_PROBE_TARGETS.accounts.map((a) => a.did))
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/checked-in defaults[\s\S]*accounts/))
   })
 })

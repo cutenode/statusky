@@ -7,11 +7,17 @@
  * `AppState`, pushing a fresh snapshot after every mutation exactly as the real app
  * does. Failures are thrown, because that is how they arrive from the generated client.
  *
- * `src/test/bridge.contract.test.ts` pins it to the real preload surface, so the
- * two cannot drift.
+ * Every argument and every answer is structured-cloned on the way across, as Electron
+ * does: a Svelte state proxy, or anything else that cannot be cloned, fails here the way
+ * it fails in the app, and nothing a component holds is shared with the bridge's state.
+ *
+ * `src/test/doubles.test.ts` pins it to the real preload surface, interface by interface
+ * and method by method, so the two cannot drift.
  */
 import { vi } from 'vitest'
+import type { OpenedFile } from '@ipc/common/statusky'
 import type { StatuskyBridge } from '../shared/bridge'
+import { sanitizeProbeTargets, validateProbeTargets } from '../shared/probe-targets'
 import type {
   Account,
   AccountPatch,
@@ -33,6 +39,8 @@ export interface BridgeOptions extends Partial<AppState> {
   resolveError?: string
   /** Profile returned by `Accounts.add`/`Actors.resolve` on success. */
   resolves?: ResolvedProfile
+  /** What `ProbeTargetsFile.open` reads. Default: nothing, as if the dialog was cancelled. */
+  openedFile?: OpenedFile
 }
 
 export interface TestBridge {
@@ -57,6 +65,11 @@ export interface TestBridge {
   restore(): void
 }
 
+/** What crossing the IPC boundary does to a value, in either direction. */
+function across<T>(value: T): T {
+  return structuredClone(value)
+}
+
 /**
  * Install a working bridge on `window.statusky` and return handles to it.
  * Every method is a `vi.fn`, so tests can assert on calls as well as on effects.
@@ -66,6 +79,7 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
     platform = 'darwin',
     resolveError,
     resolves,
+    openedFile,
     snapshot: initialSnapshot,
     ...initial
   } = options
@@ -116,7 +130,7 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
           description: profile.description
         })
         push({ accounts: [...state.accounts, added] })
-        return added
+        return across(added)
       }),
 
       remove: vi.fn(async (did: string) => {
@@ -132,19 +146,29 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
       }),
 
       patch: vi.fn(async (did: string, patch: AccountPatch) => {
+        patch = across(patch)
         const target = account(did)
         if (!target) throw new Error('That account is not being tracked.')
         const next = { ...target, ...patch }
         push({ accounts: state.accounts.map((a) => (a.did === did ? next : a)) })
-        return next
+        return across(next)
       })
     },
 
     Preferences: {
       patch: vi.fn(async (patch: Partial<Settings>) => {
+        patch = across(patch)
+        // What main does with this one field: an invalid document never gets past the
+        // IPC boundary, and one identical to the defaults is stored as none.
+        if (patch.probeTargets && !validateProbeTargets(patch.probeTargets).ok) {
+          throw new Error('Argument "patch" at position 0 failed to pass validation')
+        }
+        if ('probeTargets' in patch) {
+          patch = { ...patch, probeTargets: sanitizeProbeTargets(patch.probeTargets) }
+        }
         const next: Settings = { ...state.settings, ...patch }
         push({ settings: next })
-        return next
+        return across(next)
       })
     },
 
@@ -154,7 +178,7 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
       }),
 
       markRead: vi.fn(async (uris: string[]) => {
-        const read = new Set(uris)
+        const read = new Set(across(uris))
         push({ unread: state.unread.filter((uri) => !read.has(uri)) })
       }),
 
@@ -178,7 +202,7 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
     Actors: {
       resolve: vi.fn(async (input: string) => {
         if (resolveError) throw new Error(resolveError)
-        return resolves ?? makeProfile({ handle: input })
+        return across(resolves ?? makeProfile({ handle: input }))
       })
     },
 
@@ -191,8 +215,16 @@ export function installBridge(options: BridgeOptions = {}): TestBridge {
           url: state.webhook.url ? state.webhook.url.replace(/[^/]+$/, `secret${++secrets}`) : null
         }
         push({ webhook })
-        return webhook
+        return across(webhook)
       })
+    },
+
+    // The real one draws the OS's file dialogs; the double answers as if one was used.
+    // A test that wants a cancelled export, or a failure, says so with `mockResolvedValue`
+    // or `mockRejectedValue`.
+    ProbeTargetsFile: {
+      save: vi.fn(async (): Promise<string | null> => 'statusky-probe-targets.json'),
+      open: vi.fn(async (): Promise<OpenedFile | null> => across(openedFile ?? null))
     },
 
     Network: {

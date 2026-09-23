@@ -27,6 +27,7 @@ const INTERFACES = [
   'Network',
   'Popover',
   'Preferences',
+  'ProbeTargetsFile',
   'State',
   'Webhook'
 ]

@@ -285,7 +285,7 @@ page, which this is a port of, down to the checks and their wording:
 | Jetstream     | Its greeting, and a live `subscribe` connection whose newest event must be stamped within the last minute                                                                                         |
 | Spacedust     | A live link stream, each link dated by the TID of the record that made it                                                                                                                         |
 | PDS           | `_health`, `describeServer`, `listRepos`, and a real `listRecords` read of the first active repository it names                                                                                   |
-| AppView       | `_health`, two `getProfile`s, three `resolveHandle`s, four `getAuthorFeed`s, and how far its index lags                                                                                           |
+| AppView       | `_health`; for each of six accounts a `getProfile`, a `resolveHandle` that must return that account's own DID, and a `getAuthorFeed`; and how far its index lags                                  |
 | Tangled       | The appview's static route and a real repository page; Bobbin's coverage, its event cursor and a record lookup; Hydrant; `tngl.sh` as a PDS; each knot's version and owner; each spindle's health |
 | pckt          | `/up`: database, cache, search index, queue worker, failed jobs, nine queue depths, and how far its consumer has fallen behind                                                                    |
 | Leaflet       | A published document's well-known route, a full-text search, and hourly, the newest document in a busy publication                                                                                |
@@ -303,6 +303,14 @@ or **down**, exactly as the page grades them, with the failing request's own wor
 against it. Every request leaves from this machine and goes through Chromium's network
 stack, so it takes the same route a browser tab would — system proxy, certificate store
 and all — and measures your connection to each service rather than somebody else's.
+
+What each service is asked _about_ — the accounts, the feeds, the CDN's images, the Tangled
+repository, the Leaflet and Offprint documents — is other people's content, and any of it
+can be deleted out from under a check that then fails for reasons that have nothing to do
+with the service. So it is data rather than code: the defaults are
+`src/shared/probeTargets.json`, and a user can replace the whole document
+(`Settings.probeTargets`) without waiting for a release. The exact words each answer is held
+to live beside it, in `src/shared/expectedResponses.json`.
 
 Seven things make that fit a program that runs all day rather than a page you open:
 
@@ -372,7 +380,7 @@ so a relay that answered in 200 ms is never shown as still being checked because
 is spending thirty seconds timing out — and a confirmed outage is filed as soon as the
 control checks vouch for the connection, rather than at the end.
 
-A sweep is about a hundred and eighty small requests and eleven brief stream
+A sweep is about two hundred and twenty small requests and eleven brief stream
 connections, across fifty-odd services. No more than sixteen services are in flight at
 once — the cost of that ceiling is wall clock in the worst case, and what it buys is not
 opening a couple of hundred sockets in the same instant, which is hard on a laptop and
@@ -946,6 +954,8 @@ src/
 │   ├── richtext.ts   Byte-offset facet segmentation
 │   ├── webhook.ts    Status-page payloads, normalised into the same posts
 │   ├── network.ts    The catalogue of measured services, and how their checks are judged
+│   ├── probe-targets.ts  What the checks read (probeTargets.json), and a user's override of it
+│   ├── expected-responses.ts  The exact words answers are held to (expectedResponses.json)
 │   ├── cbor.ts       Just enough DAG-CBOR to read a relay's firehose frames
 │   ├── types.ts      The structured-cloneable types that cross IPC
 │   ├── schemas.ts    Those types as Zod schemas, for validating them at the boundary

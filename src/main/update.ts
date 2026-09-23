@@ -350,6 +350,8 @@ export function watchUpdates(deps: UpdateDeps, options: UpdateOptions = {}): Upd
     // here rather than failing later. That is still only a reason this install cannot
     // update itself, which is a thing the fallback exists to say.
     console.warn('Could not start the self-updater:', describe(error))
+    // Nothing is left to hear from, and the watcher returned below has nothing to stop it.
+    autoUpdater.removeListener('error', giveUp)
     giveUp()
     return { stop: () => fallback?.stop() }
   }

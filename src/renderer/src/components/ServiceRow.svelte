@@ -13,7 +13,6 @@
   } from '@shared/network'
   import type { ProbeCheck, ServiceProbe } from '@shared/types'
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
-  import TriangleAlert from '@lucide/svelte/icons/triangle-alert'
   import ProbeLed from './ProbeLed.svelte'
   import UptimeStrip from './UptimeStrip.svelte'
 
@@ -180,6 +179,7 @@
         {#each service.checks as check, index (index)}
           {@const { dot, duration } = result(check)}
           {@const detail = checkDetail(check)}
+          {@const failure = check.error ? describeFailure(check.error) : null}
           <li class="px-2 py-[3px]" title={check.target ?? undefined}>
             <div class="flex items-center gap-2 text-[11px]">
               <span class={cn('size-1.5 shrink-0 rounded-full', dot)} aria-hidden="true"></span>
@@ -189,34 +189,29 @@
                   >{detail}</span
                 >
               {/if}
-              <span
-                class={cn(
-                  'ml-auto shrink-0 tabular-nums',
-                  check.ok === true && (check.durationMs ?? 0) >= SLOW_MS
-                    ? 'text-sev-degraded'
-                    : 'text-muted-foreground'
-                )}>{duration}</span
-              >
+              {#if failure}
+                <!-- A failed check answers with why, in the place a passing one gives its time. -->
+                <span
+                  data-failure
+                  class="selectable ml-auto max-w-[65%] shrink-0 truncate text-right text-sev-outage"
+                  title={check.durationMs === null
+                    ? check.error
+                    : `${check.error} · after ${duration}`}
+                  >{#if failure.code}<span class="font-mono font-medium tabular-nums"
+                      >{failure.code}</span
+                    >{' '}{/if}<span class="text-sev-outage/80">{failure.text}</span></span
+                >
+              {:else}
+                <span
+                  class={cn(
+                    'ml-auto shrink-0 tabular-nums',
+                    check.ok === true && (check.durationMs ?? 0) >= SLOW_MS
+                      ? 'text-sev-degraded'
+                      : 'text-muted-foreground'
+                  )}>{duration}</span
+                >
+              {/if}
             </div>
-            {#if check.error}
-              {@const failure = describeFailure(check.error)}
-              <p
-                class="selectable mt-1 ml-3.5 inline-flex max-w-[calc(100%-0.875rem)] items-center gap-1.5 rounded-md bg-sev-outage/10 py-[3px] pr-2 pl-1.5 text-[10.5px] leading-snug text-sev-outage/90"
-              >
-                <TriangleAlert
-                  class="size-3 shrink-0 text-sev-outage/80"
-                  strokeWidth={2.5}
-                  aria-hidden="true"
-                />
-                {#if failure.code}
-                  <span class="shrink-0 font-mono font-medium text-sev-outage tabular-nums"
-                    >{failure.code}</span
-                  >
-                  <span class="h-2.5 w-px shrink-0 bg-sev-outage/25" aria-hidden="true"></span>
-                {/if}
-                <span class="min-w-0">{failure.text}</span>
-              </p>
-            {/if}
           </li>
         {/each}
       </ul>

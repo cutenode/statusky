@@ -62,7 +62,7 @@ export function webhookAccount(source: WebhookSource, addedAt: string): Account 
     displayName: source.host,
     avatar: null,
     description: source.description,
-    notify: true,
+    notify: 'default',
     muted: false,
     addedAt,
     builtin: false,

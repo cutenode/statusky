@@ -4,6 +4,7 @@ import {
   NETWORK_INTERVAL_CHOICES,
   POLL_INTERVAL_CHOICES
 } from '../shared/defaults'
+import { GRACE_CHOICES } from '../shared/notify'
 import type { Account, Settings, StatusPost } from '../shared/types'
 import {
   advanceCursors,
@@ -36,7 +37,7 @@ function account(did: string, overrides: Partial<Account> = {}): Account {
     displayName: did,
     avatar: null,
     description: null,
-    notify: true,
+    notify: 'default',
     muted: false,
     addedAt: '2026-01-01T00:00:00Z',
     builtin: false,
@@ -59,7 +60,8 @@ function post(did: string, createdAt: string, overrides: Partial<StatusPost> = {
     embed: null,
     createdAt,
     indexedAt: createdAt,
-    severity: 'update',
+    // An outage, so that every stage filter lets it through unless a test says otherwise.
+    severity: 'outage',
     replyCount: 0,
     repostCount: 0,
     likeCount: 0,
@@ -131,7 +133,7 @@ describe('selectNotifiable', () => {
 
   it('respects the per-account notify toggle', () => {
     const cursors: Cursors = { [DID_A]: '2026-09-01T00:00:00Z' }
-    const silenced = [account(DID_A, { notify: false })]
+    const silenced = [account(DID_A, { notify: 'off' })]
     expect(
       selectNotifiable([post(DID_A, '2026-09-06T00:00:00Z')], cursors, silenced, settings)
     ).toEqual([])
@@ -163,6 +165,14 @@ describe('selectNotifiable', () => {
   it('ignores posts with an unparseable timestamp', () => {
     const cursors: Cursors = { [DID_A]: '2026-09-01T00:00:00Z' }
     expect(selectNotifiable([post(DID_A, 'not-a-date')], cursors, accounts, settings)).toEqual([])
+  })
+
+  it('leaves out the stages the user did not ask to hear about', () => {
+    const cursors: Cursors = { [DID_A]: '2026-09-01T00:00:00Z' }
+    const routine = post(DID_A, '2026-09-06T00:00:00Z', { severity: 'maintenance' })
+    const broken = post(DID_A, '2026-09-07T00:00:00Z')
+
+    expect(selectNotifiable([routine, broken], cursors, accounts, settings)).toEqual([broken])
   })
 })
 
@@ -409,9 +419,9 @@ describe('upsertAccount / patchAccount', () => {
 
   it('patches only the addressed account', () => {
     const accounts = [account(DID_A), account(DID_B)]
-    const next = patchAccount(accounts, DID_A, { notify: false })
-    expect(next[0]?.notify).toBe(false)
-    expect(next[1]?.notify).toBe(true)
+    const next = patchAccount(accounts, DID_A, { notify: 'off' })
+    expect(next[0]?.notify).toBe('off')
+    expect(next[1]?.notify).toBe('default')
   })
 })
 
@@ -453,6 +463,40 @@ describe('sanitizeSettings', () => {
       3600
     )
   })
+
+  it('holds the grace period on a measured outage between none and an hour', () => {
+    const grace = (value: number): number =>
+      sanitizeSettings({ ...settings, notifyProbeGraceSec: value }).notifyProbeGraceSec
+    expect(grace(-30)).toBe(0)
+    expect(grace(Number.NaN)).toBe(0)
+    expect(grace(119.6)).toBe(120)
+    expect(grace(86_400)).toBe(3600)
+  })
+
+  it('keeps the receiver in the unprivileged ports, and zero as "any free one"', () => {
+    const port = (value: number): number =>
+      sanitizeSettings({ ...settings, webhookPort: value }).webhookPort
+    expect(port(0)).toBe(0)
+    expect(port(-1)).toBe(0)
+    expect(port(Number.NaN)).toBe(0)
+    expect(port(80)).toBe(1024)
+    expect(port(8080.4)).toBe(8080)
+    expect(port(70_000)).toBe(65535)
+  })
+
+  /** A repeated stage would stop the stages matching the preset they amount to. */
+  it('lists each stage, source and pinned service once', () => {
+    const next = sanitizeSettings({
+      ...settings,
+      notifySeverities: ['outage', 'degraded', 'outage'],
+      notifySources: ['probe', 'probe'],
+      pinnedServices: ['relay:bsky.network', 'relay:bsky.network']
+    })
+
+    expect(next.notifySeverities).toEqual(['outage', 'degraded'])
+    expect(next.notifySources).toEqual(['probe'])
+    expect(next.pinnedServices).toEqual(['relay:bsky.network'])
+  })
 })
 
 describe('edge cases', () => {
@@ -490,6 +534,15 @@ describe('sanitizeSettings against the shipped choices', () => {
     for (const choice of POLL_INTERVAL_CHOICES) {
       expect(
         sanitizeSettings({ ...DEFAULT_SETTINGS, pollIntervalSec: choice.value }).pollIntervalSec
+      ).toBe(choice.value)
+    }
+  })
+
+  it('keeps every grace period the UI offers', () => {
+    for (const choice of GRACE_CHOICES) {
+      expect(
+        sanitizeSettings({ ...DEFAULT_SETTINGS, notifyProbeGraceSec: choice.value })
+          .notifyProbeGraceSec
       ).toBe(choice.value)
     }
   })

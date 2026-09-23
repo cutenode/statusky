@@ -1,65 +1,25 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { fireEvent } from '@testing-library/svelte'
-import { DEFAULT_SETTINGS, NETWORK_INTERVAL_CHOICES, POLL_INTERVAL_CHOICES } from '@shared/defaults'
+import { NETWORK_INTERVAL_CHOICES, POLL_INTERVAL_CHOICES } from '@shared/defaults'
 import { makeSettings, makeWebhookStatus } from '../../../test/factories'
 import { chooseOption, openSelect, pushState, renderWith } from '../test/render'
 import SettingsPanel from './SettingsPanel.svelte'
 
+/**
+ * The section's own tests are in NotificationSettings.test.ts. What is left to say here
+ * is that the panel carries it, and hands it the clock a pause is read against.
+ */
 describe('the notification settings', () => {
-  it('reflects and toggles the master switch', async () => {
-    const { bridge, getByLabelText } = await renderWith(SettingsPanel)
-    const master = getByLabelText('Enable notifications')
-
-    expect(master.getAttribute('aria-checked')).toBe('true')
-
-    await fireEvent.click(master)
-
-    expect(bridge.api.Preferences.patch).toHaveBeenCalledWith({ notificationsEnabled: false })
-  })
-
-  it('disables the dependent switches when notifications are off', async () => {
-    const { bridge, getByLabelText } = await renderWith(
+  it('are part of the panel, and read a pause against its clock', async () => {
+    const { getByLabelText, getByText } = await renderWith(
       SettingsPanel,
-      {},
-      {
-        settings: { ...POLL_DEFAULTS, notificationsEnabled: false }
-      }
+      { now: Date.parse('2026-03-01T12:00:00.000Z') },
+      { settings: makeSettings({ notificationsSnoozedUntil: '2026-03-01T12:30:00.000Z' }) }
     )
 
-    expect(getByLabelText('Play notification sound').hasAttribute('disabled')).toBe(true)
-
-    await pushState(bridge, { settings: { ...POLL_DEFAULTS, notificationsEnabled: true } })
-
-    expect(getByLabelText('Play notification sound').hasAttribute('disabled')).toBe(false)
-  })
-
-  it('toggles the sound', async () => {
-    const { bridge, getByLabelText } = await renderWith(SettingsPanel)
-
-    await fireEvent.click(getByLabelText('Play notification sound'))
-
-    expect(bridge.api.Preferences.patch).toHaveBeenCalledWith({ notificationSound: false })
-  })
-
-  it('sends a test notification', async () => {
-    const { bridge, getByText, findByRole } = await renderWith(SettingsPanel)
-
-    await fireEvent.click(getByText('Send test'))
-
-    expect(bridge.api.Host.sendTestNotification).toHaveBeenCalled()
-    expect((await findByRole('status')).textContent).toContain('Sent.')
-  })
-
-  // A refused banner is invisible by definition, so the panel has to say so itself.
-  it('reports the reason when the system refuses the notification', async () => {
-    const { bridge, getByText, findByRole } = await renderWith(SettingsPanel)
-    vi.mocked(bridge.api.Host.sendTestNotification).mockRejectedValueOnce(
-      new Error('Enable notifications for Statusky in System Settings.')
-    )
-
-    await fireEvent.click(getByText('Send test'))
-
-    expect((await findByRole('alert')).textContent).toContain('System Settings')
+    expect(getByLabelText('Enable notifications')).toBeTruthy()
+    // Long over by the wall clock, and half an hour off still by the panel's.
+    expect(getByText('Paused')).toBeTruthy()
   })
 })
 
@@ -68,9 +28,7 @@ describe('the feed settings', () => {
     const { getByText } = await renderWith(
       SettingsPanel,
       {},
-      {
-        settings: { ...POLL_DEFAULTS, pollIntervalSec: 300 }
-      }
+      { settings: makeSettings({ pollIntervalSec: 300 }) }
     )
     expect(getByText('5 minutes')).toBeTruthy()
   })
@@ -79,9 +37,7 @@ describe('the feed settings', () => {
     const { getByText } = await renderWith(
       SettingsPanel,
       {},
-      {
-        settings: { ...POLL_DEFAULTS, pollIntervalSec: 47 }
-      }
+      { settings: makeSettings({ pollIntervalSec: 47 }) }
     )
     expect(getByText('47s')).toBeTruthy()
   })
@@ -246,9 +202,7 @@ describe('the application settings', () => {
     const { getByText } = await renderWith(
       SettingsPanel,
       {},
-      {
-        settings: { ...POLL_DEFAULTS, theme: 'dark' }
-      }
+      { settings: makeSettings({ theme: 'dark' }) }
     )
     expect(getByText('Dark')).toBeTruthy()
   })
@@ -280,7 +234,7 @@ describe('the application settings', () => {
       SettingsPanel,
       {},
       {
-        settings: { ...POLL_DEFAULTS, launchAtLogin: true },
+        settings: makeSettings({ launchAtLogin: true }),
         loginItem: { registered: false, error: 'macOS would not open Statusky at login.' }
       }
     )
@@ -311,16 +265,13 @@ describe('the footer', () => {
   })
 })
 
-/** Whole `Settings` objects, so a test only names the field it is exercising. */
-const POLL_DEFAULTS = DEFAULT_SETTINGS
-
 describe('the webhook section', () => {
   it('is part of the panel, and ticks its own relative timestamp', async () => {
     const { container } = await renderWith(
       SettingsPanel,
       { now: Date.parse('2026-03-01T12:00:00.000Z') },
       {
-        settings: { ...DEFAULT_SETTINGS, webhookEnabled: true },
+        settings: makeSettings({ webhookEnabled: true }),
         webhook: makeWebhookStatus({
           state: 'listening',
           url: 'http://127.0.0.1:7385/webhook/s3cr3t',
@@ -356,7 +307,7 @@ describe('the network checks', () => {
     const { getByLabelText } = await renderWith(
       SettingsPanel,
       {},
-      { settings: { ...DEFAULT_SETTINGS, networkIntervalSec: 420 } }
+      { settings: makeSettings({ networkIntervalSec: 420 }) }
     )
     expect(getByLabelText('How often to check the network').textContent?.trim()).toBe('7 minutes')
   })
@@ -382,7 +333,7 @@ describe('the network checks', () => {
     const { getByLabelText } = await renderWith(
       SettingsPanel,
       {},
-      { settings: { ...DEFAULT_SETTINGS, networkChecks: false } }
+      { settings: makeSettings({ networkChecks: false }) }
     )
     expect(getByLabelText('How often to check the network').hasAttribute('disabled')).toBe(true)
   })

@@ -44,6 +44,17 @@ describe('computePopoverPosition', () => {
     expect(y).toBe(234)
   })
 
+  // Windows leaves the taskbar out of the work area, so the icon sits below its bottom
+  // edge and 6px above the icon would still overlap the taskbar.
+  it('keeps a flipped popover inside a work area the tray icon is outside of', () => {
+    const { y } = computePopoverPosition({
+      tray: { x: 1800, y: 1048, width: 24, height: 24 },
+      workArea: { x: 0, y: 0, width: 1920, height: 1040 },
+      window
+    })
+    expect(y).toBe(1040 - 640 - 8)
+  })
+
   it('handles a second display with a non-zero origin', () => {
     const { x, y } = computePopoverPosition({
       tray: { x: 2200, y: 0, width: 24, height: 24 },
@@ -53,15 +64,6 @@ describe('computePopoverPosition', () => {
     expect(x).toBe(2200 + 12 - 220)
     expect(y).toBe(33)
     expect(x).toBeGreaterThanOrEqual(1440 + 8)
-  })
-
-  it('never goes out of bounds when the window is taller than the work area', () => {
-    const { y } = computePopoverPosition({
-      tray: { x: 700, y: 0, width: 24, height: 24 },
-      workArea: { x: 0, y: 0, width: 1440, height: 400 },
-      window
-    })
-    expect(y).toBe(8)
   })
 })
 

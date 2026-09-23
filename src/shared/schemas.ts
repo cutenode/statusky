@@ -12,7 +12,8 @@
  * unions, mostly). Keeping one definition per type here means the generated
  * `src/ipc/common/*` re-exports our types rather than inventing parallel ones.
  */
-import { z } from 'zod'
+import { EXPECTED_RESPONSES } from './expected-responses'
+import { z } from './zod'
 import type {
   Account,
   AccountPatch,
@@ -33,6 +34,11 @@ import type {
   ProbeSample,
   ProbeState,
   ProbeTier,
+  ProbeAccount,
+  ProbeFeed,
+  ProbeImage,
+  ProbeRecord,
+  ProbeTargets,
   ResolvedProfile,
   RichSegment,
   ServiceProbe,
@@ -98,6 +104,17 @@ export const markReadTriggerSchema = z.enum(['never', 'open', 'seen'])
 
 export const syncStatusSchema = z.enum(['idle', 'syncing', 'error'])
 
+export const notifyLevelSchema = z.enum(['default', 'all', 'outages', 'off'])
+
+export const notificationSoundSchema = z.enum(['all', 'urgent', 'never'])
+
+export const probeNotifyScopeSchema = z.enum(['core', 'all', 'pinned'])
+
+export const awayBehaviourSchema = z.enum(['digest', 'deliver', 'drop'])
+
+/** `HH:MM`, 24-hour. Anything else would make the quiet-hours window unknowable. */
+const clockTimeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)
+
 export const sourceKindSchema = z.enum(['atproto', 'webhook', 'probe'])
 
 export const webhookStateSchema = z.enum(['off', 'listening', 'error'])
@@ -148,7 +165,7 @@ export const accountSchema = z.object({
   displayName: z.string(),
   avatar: z.string().nullable(),
   description: z.string().nullable(),
-  notify: z.boolean(),
+  notify: notifyLevelSchema,
   muted: z.boolean(),
   addedAt: z.string(),
   builtin: z.boolean(),
@@ -157,7 +174,7 @@ export const accountSchema = z.object({
 
 /** Only the two fields the renderer is allowed to change. */
 export const accountPatchSchema = z.object({
-  notify: z.boolean().optional(),
+  notify: notifyLevelSchema.optional(),
   muted: z.boolean().optional()
 })
 
@@ -208,10 +225,173 @@ export const statusPostSchema = z.object({
   url: z.string()
 })
 
+// ------------------------------------------------------- probe targets
+//
+// Unlike the rest of this file, these check the *content* of what crosses, not only its
+// shape: a probe target is typed in by a person or read out of a file they chose, and a
+// malformed DID or a path in the wrong form would otherwise be found out as an outage.
+// So each rule says what it wants in words, for the Settings panel to show beside the
+// field it is about. See `validateProbeTargets` in src/shared/probe-targets.ts.
+
+/**
+ * The most of each list a user may ask for.
+ *
+ * Every account is three requests to every AppView, every sweep, and the AppViews are
+ * other people's infrastructure: ten is already thirty requests apiece, where the
+ * defaults make eighteen. Feeds and images are one request each, but each feed is its
+ * own dashboard row and each image a full-size fetch, so they are held to a handful too.
+ */
+export const PROBE_TARGET_LIMITS = { accounts: 10, feeds: 10, cdnImages: 5 } as const
+
+/** `did:<method>:<identifier>`, as the atproto DID syntax allows it. */
+const DID_SOURCE = 'did:[a-z]+:[a-zA-Z0-9._:%-]*[a-zA-Z0-9._-]'
+/** A lower-case DNS name of two labels or more: a handle, or a host. */
+const DOMAIN_SOURCE =
+  '(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?'
+/** An atproto record key: anything from this alphabet, except `.` and `..`. */
+const RKEY_SOURCE = '(?!\\.{1,2}$)[a-zA-Z0-9._:~-]{1,512}'
+/** The record type a feed's AT-URI has to name for `getFeedSkeleton` to accept it. */
+const FEED_GENERATOR = 'app.bsky.feed.generator'
+
+const didSchema = z
+  .string()
+  .trim()
+  .max(2048)
+  .regex(new RegExp(`^${DID_SOURCE}$`), 'Must be a DID, such as did:plc:…')
+
+/** Handles and hosts are case-insensitive, so they are compared and stored lower-case. */
+const domainSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .max(253)
+  .regex(new RegExp(`^${DOMAIN_SOURCE}$`), 'Must be a domain name, such as example.com')
+
+const rkeySchema = z
+  .string()
+  .trim()
+  .regex(new RegExp(`^${RKEY_SOURCE}$`), 'Must be a record key')
+
+/** An `at://` URI naming one record of `collection`, by DID. */
+function atUriSchema(collection: string): z.ZodString {
+  const escaped = collection.replaceAll('.', '\\.')
+  return z
+    .string()
+    .trim()
+    .regex(
+      new RegExp(`^at://${DID_SOURCE}/${escaped}/${RKEY_SOURCE}$`),
+      `Must be the at:// URI of a ${collection} record`
+    )
+}
+
+/**
+ * Flag every entry that repeats an earlier one's `key`, at the entry itself, so the
+ * Settings panel can put the message beside the right row.
+ */
+function uniqueBy<T>(key: keyof T & string, noun: string) {
+  return (list: T[], ctx: z.RefinementCtx<T[]>): void => {
+    const first = new Map<unknown, number>()
+    list.forEach((item, index) => {
+      const earlier = first.get(item[key])
+      if (earlier === undefined) {
+        first.set(item[key], index)
+        return
+      }
+      ctx.addIssue({
+        code: 'custom',
+        path: [index, key],
+        message: `Same ${noun} as entry ${earlier + 1}`
+      })
+    })
+  }
+}
+
+export const probeAccountSchema = z.object({ did: didSchema, handle: domainSchema })
+
+export const probeFeedSchema = z.object({
+  label: z.string().trim().min(1, 'Needs a label').max(80, 'At most 80 characters'),
+  host: domainSchema,
+  uri: atUriSchema(FEED_GENERATOR)
+})
+
+export const probeRecordSchema = z.object({ did: didSchema, rkey: rkeySchema })
+
+export const probeImageSchema = z.object({
+  did: didSchema,
+  // CIDv1 in base32, which is what the CDN's image paths carry.
+  cid: z
+    .string()
+    .trim()
+    .regex(/^b[a-z2-7]{20,}$/, 'Must be a CID, such as bafkrei…')
+})
+
+export const probeTargetsSchema = z.object({
+  accounts: z
+    .array(probeAccountSchema)
+    // The AppViews' freshness check compares newest posts, and needs somebody's.
+    .min(1, 'List at least one account')
+    .max(PROBE_TARGET_LIMITS.accounts, `At most ${PROBE_TARGET_LIMITS.accounts} accounts`)
+    .superRefine(uniqueBy('did', 'DID'))
+    .superRefine(uniqueBy('handle', 'handle')),
+  feeds: z
+    .array(probeFeedSchema)
+    .max(PROBE_TARGET_LIMITS.feeds, `At most ${PROBE_TARGET_LIMITS.feeds} feeds`)
+    // A feed is one dashboard row, and a row is `feed:<host>`: one feed per generator
+    // host, which is also one service, so a second feed there would measure it twice.
+    .superRefine(uniqueBy('host', 'host')),
+  forYou: z.object({ did: didSchema, feed: atUriSchema(FEED_GENERATOR) }),
+  cdnImages: z
+    .array(probeImageSchema)
+    // A CDN row with nothing to fetch would never finish being checked.
+    .min(1, 'List at least one image')
+    .max(PROBE_TARGET_LIMITS.cdnImages, `At most ${PROBE_TARGET_LIMITS.cdnImages} images`),
+  tangled: z.object({
+    goGetPath: z
+      .string()
+      .trim()
+      .regex(
+        /^\/[^\s?#]*\?(?:[^\s#]*&)?go-get=1(?:&[^\s#]*)?$/,
+        'Must be a path ending in ?go-get=1, such as /core?go-get=1'
+      ),
+    repoPath: z
+      .string()
+      .trim()
+      .regex(
+        new RegExp(`^/${DOMAIN_SOURCE}/[a-zA-Z0-9._-]+$`),
+        'Must be /<owner handle>/<repository>, with the owner as a lower-case handle'
+      ),
+    repoDid: didSchema,
+    ownerDid: didSchema
+  }),
+  apps: z.object({
+    leaflet: z.object({ publication: probeRecordSchema, feed: probeRecordSchema }),
+    offprint: z.object({
+      publication: atUriSchema(EXPECTED_RESPONSES.standardSite.publicationCollection)
+    })
+  })
+})
+
 export const settingsSchema = z.object({
   pollIntervalSec: z.number(),
   notificationsEnabled: z.boolean(),
-  notificationSound: z.boolean(),
+  notificationSound: notificationSoundSchema,
+  notifyStickyOutages: z.boolean(),
+  notifySeverities: z.array(severitySchema),
+  notifyFollowUpsOnly: z.boolean(),
+  notifySources: z.array(sourceKindSchema),
+  notifyProbeScope: probeNotifyScopeSchema,
+  notifyProbeGraceSec: z.number(),
+  notifyProbeRecovery: z.boolean(),
+  notifyProbePartial: z.boolean(),
+  quietHoursEnabled: z.boolean(),
+  quietHoursStart: clockTimeSchema,
+  quietHoursEnd: clockTimeSchema,
+  quietHoursBreakthrough: z.boolean(),
+  notifyWhenAway: awayBehaviourSchema,
+  notifyCombineBursts: z.boolean(),
+  notificationsSnoozedUntil: z.string().nullable(),
+  notificationShowBody: z.boolean(),
+  pinnedServices: z.array(z.string()),
   theme: themePreferenceSchema,
   launchAtLogin: z.boolean(),
   trayUnreadStyle: trayUnreadStyleSchema,
@@ -221,7 +401,8 @@ export const settingsSchema = z.object({
   webhookPort: z.number(),
   networkChecks: z.boolean(),
   networkIntervalSec: z.number(),
-  globalShortcut: z.string()
+  globalShortcut: z.string(),
+  probeTargets: probeTargetsSchema.nullable()
 })
 
 /** Every field optional: the renderer sends only what the user actually changed. */
@@ -440,3 +621,8 @@ export type _AppStateMatches = Assert<Exact<z.infer<typeof appStateSchema>, AppS
 export type _ResolvedProfileMatches = Assert<
   Exact<z.infer<typeof resolvedProfileSchema>, ResolvedProfile>
 >
+export type _ProbeAccountMatches = Assert<Exact<z.infer<typeof probeAccountSchema>, ProbeAccount>>
+export type _ProbeFeedMatches = Assert<Exact<z.infer<typeof probeFeedSchema>, ProbeFeed>>
+export type _ProbeRecordMatches = Assert<Exact<z.infer<typeof probeRecordSchema>, ProbeRecord>>
+export type _ProbeImageMatches = Assert<Exact<z.infer<typeof probeImageSchema>, ProbeImage>>
+export type _ProbeTargetsMatches = Assert<Exact<z.infer<typeof probeTargetsSchema>, ProbeTargets>>

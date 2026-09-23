@@ -6,6 +6,7 @@ import type {
   INetworkRenderer,
   IPopoverRenderer,
   IPreferencesRenderer,
+  IProbeTargetsFileRenderer,
   IStateRenderer,
   IWebhookRenderer
 } from '@ipc/common/statusky'
@@ -18,6 +19,7 @@ export interface StatuskyBridge {
   Feed: IFeedRenderer
   Actors: IActorsRenderer
   Webhook: IWebhookRenderer
+  ProbeTargetsFile: IProbeTargetsFileRenderer
   Network: INetworkRenderer
   Host: IHostRenderer
   Popover: IPopoverRenderer

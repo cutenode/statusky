@@ -3,6 +3,9 @@ import type { ProbeState, Severity } from '@shared/types'
 import type { Health } from '@shared/status'
 import { HEALTH_LABEL, SEVERITY_LABEL } from '@shared/status'
 import { HEALTH_STYLE, PROBE_STATE_STYLE, SEVERITY_STYLE } from './severity'
+// The file as text, through Vite; the linter cannot see the export Vite makes for it.
+// oxlint-disable-next-line import/default
+import source from './severity.ts?raw'
 
 const SEVERITIES = Object.keys(SEVERITY_LABEL) as Severity[]
 const HEALTHS = Object.keys(HEALTH_LABEL) as Health[]
@@ -23,12 +26,22 @@ describe('SEVERITY_STYLE', () => {
     }
   })
 
+  /**
+   * Tailwind reads the source, not the running code: a class built with a template
+   * literal is complete at runtime and never generated. So the check is on the file —
+   * every class string these tables hand out has to appear in it, quoted, as written.
+   */
   it('writes class names out in full, so Tailwind can see them', () => {
-    for (const style of Object.values(SEVERITY_STYLE)) {
-      for (const value of [style.text, style.bg, style.rail, style.ring]) {
-        expect(value).not.toContain('${')
-      }
-    }
+    const tables = [SEVERITY_STYLE, HEALTH_STYLE, PROBE_STATE_STYLE]
+    const classes = tables
+      .flatMap((table) => Object.values(table))
+      .flatMap((style) => Object.values(style))
+      .filter((value): value is string => typeof value === 'string' && value !== '')
+      // `label` is a word for people, not a class.
+      .filter((value) => !Object.values(PROBE_STATE_STYLE).some((s) => s.label === value))
+
+    expect(classes.length).toBeGreaterThan(50)
+    for (const value of classes) expect(source).toContain(`'${value}'`)
   })
 
   it('uses a distinct colour token per severity', () => {

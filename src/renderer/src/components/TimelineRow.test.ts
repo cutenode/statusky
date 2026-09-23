@@ -3,6 +3,7 @@ import { fireEvent } from '@testing-library/svelte'
 import { SERVICES, probeAccount, probePost } from '@shared/network'
 import { webhookAccount } from '@shared/webhook'
 import { nav } from '$lib/nav.svelte'
+import { SEVERITY_STYLE } from '$lib/severity'
 import { makeAccount, makeCheck, makeEmbed, makePost, makeSettings } from '../../../test/factories'
 import { renderWith } from '../test/render'
 import TimelineRow from './TimelineRow.svelte'
@@ -37,6 +38,12 @@ const measured = probePost({
 })
 
 const manual = makeSettings({ markReadOn: 'never' as const })
+
+/** The gutter: the severity node, and the thread running on from it to the next stop. */
+const node = (container: HTMLElement): Element =>
+  container.querySelector('[aria-hidden="true"] > span')!
+const thread = (container: HTMLElement): Element | null =>
+  container.querySelector('[aria-hidden="true"] > span.w-px')
 
 describe('a timeline row', () => {
   it('leads with the severity, the source and when', async () => {
@@ -95,6 +102,19 @@ describe('a timeline row', () => {
     expect(bridge.api.Feed.markRead).toHaveBeenCalledWith([post.uri])
   })
 
+  it('opens a post already read without marking it again', async () => {
+    const { bridge, getByRole } = await renderWith(
+      TimelineRow,
+      { post, now: NOW },
+      { accounts: [status], posts: [post], unread: [], settings: manual }
+    )
+
+    await fireEvent.click(getByRole('button'))
+
+    expect(bridge.api.Host.openExternal).toHaveBeenCalledWith(post.url)
+    expect(bridge.api.Feed.markRead).not.toHaveBeenCalled()
+  })
+
   it('sends a measurement to the dashboard instead of the web', async () => {
     const { bridge, getByRole } = await renderWith(
       TimelineRow,
@@ -148,5 +168,34 @@ describe('a timeline row', () => {
       { accounts: [status], posts: [post], unread: [], settings: manual }
     )
     expect(queryByLabelText('Unread')).toBeNull()
+  })
+})
+
+describe('its place on the thread', () => {
+  const state = { accounts: [status], posts: [post], unread: [], settings: manual }
+
+  it('recedes below the line, where it was read before this visit', async () => {
+    const above = await renderWith(TimelineRow, { post, now: NOW }, state)
+    expect(above.getByRole('button').className).toContain(SEVERITY_STYLE.investigating.wash)
+    expect(node(above.container).className).not.toContain('opacity-65')
+    above.unmount()
+
+    const { container, getByRole, getByText } = await renderWith(
+      TimelineRow,
+      { post, now: NOW, dimmed: true },
+      state
+    )
+    expect(getByRole('button').className).not.toContain(SEVERITY_STYLE.investigating.wash)
+    expect(node(container).className).toContain('opacity-65')
+    expect(getByText(post.text).className).toContain('text-foreground/65')
+  })
+
+  it('runs the thread on to the next stop, and ends it at the last one of a day', async () => {
+    const middle = await renderWith(TimelineRow, { post, now: NOW }, state)
+    expect(thread(middle.container)).not.toBeNull()
+    middle.unmount()
+
+    const { container } = await renderWith(TimelineRow, { post, now: NOW, last: true }, state)
+    expect(thread(container)).toBeNull()
   })
 })

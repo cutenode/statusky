@@ -46,8 +46,11 @@
   const Icon = $derived(style.icon)
   /** An entry the network checks filed opens the dashboard rather than a web page. */
   const serviceId = $derived(probeServiceId(post))
-  /** A pushed update does not always carry a link back to the page it came from. */
-  const link = $derived(serviceId ? null : post.url || null)
+  /**
+   * A pushed update does not always carry a link back to the page it came from. Only
+   * read without a `serviceId`, which opens the dashboard instead.
+   */
+  const link = $derived(post.url || null)
   /**
    * Still unread means it landed after this view caught up — while the popover was
    * open, in front of you. Everything else above the line was read the moment the tab
@@ -61,10 +64,10 @@
       : `${SEVERITY_LABEL[post.severity]}: ${post.text} — open the original`
   )
 
+  /** Only a row with somewhere to go is a button, so there is always one of the two. */
   function activate(): void {
     if (serviceId) nav.reveal(serviceId)
     else if (link) app.openExternal(link)
-    else return
     if (unread) void app.markRead([post.uri])
   }
 

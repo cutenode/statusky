@@ -273,6 +273,33 @@ describe('surviving a dead renderer', () => {
     }
   })
 
+  // Three *in a row*: a page that ran for a while in between proves the renderer can
+  // start, so the deaths before it say nothing about the ones after it.
+  it('starts counting again after a page that ran for a while', () => {
+    vi.useFakeTimers()
+    try {
+      const { popover } = popoverWithWindow()
+
+      killRenderer()
+      popover.show()
+      killRenderer()
+      popover.show()
+      vi.advanceTimersByTime(15 * 60_000)
+      killRenderer()
+      popover.show()
+      killRenderer()
+      popover.show()
+      killRenderer()
+      popover.show()
+
+      expect(BrowserWindow.instances).toHaveLength(6)
+      expect(popover.isVisible()).toBe(true)
+      expect(dialog.showMessageBox).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('stops rebuilding after three deaths on load, and explains itself once', async () => {
     const { popover } = popoverWithWindow()
 
@@ -385,6 +412,11 @@ describe('following the displays', () => {
     const window = BrowserWindow.instances.at(-1)!
     window.show()
     window.destroyed = true
+    // Electron throws from every method of a destroyed window bar `isDestroyed`, which
+    // the double does not model; without this, nothing here could fail.
+    vi.spyOn(window, 'isVisible').mockImplementation(() => {
+      throw new TypeError('Object has been destroyed')
+    })
 
     expect(() => screen.emit('display-removed', {}, PROJECTOR)).not.toThrow()
   })
@@ -525,8 +557,10 @@ describe('positioning', () => {
     const { popover, window } = popoverWithWindow()
     popover.show({ x: 700, y: 870, width: 24, height: 24 })
 
+    // Its whole height plus the 6px gap above the icon, rather than merely somewhere
+    // higher up the screen.
     const [, y] = window.getPosition()
-    expect(y).toBeLessThan(870)
+    expect(y).toBe(870 - 640 - 6)
   })
 
   it('positions the window it creates when shown without one', () => {

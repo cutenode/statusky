@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { BUILTIN_ACCOUNTS, DEFAULT_SETTINGS } from '../shared/defaults'
+import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
 import { unreadUris } from './state'
 import { createStore, readWebhookSecret, reconcile, writeWebhookSecret } from './store'
 import FakeElectronStore, { seedStore } from '../test/electron-store'
@@ -18,8 +19,9 @@ describe('createStore', () => {
     expect(store.get('posts')).toEqual([])
     expect(store.get('read')).toEqual({ cursors: {}, above: [] })
     expect(store.get('cursors')).toEqual({})
+    expect(store.get('openIncidents')).toEqual([])
     expect(readWebhookSecret(store as never)).toMatch(/^[\w-]{20,}$/)
-    expect(store.get('schemaVersion')).toBe(5)
+    expect(store.get('schemaVersion')).toBe(6)
   })
 
   // The one thing that must not happen on the way up: `safeStorage` is synchronous,
@@ -71,7 +73,7 @@ describe('createStore', () => {
           did: BUILTIN_ACCOUNTS[0]!.did,
           handle: BUILTIN_ACCOUNTS[0]!.handle,
           muted: true,
-          notify: false,
+          notify: 'off',
           builtin: true
         })
       ]
@@ -81,7 +83,7 @@ describe('createStore', () => {
     const account = store.get('accounts').find((a) => a.did === BUILTIN_ACCOUNTS[0]!.did)
 
     expect(account?.muted).toBe(true)
-    expect(account?.notify).toBe(false)
+    expect(account?.notify).toBe('off')
   })
 })
 
@@ -120,19 +122,10 @@ describe('reconcile', () => {
     )
   })
 
-  it('tolerates a config with no accounts key at all', () => {
-    const store = bare({})
-    store.delete('accounts')
-
-    reconcile(store as never)
-
-    expect(store.get('accounts')).toHaveLength(BUILTIN_ACCOUNTS.length)
-  })
-
   it('stamps the current schema version', () => {
     const store = bare({})
     reconcile(store as never)
-    expect(store.get('schemaVersion')).toBe(5)
+    expect(store.get('schemaVersion')).toBe(6)
   })
 
   it('carries a schema 1 tray-count preference over to the tray style', () => {
@@ -176,6 +169,60 @@ describe('reconcile', () => {
     reconcile(store as never)
 
     expect(store.get('settings').trayUnreadStyle).toBe('dot')
+  })
+
+  it('carries a schema 5 sound switch over to the matching end of the choice', () => {
+    const on = bare({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        notificationSound: true
+      } as unknown as PersistedShape['settings']
+    })
+    const off = bare({
+      settings: {
+        ...DEFAULT_SETTINGS,
+        notificationSound: false
+      } as unknown as PersistedShape['settings']
+    })
+
+    reconcile(on as never)
+    reconcile(off as never)
+
+    expect(on.get('settings').notificationSound).toBe('all')
+    expect(off.get('settings').notificationSound).toBe('never')
+  })
+
+  it('fills in the notification settings a schema 5 install never had', () => {
+    const {
+      notifySeverities: _severities,
+      quietHoursEnabled: _quiet,
+      pinnedServices: _pinned,
+      ...schema5
+    } = DEFAULT_SETTINGS
+    const store = bare({ settings: schema5 as PersistedShape['settings'] })
+
+    reconcile(store as never)
+
+    expect(store.get('settings')).toMatchObject({
+      notifySeverities: DEFAULT_SETTINGS.notifySeverities,
+      quietHoursEnabled: false,
+      pinnedServices: []
+    })
+  })
+
+  it('turns a schema 5 notify switch into a level', () => {
+    const store = bare({
+      accounts: [
+        makeAccount({ did: 'did:plc:on', notify: true as never }),
+        makeAccount({ did: 'did:plc:off', notify: false as never })
+      ]
+    })
+
+    reconcile(store as never)
+
+    const levels = Object.fromEntries(store.get('accounts').map((a) => [a.did, a.notify]))
+    expect(levels['did:plc:on']).toBe('default')
+    expect(levels['did:plc:off']).toBe('off')
   })
 
   it('is idempotent', () => {
@@ -259,8 +306,17 @@ describe("rebuilding schema 3's unread list as read cursors", () => {
   })
 
   it('tolerates a config with neither key', () => {
-    const store = bare({})
-    store.delete('posts')
+    // Defaults that mention neither: `bare` would answer `posts` from its own, and
+    // deleting the key only removes what was written, not what the defaults say.
+    const store = new FakeElectronStore<PersistedShape>({
+      name: 'postless',
+      defaults: {
+        schemaVersion: 3,
+        accounts: [],
+        settings: { ...DEFAULT_SETTINGS },
+        cursors: {}
+      } as unknown as PersistedShape
+    })
 
     reconcile(store as never)
 
@@ -512,5 +568,51 @@ describe('the webhook secret', () => {
     safeStorage.available = false
     writeWebhookSecret(store as never, 'clear again')
     expect(Object.keys(store.data)).not.toContain('webhookSecretEncrypted')
+  })
+})
+
+/** A store whose config on disk had these probe targets in its settings. */
+function loaded(probeTargets: unknown): FakeElectronStore<PersistedShape> {
+  seedStore('statusky', { settings: { ...DEFAULT_SETTINGS, probeTargets } })
+  return createStore() as unknown as FakeElectronStore<PersistedShape>
+}
+
+describe('the probe targets override', () => {
+  /** The checked-in targets with the accounts replaced, as a user's override would be. */
+  const override = {
+    ...structuredClone(DEFAULT_PROBE_TARGETS),
+    accounts: [{ did: 'did:plc:someone', handle: 'someone.test' }]
+  }
+
+  it('is absent on a fresh install, and on a config written before there was one', () => {
+    expect(createStore().get('settings').probeTargets).toBeNull()
+    const { probeTargets: _none, ...older } = DEFAULT_SETTINGS
+    seedStore('statusky', { settings: older })
+    expect(createStore().get('settings').probeTargets).toBeNull()
+  })
+
+  it('survives a restart when it is valid', () => {
+    expect(loaded(override).get('settings').probeTargets).toEqual(override)
+  })
+
+  it('is dropped for the defaults, with a warning, when it no longer validates', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const store = loaded({ ...override, accounts: [{ did: 'someone', handle: 'someone.test' }] })
+
+    expect(store.get('settings')).toEqual({ ...DEFAULT_SETTINGS, probeTargets: null })
+    expect(warn).toHaveBeenCalledOnce()
+    expect(String(warn.mock.calls[0]![0])).toMatch(/accounts\[0\]\.did/)
+    warn.mockRestore()
+  })
+
+  it('is dropped, not thrown about, when it is not even an object', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(() => loaded('corrupted')).not.toThrow()
+    expect(createStore().get('settings').probeTargets).toBeNull()
+    warn.mockRestore()
+  })
+
+  it('is stored as none when it says exactly what the defaults say', () => {
+    expect(loaded(structuredClone(DEFAULT_PROBE_TARGETS)).get('settings').probeTargets).toBeNull()
   })
 })

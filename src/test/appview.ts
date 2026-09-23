@@ -270,17 +270,30 @@ export class FakeAppView {
 
     switch (method) {
       case 'app.bsky.feed.getAuthorFeed': {
+        // The lexicon allows 1–100, and the AppView refuses anything else before it
+        // looks at the actor at all.
+        const limit = Number(params.get('limit') ?? 50)
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+          return json(
+            { error: 'InvalidRequest', message: 'limit must be an integer from 1 to 100' },
+            { status: 400 }
+          )
+        }
         const key = (actor ?? '').toLowerCase()
         const feed = this.feeds.get(actor ?? '') ?? this.feeds.get(key)
         if (!feed) {
           return json({ error: 'InvalidRequest', message: 'Profile not found' }, { status: 400 })
         }
-        const limit = Number(params.get('limit') ?? 50)
         const filtered =
           params.get('filter') === 'posts_no_replies'
             ? feed.filter((item) => !item.post.record.reply)
             : feed
-        return json({ feed: filtered.slice(0, limit), cursor: undefined })
+        // Newest first, as the AppView pages it, so a limit keeps the latest posts rather
+        // than whichever a test happened to list first.
+        const newestFirst = filtered.toSorted(
+          (a, b) => Date.parse(b.post.indexedAt) - Date.parse(a.post.indexedAt)
+        )
+        return json({ feed: newestFirst.slice(0, limit), cursor: undefined })
       }
       case 'app.bsky.actor.getProfile': {
         const profile = this.lookup(actor)

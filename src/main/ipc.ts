@@ -8,6 +8,7 @@ import {
   Network,
   Popover,
   Preferences,
+  ProbeTargetsFile,
   State,
   Webhook,
   type INetworkDispatcher,
@@ -18,6 +19,7 @@ import type { AccountPatch, AppState, NetworkSnapshot, Platform, Settings } from
 import { showPostMenu } from './context-menu'
 import type { Model } from './model'
 import { notifyTest } from './notifications'
+import { probeTargetsFile } from './probe-targets-file'
 import type { PopoverWindow } from './window'
 
 export interface IpcDeps {
@@ -68,6 +70,8 @@ export function registerIpc({
   let page: IPopoverDispatcher | null = null
   /** The page those dispatchers were bound to, so a destroyed one is not written to. */
   let attached: WebContents | null = null
+  // Built once rather than per window, so its one-dialog-at-a-time rule outlives a reload.
+  const targetsFile = probeTargetsFile({ model, popover })
 
   const attach = (contents: WebContents): void => {
     attached = contents
@@ -100,6 +104,11 @@ export function registerIpc({
 
     Webhook.for(contents).setImplementation({
       regenerateSecret: () => model.regenerateWebhookSecret()
+    })
+
+    ProbeTargetsFile.for(contents).setImplementation({
+      save: () => targetsFile.save(),
+      open: () => targetsFile.open()
     })
 
     network = Network.for(contents).setImplementation({

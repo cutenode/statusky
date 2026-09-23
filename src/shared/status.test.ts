@@ -109,6 +109,24 @@ describe('classifySeverity', () => {
     expect(classifySeverity('   \n  ')).toBe('update')
   })
 
+  // A prefix is the author naming the stage, so it wins over a body that says otherwise.
+  it.each([
+    ['Resolved: We are investigating the outage.', 'resolved'],
+    ['Completed: maintenance on the PDS fleet is underway.', 'resolved'],
+    ['Fixed: posts were failing to load.', 'resolved'],
+    ['Monitoring: the issue has been resolved for most users.', 'monitoring'],
+    ['Identified: we are investigating an outage.', 'identified'],
+    ['Investigating: the issue has been resolved on one region.', 'investigating'],
+    ['Scheduled maintenance: we have identified the root cause.', 'maintenance'],
+    ['Maintenance: we are investigating a slow migration.', 'maintenance'],
+    ['Scheduled: the site is down tonight.', 'maintenance'],
+    ['Degraded: the site is down for some users.', 'degraded'],
+    ['Outage: the fix is being monitored.', 'outage'],
+    ['resolved - lowercase still counts', 'resolved']
+  ] as const)('lets the prefix of %j win', (text, expected) => {
+    expect(classifySeverity(text)).toBe(expected)
+  })
+
   it('does not let an `Update:` prefix mask the stage in the body', () => {
     expect(
       classifySeverity('Update: We are investigating multiple PDS instances being down.')
@@ -120,22 +138,6 @@ describe('classifySeverity', () => {
     expect(
       classifySeverity('We identified the cause and applied a fix. We are monitoring the results.')
     ).toBe('monitoring')
-  })
-})
-
-describe('isActiveIncident', () => {
-  it('treats unresolved operational states as active', () => {
-    expect(isActiveIncident('investigating')).toBe(true)
-    expect(isActiveIncident('identified')).toBe(true)
-    expect(isActiveIncident('outage')).toBe(true)
-    expect(isActiveIncident('degraded')).toBe(true)
-  })
-
-  it('does not treat recovery, maintenance or chatter as active', () => {
-    expect(isActiveIncident('resolved')).toBe(false)
-    expect(isActiveIncident('monitoring')).toBe(false)
-    expect(isActiveIncident('maintenance')).toBe(false)
-    expect(isActiveIncident('update')).toBe(false)
   })
 })
 
@@ -171,12 +173,17 @@ describe('deriveHealth', () => {
     expect(deriveHealth(posts)).toBe('operational')
   })
 
-  it('maps an unresolved newest post to an incident', () => {
-    expect(deriveHealth([post('investigating', '2026-09-05T00:00:00Z')])).toBe('incident')
-  })
-
-  it('keeps monitoring distinct from fully operational', () => {
-    expect(deriveHealth([post('monitoring', '2026-09-05T00:00:00Z')])).toBe('monitoring')
+  it.each([
+    ['resolved', 'operational'],
+    ['update', 'operational'],
+    ['monitoring', 'monitoring'],
+    ['maintenance', 'maintenance'],
+    ['investigating', 'incident'],
+    ['identified', 'incident'],
+    ['outage', 'incident'],
+    ['degraded', 'incident']
+  ] as const)('maps %s to %s', (severity, health) => {
+    expect(deriveHealth([post(severity, '2026-09-05T00:00:00Z')])).toBe(health)
   })
 })
 
@@ -245,21 +252,6 @@ describe('overallHealth', () => {
   it('lets anything known outrank being offline, which only says nothing is known', () => {
     expect(overallHealth(['offline', 'operational'])).toBe('operational')
     expect(overallHealth(['offline', 'unknown'])).toBe('offline')
-  })
-})
-
-describe('deriveHealth, per severity', () => {
-  it.each([
-    ['resolved', 'operational'],
-    ['update', 'operational'],
-    ['monitoring', 'monitoring'],
-    ['maintenance', 'maintenance'],
-    ['investigating', 'incident'],
-    ['identified', 'incident'],
-    ['outage', 'incident'],
-    ['degraded', 'incident']
-  ] as const)('maps %s to %s', (severity, health) => {
-    expect(deriveHealth([post(severity, '2026-09-05T00:00:00Z')])).toBe(health)
   })
 })
 

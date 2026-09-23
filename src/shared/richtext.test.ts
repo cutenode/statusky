@@ -94,10 +94,6 @@ describe('segmentRichText', () => {
         index: { byteStart: 0, byteEnd: 4 },
         features: [{ $type: 'app.bsky.richtext.facet#weird' }]
       }
-    ],
-    [
-      'a link feature with no uri',
-      { index: { byteStart: 0, byteEnd: 4 }, features: [{ $type: 'app.bsky.richtext.facet#link' }] }
     ]
   ])('drops %s without losing the post body', (_name, facet) => {
     const text = 'plain body text'
@@ -116,6 +112,32 @@ describe('segmentRichText', () => {
       { kind: 'text', text: 'fghij' }
     ])
     expect(segmentsToPlainText(segments)).toBe(text)
+  })
+
+  // Each segment is decoded on its own, and a decoder left to its defaults takes a U+FEFF
+  // at the start of one for a byte-order mark.
+  it('keeps a zero-width no-break space that starts a segment', () => {
+    const text = 'a\uFEFFbc \uFEFF'
+    const segments = segmentRichText(text, [
+      link(0, 1, 'https://a.test'),
+      link(7, 10, 'https://b.test')
+    ])
+
+    expect(segments).toEqual([
+      { kind: 'link', text: 'a', uri: 'https://a.test' },
+      { kind: 'text', text: '\uFEFFbc ' },
+      { kind: 'link', text: '\uFEFF', uri: 'https://b.test' }
+    ])
+  })
+
+  // What a client that counted UTF-16 units, not bytes, would send for text after "é".
+  it('drops a facet that starts or ends inside a character, keeping the text whole', () => {
+    expect(segmentRichText('é!', [link(1, 3, 'https://start.test')])).toEqual([
+      { kind: 'text', text: 'é!' }
+    ])
+    expect(segmentRichText('!é', [link(0, 2, 'https://end.test')])).toEqual([
+      { kind: 'text', text: '!é' }
+    ])
   })
 
   it('always round-trips to the original text', () => {

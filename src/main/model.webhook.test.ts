@@ -77,7 +77,7 @@ describe('the first delivery from a page', () => {
       description: 'Degraded',
       kind: 'webhook',
       builtin: false,
-      notify: true,
+      notify: 'default',
       muted: false
     })
   })
@@ -97,12 +97,25 @@ describe('the first delivery from a page', () => {
   })
 
   it('announces the newest update but stays quiet about the backlog behind it', async () => {
-    const h = await boot()
+    // The newest update resolves an incident whose start was backlog, which the default
+    // settings would hold back as a follow-up nobody was told the start of. This is about
+    // the cursor, so hear every follow-up.
+    const h = await boot({ settings: { notifyFollowUpsOnly: false } })
 
     h.model.ingestWebhook(payload([THIRD, SECOND, FIRST]))
 
     expect(h.notified).toHaveLength(1)
     expect(h.notified[0]!.map((p) => p.rkey)).toEqual(['incident/inc_1/u3'])
+    expect(h.state().unread).toEqual(['webhook:pg_bsky/incident/inc_1/u3'])
+  })
+
+  it('keeps quiet, by default, about the end of an incident it never announced', async () => {
+    const h = await boot()
+
+    h.model.ingestWebhook(payload([THIRD, SECOND, FIRST]))
+
+    expect(h.notified).toEqual([])
+    // Still news in the feed; only the banner is held back.
     expect(h.state().unread).toEqual(['webhook:pg_bsky/incident/inc_1/u3'])
   })
 
@@ -227,7 +240,7 @@ describe('a pushed source behaves like any other', () => {
 
   it('marks updates unread but stays silent when its notifications are off', async () => {
     const h = await boot({
-      accounts: [makeAccount({ did: SOURCE_DID, kind: 'webhook', notify: false })],
+      accounts: [makeAccount({ did: SOURCE_DID, kind: 'webhook', notify: 'off' })],
       cursors: { [SOURCE_DID]: '2026-03-01T00:00:00.000Z' }
     })
 

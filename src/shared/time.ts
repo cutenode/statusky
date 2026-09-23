@@ -19,9 +19,9 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
 
   let duration = (then - now) / 1000
   for (const division of DIVISIONS) {
-    if (Math.abs(duration) < division.amount) {
-      return rtf.format(Math.round(duration), division.unit)
-    }
+    // Rounded before the unit is chosen, so 59.6 minutes is "1 hour ago", not "60 minutes".
+    const rounded = Math.round(duration)
+    if (Math.abs(rounded) < division.amount) return rtf.format(rounded, division.unit)
     duration /= division.amount
   }
   return rtf.format(Math.round(duration), LARGEST_UNIT)
@@ -44,11 +44,17 @@ export function compactRelativeTime(iso: string, now: number = Date.now()): stri
 
   const seconds = Math.max(0, Math.round((now - then) / 1000))
   if (seconds < 45) return 'now'
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
-  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`
-  if (seconds < 604800) return `${Math.round(seconds / 86400)}d`
+  // Round, then pick the unit, so 59½ minutes reads "1h" rather than "60m".
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.round(seconds / 3600)
+  if (hours < 24) return `${hours}h`
+  const days = Math.round(seconds / 86400)
+  if (days < 7) return `${days}d`
+  // A month is 4.35 weeks, so rounding weeks can never reach a "5w" to carry.
   if (seconds < 2629800) return `${Math.round(seconds / 604800)}w`
-  if (seconds < 31557600) return `${Math.round(seconds / 2629800)}mo`
+  const months = Math.round(seconds / 2629800)
+  if (months < 12) return `${months}mo`
   return `${Math.round(seconds / 31557600)}y`
 }
 

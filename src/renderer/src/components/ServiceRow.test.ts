@@ -122,10 +122,39 @@ describe('the open row', () => {
 
   it('sets a failure as a code and what it means', async () => {
     const { container, getByText } = await row({ checks, state: 'partial' }, { expanded: true })
-    const failure = container.querySelector('li:nth-child(3) p')!
+    const failure = container.querySelector('li:nth-child(3) [data-failure]')!
     expect(failure.className).toContain('text-sev-outage')
     expect(failure.textContent!.replace(/\s+/g, ' ').trim()).toBe('502 Bad gateway')
     expect(getByText('502').className).toContain('font-mono')
+  })
+
+  it('keeps the raw error, and how long the check waited for it, on hover', async () => {
+    const { container } = await row({ checks, state: 'partial' }, { expanded: true })
+    expect(container.querySelector('li:nth-child(3) [data-failure]')!.getAttribute('title')).toBe(
+      'HTTP 502 · after 90 ms'
+    )
+
+    // A check that never got as far as a timing has only the error to offer.
+    const untimed = await row(
+      { checks: [makeCheck({ ok: false, error: 'HTTP 502', durationMs: null })], state: 'down' },
+      { expanded: true }
+    )
+    expect(untimed.container.querySelector('[data-failure]')!.getAttribute('title')).toBe(
+      'HTTP 502'
+    )
+  })
+
+  it('says a failure with no status code in words alone', async () => {
+    const { container } = await row(
+      {
+        checks: [makeCheck({ label: 'firehose', ok: false, error: 'No commits received' })],
+        state: 'down'
+      },
+      { expanded: true }
+    )
+    const failure = container.querySelector('[data-failure]')!
+    expect(failure.textContent!.trim()).toBe('No commits received')
+    expect(failure.querySelector('.font-mono')).toBeNull()
   })
 
   it('marks an answer that took the slow threshold', async () => {
@@ -230,6 +259,24 @@ describe('the tiers', () => {
     )
     expect(getByText('community')).toBeTruthy()
     expect(container.textContent).toContain('Unreachable for 1 hour · best effort, so not counted')
+  })
+
+  it.each<[string, Partial<ServiceProbe>, string, string]>([
+    [
+      'a partial failure',
+      { state: 'partial', condition: 'partial', since: '2026-01-01T11:48:00Z' },
+      'Partly failing for 12 minutes · best effort, so not counted',
+      'text-sev-investigating'
+    ],
+    [
+      'a failure that just happened',
+      { state: 'down', condition: 'down', since: '2026-01-01T11:59:40Z' },
+      'Unreachable since just now · best effort, so not counted',
+      'text-sev-outage'
+    ]
+  ])('says the same of %s', async (_name, service, text, tone) => {
+    const { getByText } = await row({ id: 'pds:pds.rip', ...service }, { expanded: true })
+    expect(getByText(text).className).toContain(tone)
   })
 
   it('leaves the network proper unmarked', async () => {

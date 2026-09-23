@@ -11,10 +11,17 @@ export interface RawFacet {
 }
 
 const encoder = new TextEncoder()
-const decoder = new TextDecoder()
+// Every segment is decoded separately, and a default decoder would take a U+FEFF at the
+// start of one for a byte-order mark and drop it.
+const decoder = new TextDecoder('utf-8', { ignoreBOM: true })
 
 function decodeSlice(bytes: Uint8Array, start: number, end: number): string {
   return decoder.decode(bytes.subarray(start, end))
+}
+
+/** UTF-8 continuation bytes are 10xxxxxx: an offset that lands on one is inside a character. */
+function onBoundary(bytes: Uint8Array, index: number): boolean {
+  return index === bytes.length || (bytes[index]! & 0xc0) !== 0x80
 }
 
 function featureToSegment(
@@ -36,9 +43,9 @@ function featureToSegment(
 /**
  * Split post text into renderable segments using its facets.
  *
- * Facets that are malformed, out of range, or that overlap an earlier facet are
- * dropped and their text is emitted as plain text — the AppView does not guarantee
- * well-formed facets, and a bad one should never lose us the post body.
+ * Facets that are malformed, out of range, split a character, or overlap an earlier
+ * facet are dropped and their text is emitted as plain text — the AppView does not
+ * guarantee well-formed facets, and a bad one should never lose us the post body.
  */
 export function segmentRichText(text: string, facets: RawFacet[] | undefined): RichSegment[] {
   const bytes = encoder.encode(text)
@@ -53,16 +60,14 @@ export function segmentRichText(text: string, facets: RawFacet[] | undefined): R
       if (typeof start !== 'number' || typeof end !== 'number') return null
       if (!Number.isInteger(start) || !Number.isInteger(end)) return null
       if (start < 0 || end > bytes.length || start >= end) return null
-      const feature = facet.features?.find((f) => featureToSegment(f, '') !== null)
-      if (!feature) return null
-      return { start, end, feature }
+      // A client that counted UTF-16 units rather than bytes lands mid-character.
+      if (!onBoundary(bytes, start) || !onBoundary(bytes, end)) return null
+      // The first feature we can render, with its text filled in once it is decoded.
+      const segment = facet.features?.map((f) => featureToSegment(f, '')).find((s) => s !== null)
+      if (!segment) return null
+      return { start, end, segment }
     })
-    .filter(
-      (
-        f
-      ): f is { start: number; end: number; feature: NonNullable<RawFacet['features']>[number] } =>
-        f !== null
-    )
+    .filter((f): f is { start: number; end: number; segment: RichSegment } => f !== null)
     .toSorted((a, b) => a.start - b.start)
 
   const segments: RichSegment[] = []
@@ -72,20 +77,16 @@ export function segmentRichText(text: string, facets: RawFacet[] | undefined): R
     // Overlaps a facet we already emitted; skip it rather than double-rendering text.
     if (facet.start < cursor) continue
 
+    // Whole characters on both sides, so a non-empty range never decodes to nothing.
     if (facet.start > cursor) {
-      const plain = decodeSlice(bytes, cursor, facet.start)
-      if (plain) segments.push({ kind: 'text', text: plain })
+      segments.push({ kind: 'text', text: decodeSlice(bytes, cursor, facet.start) })
     }
-
-    const inner = decodeSlice(bytes, facet.start, facet.end)
-    const segment = featureToSegment(facet.feature, inner)
-    segments.push(segment ?? { kind: 'text', text: inner })
+    segments.push({ ...facet.segment, text: decodeSlice(bytes, facet.start, facet.end) })
     cursor = facet.end
   }
 
   if (cursor < bytes.length) {
-    const tail = decodeSlice(bytes, cursor, bytes.length)
-    if (tail) segments.push({ kind: 'text', text: tail })
+    segments.push({ kind: 'text', text: decodeSlice(bytes, cursor, bytes.length) })
   }
 
   return segments

@@ -79,14 +79,20 @@ describe('parseDeepLink', () => {
 
   /**
    * `statusky://service/` names no service, and a second path segment means the link is
-   * describing something this app does not have. `%2F` is how somebody would try to slip
-   * a second segment past a parser that decoded before it split, which is why the split
-   * happens first.
+   * describing something this app does not have.
    */
   it('refuses a service link that names no service, or more than one', () => {
     expect(parseDeepLink('statusky://service/')).toBeNull()
     expect(parseDeepLink('statusky://service')).toBeNull()
     expect(parseDeepLink('statusky://service/relay:bsky.network/down')).toBeNull()
+  })
+
+  /**
+   * `%2F` is how somebody would try to slip a second segment past a parser that decoded
+   * before it split, which is why the split happens first: what comes out is one id with
+   * a slash in it, which `openDeepLink` then fails to find among the measured services.
+   */
+  it('keeps an escaped slash inside the one id rather than reading a second segment', () => {
     expect(parseDeepLink('statusky://service/relay%2Fbsky.network')).toEqual({
       kind: 'network',
       serviceId: 'relay/bsky.network'
@@ -184,11 +190,9 @@ describe('watchDeepLinks', () => {
   it('holds a link that arrives before the app can act on it', () => {
     const watcher = watchDeepLinks()
     const prevented = openUrl('statusky://network')
-    const handle = vi.fn()
-
-    expect(handle).not.toHaveBeenCalled()
     expect(prevented).toHaveBeenCalled()
 
+    const handle = vi.fn()
     watcher.route(handle)
 
     expect(handle).toHaveBeenCalledWith('statusky://network')

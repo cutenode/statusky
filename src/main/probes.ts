@@ -12,8 +12,14 @@
  * request through Chromium's network stack (so the system proxy and certificate store
  * apply, exactly as they would to the page in a browser) and lets the tests send them
  * nowhere at all.
+ *
+ * What each service is asked about comes from the sweep's `ProbeTargets`, never from a
+ * constant: those are other people's accounts and documents, and a user can swap them
+ * between sweeps. What the answers are held to, word for word, comes from
+ * `EXPECTED_RESPONSES`. What is left in here is the shape of each conversation.
  */
 import { decode, decodeFirst, toBytes } from '../shared/cbor'
+import { EXPECTED_RESPONSES } from '../shared/expected-responses'
 import {
   AUTHOR_FEED_LIMIT,
   CATALOGUE,
@@ -26,7 +32,7 @@ import {
   humanDuration,
   type ServiceDefinition
 } from '../shared/network'
-import type { ProbeCheck, ProbeCheckKind } from '../shared/types'
+import type { ProbeCheck, ProbeCheckKind, ProbeTargets } from '../shared/types'
 
 /** Listeners are always added with a signal, which is how they are all removed at once. */
 interface ListenerOptions {
@@ -102,6 +108,12 @@ export interface ProbeContext {
   peers: FreshnessPeers
   /** What the last sweep left behind: counters to compare against, and clocks. */
   counters: ProbeCounters
+  /**
+   * What every service in this sweep is asked about. Taken once when the sweep starts,
+   * so a change made mid-sweep cannot leave half the dashboard reading one set of
+   * accounts and half another. See `effectiveProbeTargets`.
+   */
+  targets: ProbeTargets
 }
 
 /**
@@ -475,19 +487,20 @@ export type FirehoseFrame =
  * error; `t` naming the event type) followed by a CBOR body.
  */
 export function readFrame(data: unknown): FirehoseFrame {
+  const { eventOp, errorOp, commitType } = EXPECTED_RESPONSES.firehose
   const bytes = toBytes(data)
   if (!bytes) return { kind: 'invalid' }
   try {
     const [header, rest] = decodeFirst(bytes)
     if (!isObject(header)) return { kind: 'invalid' }
-    if (header.op === -1) {
+    if (header.op === errorOp) {
       const body = decode(rest)
       const error = isObject(body) && typeof body.error === 'string' ? body.error : 'Error'
       const message = isObject(body) && typeof body.message === 'string' ? body.message : null
       return { kind: 'error', message: message ? `${error}: ${message}` : error }
     }
-    if (header.op !== 1) return { kind: 'invalid' }
-    if (header.t !== '#commit') return { kind: 'other' }
+    if (header.op !== eventOp) return { kind: 'invalid' }
+    if (header.t !== commitType) return { kind: 'other' }
     const body = decode(rest)
     return { kind: 'commit', time: isObject(body) ? body.time : undefined }
   } catch {
@@ -646,7 +659,7 @@ const JETSTREAM_WATCH: StreamWatch = {
       return { kind: 'undecodable' }
     }
     if (!isObject(body)) return { kind: 'undecodable' }
-    if (body.kind !== 'commit') return { kind: 'skip' }
+    if (body.kind !== EXPECTED_RESPONSES.jetstream.commitKind) return { kind: 'skip' }
     const us = body.time_us
     if (typeof us !== 'number' || !Number.isFinite(us)) return { kind: 'badtime' }
     return { kind: 'time', at: us / 1000 }
@@ -670,7 +683,8 @@ const SPACEDUST_WATCH: StreamWatch = {
       return { kind: 'undecodable' }
     }
     if (!isObject(body)) return { kind: 'undecodable' }
-    if (body.kind !== 'link' || body.origin !== 'live') return { kind: 'skip' }
+    const { linkKind, liveOrigin } = EXPECTED_RESPONSES.spacedust
+    if (body.kind !== linkKind || body.origin !== liveOrigin) return { kind: 'skip' }
     const rev = isObject(body.link) ? body.link.source_rev : undefined
     if (typeof rev !== 'string') return { kind: 'badtime' }
     const at = tidToMillis(rev)
@@ -789,7 +803,11 @@ function probeRelay(host: string, checks: ProbeCheck[], ctx: ProbeContext): Prom
     'stream'
   )
   return Promise.all([
-    request(ctx, health, (body) => isObject(body) && body.status === 'ok'),
+    request(
+      ctx,
+      health,
+      (body) => isObject(body) && body.status === EXPECTED_RESPONSES.relay.healthStatus
+    ),
     request(ctx, hosts, (body) => isObject(body) && Array.isArray(body.hosts)),
     watchFirehose(ctx, firehose)
   ])
@@ -839,30 +857,41 @@ function probePds(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promis
 }
 
 /** AppViews that answer their health check with an empty object rather than a version. */
-const VERSIONLESS_APPVIEWS: ReadonlySet<string> = new Set([
-  'api.blacksky.community',
-  'appview.wsocial.eu'
-])
+const VERSIONLESS_APPVIEWS: ReadonlySet<string> = new Set(
+  EXPECTED_RESPONSES.appView.versionlessHealth
+)
 
+/**
+ * status.feeds.blue's AppView checks, over one list of accounts rather than three.
+ *
+ * Every account is looked up all three ways — its profile by DID, its handle resolved,
+ * its newest posts — so each is a complete statement about one identity. The handle has
+ * to resolve to exactly the DID it is listed with: an AppView that answers a handle
+ * with *a* DID, just not that person's, is as broken as one that answers with none, and
+ * knowing both halves of each identity is what makes that checkable. The checks are
+ * still filed kind by kind, so the dashboard reads as it always has.
+ */
 function probeAppView(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
+  const { accounts } = ctx.targets
   const health = addCheck(checks, ctx, '_health', xrpc(host, '_health'))
-  const profiles = CATALOGUE.profileDids.map((actor) =>
-    addCheck(checks, ctx, 'getProfile', xrpc(host, 'app.bsky.actor.getProfile', { actor }))
+  const profiles = accounts.map(({ did }) =>
+    addCheck(checks, ctx, 'getProfile', xrpc(host, 'app.bsky.actor.getProfile', { actor: did }))
   )
-  const handles = CATALOGUE.handles.map((handle) =>
-    addCheck(
+  const handles = accounts.map((account) => ({
+    account,
+    check: addCheck(
       checks,
       ctx,
       'resolveHandle',
-      xrpc(host, 'com.atproto.identity.resolveHandle', { handle })
+      xrpc(host, 'com.atproto.identity.resolveHandle', { handle: account.handle })
     )
-  )
-  const feeds = CATALOGUE.authorFeedDids.map((actor) =>
+  }))
+  const feeds = accounts.map(({ did }) =>
     addCheck(
       checks,
       ctx,
       'getAuthorFeed',
-      xrpc(host, 'app.bsky.feed.getAuthorFeed', { actor, limit: AUTHOR_FEED_LIMIT })
+      xrpc(host, 'app.bsky.feed.getAuthorFeed', { actor: did, limit: AUTHOR_FEED_LIMIT })
     )
   )
   const freshness = addCheck(checks, ctx, 'newest post', null, 'derived')
@@ -896,13 +925,27 @@ function probeAppView(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
         : isObject(body) && typeof body.version === 'string'
     ),
     ...profiles.map((check) => request(ctx, check, hasDid)),
-    ...handles.map((check) => request(ctx, check, hasDid)),
+    ...handles.map(({ account, check }) =>
+      request(ctx, check, (body) => {
+        const did = field(body, 'did')
+        // No DID at all is a malformed answer; somebody else's is a wrong one.
+        if (typeof did !== 'string') return false
+        return did === account.did || 'Resolved to the wrong DID'
+      })
+    ),
     judgeFreshness()
   ])
 }
 
 function probeFeed(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
-  const feed = CATALOGUE.feeds.find((entry) => entry.host === host)!
+  const feed = ctx.targets.feeds.find((entry) => entry.host === host)
+  if (!feed) {
+    // The monitor builds the feed rows from these same targets, so this is a row outliving
+    // its feed: say so on the row rather than asking the host about nothing.
+    const check = addCheck(checks, ctx, 'getFeedSkeleton', null)
+    check.fail('No feed is listed for this host', { timed: false })
+    return Promise.resolve()
+  }
   const check = addCheck(
     checks,
     ctx,
@@ -956,7 +999,7 @@ function probeConstellation(
 
 function probeCdn(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
   return Promise.all(
-    CATALOGUE.cdnImages.map(({ did, cid }) => {
+    ctx.targets.cdnImages.map(({ did, cid }) => {
       const check = addCheck(
         checks,
         ctx,
@@ -980,7 +1023,9 @@ function probeInternet(id: string, checks: ProbeCheck[], ctx: ProbeContext): Pro
       return request(
         ctx,
         check,
-        (body) => isObject(body) && (Array.isArray(body.Answer) || body.Status === 0),
+        (body) =>
+          isObject(body) &&
+          (Array.isArray(body.Answer) || body.Status === EXPECTED_RESPONSES.dns.noError),
         { headers: { Accept: 'application/dns-json' } }
       )
     default:
@@ -1007,7 +1052,7 @@ function probeJetstream(host: string, checks: ProbeCheck[], ctx: ProbeContext): 
       ctx,
       banner,
       (body) =>
-        (typeof body === 'string' && body.trim() === 'Welcome to Jetstream') ||
+        (typeof body === 'string' && body.trim() === EXPECTED_RESPONSES.jetstream.greeting) ||
         'Unexpected greeting',
       { as: 'text' }
     ),
@@ -1022,19 +1067,20 @@ function probeSpacedust(host: string, checks: ProbeCheck[], ctx: ProbeContext): 
   // would read as an outage.
   const target =
     `wss://${host}/subscribe` +
-    `?wantedSources=${encodeURIComponent(CATALOGUE.microcosm.spacedustSource)}&instant=true`
+    `?wantedSources=${encodeURIComponent(EXPECTED_RESPONSES.spacedust.source)}&instant=true`
   return watchStream(ctx, addCheck(checks, ctx, 'subscribe', target, 'stream'), SPACEDUST_WATCH)
 }
 
 // ------------------------------------------------------------------ microcosm
 
 function probeUfos(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
+  const { statsCollection } = EXPECTED_RESPONSES.ufos
   const meta = addCheck(checks, ctx, 'meta', http(host, '/meta'))
   const stats = addCheck(
     checks,
     ctx,
     'collections/stats',
-    http(host, '/collections/stats?collection=app.bsky.feed.post')
+    http(host, `/collections/stats?collection=${encodeURIComponent(statsCollection)}`)
   )
   const lag = addCheck(checks, ctx, 'index lag', null, 'derived')
 
@@ -1056,13 +1102,14 @@ function probeUfos(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promi
     request(
       ctx,
       stats,
-      (b) => numberField(b, 'app.bsky.feed.post', 'creates') !== null || 'No collection stats'
+      (b) => numberField(b, statsCollection, 'creates') !== null || 'No collection stats'
     )
   ])
 }
 
 function probeSlingshot(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
   const { handle, did } = CATALOGUE.anchor
+  const { profileType } = EXPECTED_RESPONSES.slingshot
   const resolve = addCheck(
     checks,
     ctx,
@@ -1073,11 +1120,7 @@ function probeSlingshot(host: string, checks: ProbeCheck[], ctx: ProbeContext): 
     checks,
     ctx,
     'getRecord',
-    xrpc(host, 'com.atproto.repo.getRecord', {
-      repo: did,
-      collection: 'app.bsky.actor.profile',
-      rkey: 'self'
-    })
+    xrpc(host, 'com.atproto.repo.getRecord', { repo: did, collection: profileType, rkey: 'self' })
   )
   const mini = addCheck(
     checks,
@@ -1094,8 +1137,7 @@ function probeSlingshot(host: string, checks: ProbeCheck[], ctx: ProbeContext): 
       ctx,
       record,
       (b) =>
-        (field(b, 'value', '$type') === 'app.bsky.actor.profile' &&
-          typeof field(b, 'cid') === 'string') ||
+        (field(b, 'value', '$type') === profileType && typeof field(b, 'cid') === 'string') ||
         'Record was not a profile'
     ),
     request(
@@ -1125,7 +1167,9 @@ function probeSlingshot(host: string, checks: ProbeCheck[], ctx: ProbeContext): 
  * front door, what the proxy makes of the request, and what Bluesky makes of the lot.
  */
 function probeForYou(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
-  const { did, feed, siteMarker, busy, appView } = CATALOGUE.forYou
+  const { did, feed } = ctx.targets.forYou
+  const { appView } = CATALOGUE.forYou
+  const { siteMarker, busy, generatorServiceType } = EXPECTED_RESPONSES.forYou
 
   // A `did:web` is only as good as the document at the other end of it, and this one is
   // read by every AppView serving the feed before it calls the generator at all.
@@ -1149,7 +1193,7 @@ function probeForYou(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pro
       if (field(body, 'id') !== did) return 'DID document names a different DID'
       const services = field(body, 'service')
       const generatorService = Array.isArray(services)
-        ? services.find((entry) => field(entry, 'type') === 'BskyFeedGenerator')
+        ? services.find((entry) => field(entry, 'type') === generatorServiceType)
         : undefined
       return (
         field(generatorService, 'serviceEndpoint') === `https://${host}` ||
@@ -1196,7 +1240,16 @@ function probeTangledAppview(
   checks: ProbeCheck[],
   ctx: ProbeContext
 ): Promise<unknown> {
-  const { goGetPath, repoPath, repoTitle } = CATALOGUE.tangled
+  const { goGetPath, repoPath } = ctx.targets.tangled
+  const { goImportMarker, notFoundTitle } = EXPECTED_RESPONSES.tangled
+  // What the repository page titles itself, which is its path without the leading slash —
+  // `tangled.org/core` for `/tangled.org/core` — and what the go-import meta names too.
+  // Derived rather than listed beside the path, so the two can never disagree; the schema
+  // holds the path to the `/<handle>/<name>` form, since a DID or `@` path redirects to
+  // the handle one. Only the name is matched, not the whole title: the separator after it
+  // is served as the entity `&middot;` rather than the character, and a check has no
+  // business knowing which.
+  const repoTitle = repoPath.slice(1)
   const goGet = addCheck(checks, ctx, 'go-get', http(host, goGetPath))
   const page = addCheck(checks, ctx, 'repo page', http(host, repoPath))
   // The appview serves HTML and nothing else — there is no `/xrpc` mount on it at all —
@@ -1208,7 +1261,7 @@ function probeTangledAppview(
       ctx,
       goGet,
       (body) =>
-        typeof body === 'string' && body.includes('go-import') && body.includes(repoPath.slice(1))
+        typeof body === 'string' && body.includes(goImportMarker) && body.includes(repoTitle)
           ? true
           : 'Unexpected go-import meta',
       { as: 'text' }
@@ -1221,7 +1274,7 @@ function probeTangledAppview(
         const title = /<title>([^<]*)<\/title>/.exec(body)?.[1]
         if (title === undefined) return 'Page carried no title'
         if (title.includes(repoTitle)) return true
-        return title.includes('404') ? 'Repository did not resolve' : 'Unexpected page'
+        return title.includes(notFoundTitle) ? 'Repository did not resolve' : 'Unexpected page'
       },
       { as: 'text' }
     )
@@ -1229,7 +1282,8 @@ function probeTangledAppview(
 }
 
 function probeBobbin(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
-  const { repoDid, knots } = CATALOGUE.tangled
+  const { repoDid } = ctx.targets.tangled
+  const { knots } = CATALOGUE.tangled
   const coverage = addCheck(checks, ctx, 'getCoverage', xrpc(host, 'sh.tangled.bobbin.getCoverage'))
   const lookup = addCheck(
     checks,
@@ -1266,11 +1320,12 @@ function probeHydrant(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
   // Bobbin's upstream. Worth its own row because it is what tells "the index has
   // stalled" apart from "the thing feeding the index has died".
   const health = addCheck(checks, ctx, 'health', http(host, '/health'))
+  const { name, mode } = EXPECTED_RESPONSES.hydrant
   return request(
     ctx,
     health,
     (body) =>
-      (field(body, 'name') === 'hydrant' && field(body, 'mode') === 'indexer') ||
+      (field(body, 'name') === name && field(body, 'mode') === mode) ||
       'Upstream did not identify itself'
   )
 }
@@ -1301,7 +1356,12 @@ async function probeKnot(host: string, checks: ProbeCheck[], ctx: ProbeContext):
   // themselves are not comparable between knots: knot 2 hardcodes `v1.15.0` on this
   // route while reporting its real build on `_health`.
   const capabilities = field(body, 'capabilities')
-  if (!Array.isArray(capabilities) || !capabilities.includes('repo-did-input')) return
+  if (
+    !Array.isArray(capabilities) ||
+    !capabilities.includes(EXPECTED_RESPONSES.knot.healthCapability)
+  ) {
+    return
+  }
 
   const health = addCheck(checks, ctx, '_health', xrpc(host, '_health'))
   const repos = addCheck(
@@ -1327,11 +1387,17 @@ function probeSpindle(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
   const health = addCheck(checks, ctx, '_health', http(host, '/_health'))
   const owner = addCheck(checks, ctx, 'owner', xrpc(host, 'sh.tangled.owner'))
   return Promise.all([
-    request(ctx, health, (b) => field(b, 'status') === 'ok' || 'Unexpected health response'),
+    request(
+      ctx,
+      health,
+      (b) =>
+        field(b, 'status') === EXPECTED_RESPONSES.spindle.healthStatus ||
+        'Unexpected health response'
+    ),
     request(
       ctx,
       owner,
-      (b) => field(b, 'owner') === CATALOGUE.tangled.ownerDid || 'Unexpected owner DID'
+      (b) => field(b, 'owner') === ctx.targets.tangled.ownerDid || 'Unexpected owner DID'
     )
   ])
 }
@@ -1351,7 +1417,9 @@ function probePckt(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promi
   // jobs, nine queue depths and the jetstream cursor. Everything below reads that one
   // response. Note `uptime.seconds` resets on every deploy, so nothing judges it.
   return request(ctx, up, (body) => {
-    if (field(body, 'status') !== 'ok') return 'Application reports it is not ok'
+    if (field(body, 'status') !== EXPECTED_RESPONSES.pckt.status) {
+      return 'Application reports it is not ok'
+    }
     if (field(body, 'checks', 'database') !== true) return 'Database is unreachable'
     if (field(body, 'checks', 'cache') !== true) return 'Cache is unreachable'
     if (field(body, 'typesense') !== true) return 'Search index is unreachable'
@@ -1415,13 +1483,15 @@ function feedUpdatedAt(body: unknown): number | null {
 }
 
 function probeLeaflet(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
-  const { publication, feed, query } = CATALOGUE.apps.leaflet
-  const expected = `at://${publication.did}/site.standard.publication/${publication.rkey}`
+  const { publication, feed } = ctx.targets.apps.leaflet
+  const { query } = CATALOGUE.apps.leaflet
+  const collection = EXPECTED_RESPONSES.standardSite.publicationCollection
+  const expected = `at://${publication.did}/${collection}/${publication.rkey}`
   const lookup = addCheck(
     checks,
     ctx,
     'publication',
-    http(host, `/lish/${publication.did}/${publication.rkey}/.well-known/site.standard.publication`)
+    http(host, `/lish/${publication.did}/${publication.rkey}/.well-known/${collection}`)
   )
   const search = addCheck(checks, ctx, 'search', http(host, '/api/rpc/search_publication_names'))
 
@@ -1478,13 +1548,16 @@ function probeLeaflet(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
 }
 
 function probeOffprint(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
-  const { publicationHost, publication } = CATALOGUE.apps.offprint
+  const { publicationHost } = CATALOGUE.apps.offprint
+  const { publication } = ctx.targets.apps.offprint
+  const { upMarker } = EXPECTED_RESPONSES.offprint
+  const collection = EXPECTED_RESPONSES.standardSite.publicationCollection
   const up = addCheck(checks, ctx, 'up', http(host, '/up'))
   const lookup = addCheck(
     checks,
     ctx,
     'publication',
-    http(publicationHost, '/.well-known/site.standard.publication')
+    http(publicationHost, `/.well-known/${collection}`)
   )
 
   const work: Promise<unknown>[] = [
@@ -1493,8 +1566,7 @@ function probeOffprint(host: string, checks: ProbeCheck[], ctx: ProbeContext): P
     request(
       ctx,
       up,
-      (body) =>
-        (typeof body === 'string' && body.includes('Application up')) || 'Application is not up',
+      (body) => (typeof body === 'string' && body.includes(upMarker)) || 'Application is not up',
       { as: 'text' }
     ),
     // Resolves a custom-domain mapping out of the database: a subdomain it does not know

@@ -223,13 +223,17 @@ describe('when the network goes down and comes back', () => {
 
     expect(container.textContent).toContain('Refresh failed')
     expect(container.textContent).toContain('@status.bsky.app: offline')
+    // A failed refresh is about this app's polling, not about the network: the incident
+    // the accounts last reported stays the headline throughout.
+    expect(getByRole('heading', { level: 1 }).textContent).toContain('Active incident')
 
     await pushState(bridge, {
       sync: { status: 'idle', lastSyncedAt: '2026-01-03T10:10:00Z', error: null }
     })
 
     expect(container.textContent).not.toContain('Refresh failed')
-    expect(getByRole('heading', { level: 1 })).toBeTruthy()
+    expect(container.textContent).not.toContain('@status.bsky.app: offline')
+    expect(getByRole('heading', { level: 1 }).textContent).toContain('Active incident')
   })
 })
 

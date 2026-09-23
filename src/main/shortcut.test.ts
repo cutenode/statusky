@@ -84,11 +84,13 @@ describe('releaseGlobalShortcut', () => {
    * applications until the user logs out.
    */
   it('hands back whatever is held', () => {
-    applyGlobalShortcut(COMBINATION, vi.fn())
+    const summon = vi.fn()
+    applyGlobalShortcut(COMBINATION, summon)
 
     releaseGlobalShortcut()
 
     expect(globalShortcut.registrations.size).toBe(0)
-    expect(globalShortcut.unregisterAll).toHaveBeenCalled()
+    expect(globalShortcut.press(COMBINATION)).toBe(false)
+    expect(summon).not.toHaveBeenCalled()
   })
 })

@@ -1,5 +1,5 @@
 import { basename, dirname, resolve } from 'node:path'
-import { describe, expect, it, vi, type Mock } from 'vitest'
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { app } from '../test/electron'
 import { withPlatform } from '../test/harness'
 import { handleSquirrelEvent } from './squirrel'
@@ -24,19 +24,24 @@ const UPDATE_EXE = resolve(dirname(process.execPath), '..', 'Update.exe')
 const TARGET = basename(process.execPath)
 
 function run(event: string): Promise<boolean> {
-  spawned.mockClear()
   return withPlatform('win32', () => handleSquirrelEvent(['Statusky.exe', event]))
 }
 
+// The module mock outlives each test, and `resetElectron` knows nothing about it.
+beforeEach(() => {
+  spawned.mockClear()
+})
+
 describe('handleSquirrelEvent', () => {
   it('does nothing at all away from Windows', async () => {
-    const handled = await Promise.all(
-      (['darwin', 'linux'] as const).map((platform) =>
-        withPlatform(platform, () => handleSquirrelEvent(['Statusky', '--squirrel-install']))
-      )
-    )
+    const argv = ['Statusky', '--squirrel-install']
 
-    expect(handled).toEqual([false, false])
+    // One platform at a time, never under `Promise.all`: `withPlatform` puts back whatever
+    // `process.platform` was when it started, so two overlapping calls restore each
+    // other's pin rather than the host's, and the rest of the file runs on the wrong one.
+    expect(await withPlatform('darwin', () => handleSquirrelEvent(argv))).toBe(false)
+    expect(await withPlatform('linux', () => handleSquirrelEvent(argv))).toBe(false)
+
     expect(spawned).not.toHaveBeenCalled()
   })
 

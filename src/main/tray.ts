@@ -2,8 +2,15 @@ import { join } from 'node:path'
 import { Menu, Tray, app, nativeImage, shell } from 'electron'
 import { LATEST_RELEASE_URL } from '../shared/defaults'
 import { reportHeadline } from '../shared/network'
+import { formatClock, SNOOZE_CHOICES, snoozedUntil, type SnoozeChoice } from '../shared/notify'
 import type { Health } from '../shared/status'
-import type { AppState, NetworkSummary, TrayUnreadStyle, UpdateStatus } from '../shared/types'
+import type {
+  AppState,
+  NetworkSummary,
+  Settings,
+  TrayUnreadStyle,
+  UpdateStatus
+} from '../shared/types'
 import { restartToUpdate } from './update'
 import type { PopoverWindow } from './window'
 
@@ -140,6 +147,8 @@ export interface TrayDeps {
   onShowNetwork(): void
   /** Text was dragged onto the icon and let go: a handle, a DID or a profile link. */
   onDropText(text: string): void
+  /** Hold banners for a while, or stop holding them when `choice` is null. */
+  onSnooze(choice: SnoozeChoice | null): void
   onQuit(): void
 }
 
@@ -157,6 +166,11 @@ export class TrayController {
   private titleBeforeDrag = ''
   /** Whether network checks are on, so the menu can offer to run them. */
   private networkChecks = true
+  /** Whether banners are on at all, and until when they are snoozed. */
+  private notifications: Pick<Settings, 'notificationsEnabled' | 'notificationsSnoozedUntil'> = {
+    notificationsEnabled: true,
+    notificationsSnoozedUntil: null
+  }
   /**
    * Whether there is a newer Statusky, which the menu offers to do something about.
    *
@@ -279,17 +293,23 @@ export class TrayController {
     // than any claim's window, so the icon stands down within one refresh of going stale.
     const { health, label } = reportHeadline(state.accounts, state.posts, state.network, Date.now())
 
-    // `buildMenu` reads `networkChecks` and `update` and nothing else, so that is the
+    // `buildMenu` reads `networkChecks`, `update` and the snooze and nothing else, so that is the
     // whole of the menu's dependence on state — and on Linux the menu is set once rather
     // than built per right-click, so it goes stale unless it is rebuilt when either
     // moves. Anything `buildMenu` starts reading later has to be compared here too.
     if (
       state.settings.networkChecks !== this.networkChecks ||
       state.update.stage !== this.updateStatus.stage ||
-      state.update.version !== this.updateStatus.version
+      state.update.version !== this.updateStatus.version ||
+      state.settings.notificationsEnabled !== this.notifications.notificationsEnabled ||
+      state.settings.notificationsSnoozedUntil !== this.notifications.notificationsSnoozedUntil
     ) {
       this.networkChecks = state.settings.networkChecks
       this.updateStatus = state.update
+      this.notifications = {
+        notificationsEnabled: state.settings.notificationsEnabled,
+        notificationsSnoozedUntil: state.settings.notificationsSnoozedUntil
+      }
       this.syncContextMenu(tray)
     }
 
@@ -433,6 +453,37 @@ export class TrayController {
     }
   }
 
+  /**
+   * Pausing banners, which belongs here because the moment somebody wants it — a call
+   * starting, a screen about to be shared — is not a moment to open Settings.
+   *
+   * Nothing is offered while banners are off altogether, since there is nothing to pause.
+   * The label on a paused menu says until when, and is read when the menu is built: a
+   * snooze that has run out reads as over even if nothing has rebuilt the menu yet.
+   */
+  private snoozeItems(): Electron.MenuItemConstructorOptions[] {
+    if (!this.notifications.notificationsEnabled) return []
+    const now = new Date()
+    const until = snoozedUntil(this.notifications, now)
+    if (until) {
+      return [
+        {
+          label: `Resume notifications (paused until ${formatClock(until, now)})`,
+          click: () => this.deps.onSnooze(null)
+        }
+      ]
+    }
+    return [
+      {
+        label: 'Pause notifications',
+        submenu: SNOOZE_CHOICES.map((choice) => ({
+          label: choice.label,
+          click: () => this.deps.onSnooze(choice.value)
+        }))
+      }
+    ]
+  }
+
   private buildMenu(): Electron.Menu {
     return Menu.buildFromTemplate([
       {
@@ -447,6 +498,7 @@ export class TrayController {
         click: () => this.deps.onRunNetworkChecks()
       },
       { label: 'Mark all as read', click: () => this.deps.onMarkAllRead() },
+      ...this.snoozeItems(),
       { type: 'separator' },
       { label: 'Show network status', click: () => this.deps.onShowNetwork() },
       { type: 'separator' },

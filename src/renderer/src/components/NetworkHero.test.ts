@@ -185,10 +185,11 @@ describe('a machine the schedule is staying out of the way of', () => {
   })
 
   it('says nothing when the schedule is doing exactly what it was told', async () => {
-    const { container } = await hero({
+    const { getByText } = await hero({
       snapshot: makeSnapshot({ finishedAt: FINISHED, services: [relay()] })
     })
-    expect(container.textContent).not.toContain('battery')
+    // The whole line, so neither a reason nor a dangling separator can be hiding in it.
+    expect(getByText('Checked 2 minutes ago')).toBeTruthy()
   })
 })
 
@@ -210,10 +211,13 @@ describe('switched off', () => {
 describe('actions', () => {
   // Measuring again lives in the header, which means exactly that on this tab.
   it('leaves the sweep to the header', async () => {
-    const { container } = await hero({
+    const { getAllByRole } = await hero({
       snapshot: makeSnapshot({ finishedAt: FINISHED, services: [relay()] })
     })
-    expect(container.querySelector('button[aria-label="Check now"]')).toBeNull()
+    // The group chips are the only controls: nothing here measures again.
+    expect(getAllByRole('button').map((b) => b.textContent!.replace(/\s+/g, ' ').trim())).toEqual([
+      'Relays 1/1'
+    ])
   })
 
   it('tallies each Atmosphere group, and jumps to it', async () => {

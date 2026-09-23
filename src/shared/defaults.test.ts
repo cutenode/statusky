@@ -4,14 +4,23 @@ import {
   DEFAULT_SETTINGS,
   formatAccelerator,
   GLOBAL_SHORTCUT_CHOICES,
+  MARK_READ_CHOICES,
   MAX_STORED_POSTS,
+  NETWORK_INTERVAL_CHOICES,
   POLL_INTERVAL_CHOICES,
-  PUBLIC_APPVIEW
+  PUBLIC_APPVIEW,
+  TRAY_UNREAD_STYLE_CHOICES
 } from './defaults'
+import { AWAY_CHOICES, GRACE_CHOICES, PROBE_SCOPE_CHOICES, SOUND_CHOICES } from './notify'
 
 /** The clamps `sanitizeSettings` applies, restated here so `shared` stays standalone. */
 const POLL_RANGE = [15, 3600] as const
 const POSTS_RANGE = [5, 100] as const
+
+/** Assert that `value` is one of the options a Settings control offers. */
+function offered<T>(choices: readonly { value: T }[], value: T): void {
+  expect(choices.map((c) => c.value)).toContain(value)
+}
 
 describe('BUILTIN_ACCOUNTS', () => {
   it('ships the two documented status accounts', () => {
@@ -36,7 +45,7 @@ describe('BUILTIN_ACCOUNTS', () => {
     for (const account of BUILTIN_ACCOUNTS) {
       expect(account.builtin).toBe(true)
       expect(account.muted).toBe(false)
-      expect(account.notify).toBe(true)
+      expect(account.notify).toBe('default')
     }
   })
 
@@ -69,8 +78,16 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS.launchAtLogin).toBe(false)
   })
 
-  it('is the default poll interval offered in the UI', () => {
-    expect(POLL_INTERVAL_CHOICES.map((c) => c.value)).toContain(DEFAULT_SETTINGS.pollIntervalSec)
+  /** A default that is not among a control's own options renders as a blank control. */
+  it('starts every choice the Settings panel offers on one of its options', () => {
+    offered(POLL_INTERVAL_CHOICES, DEFAULT_SETTINGS.pollIntervalSec)
+    offered(NETWORK_INTERVAL_CHOICES, DEFAULT_SETTINGS.networkIntervalSec)
+    offered(TRAY_UNREAD_STYLE_CHOICES, DEFAULT_SETTINGS.trayUnreadStyle)
+    offered(MARK_READ_CHOICES, DEFAULT_SETTINGS.markReadOn)
+    offered(SOUND_CHOICES, DEFAULT_SETTINGS.notificationSound)
+    offered(AWAY_CHOICES, DEFAULT_SETTINGS.notifyWhenAway)
+    offered(PROBE_SCOPE_CHOICES, DEFAULT_SETTINGS.notifyProbeScope)
+    offered(GRACE_CHOICES, DEFAULT_SETTINGS.notifyProbeGraceSec)
   })
 
   /**
@@ -122,7 +139,7 @@ describe('formatAccelerator', () => {
     expect(formatAccelerator('', 'darwin')).toBe('Off')
   })
 
-  it('passes a modifier it has no symbol for through unchanged', () => {
+  it('spells the rarer modifiers too, and leaves the key itself as it is', () => {
     expect(formatAccelerator('Ctrl+F13', 'darwin')).toBe('⌃F13')
     expect(formatAccelerator('Super+K', 'win32')).toBe('Win+K')
   })
@@ -157,5 +174,12 @@ describe('constants', () => {
   it('reads from the public, unauthenticated AppView over https', () => {
     expect(new URL(PUBLIC_APPVIEW).protocol).toBe('https:')
     expect(PUBLIC_APPVIEW).toBe('https://public.api.bsky.app')
+  })
+})
+
+describe('DEFAULT_SETTINGS.probeTargets', () => {
+  /** None, so a fresh install follows `probeTargets.json` — and whatever later releases ship. */
+  it('overrides nothing out of the box', () => {
+    expect(DEFAULT_SETTINGS.probeTargets).toBeNull()
   })
 })

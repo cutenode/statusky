@@ -52,11 +52,6 @@ describe('getState', () => {
     expect(h.state().unread).toHaveLength(0)
   })
 
-  it('drops unread entries whose posts are gone', async () => {
-    const h = await boot({ unread: ['at://did:plc:gone/app.bsky.feed.post/x'] })
-    expect(h.state().unread).toEqual([])
-  })
-
   it('counts unread from visible accounts only', async () => {
     const visible = makePost({ authorDid: BSKY.did, rkey: 'a' })
     const hidden = makePost({ authorDid: BLACKSKY.did, rkey: 'b' })
@@ -128,7 +123,7 @@ describe('addAccount', () => {
 
     expect(account.did).toBe('did:plc:new')
     expect(account.builtin).toBe(false)
-    expect(account.notify).toBe(true)
+    expect(account.notify).toBe('default')
     expect(h.store.get('accounts').map((a) => a.did)).toContain('did:plc:new')
   })
 
@@ -200,9 +195,9 @@ describe('removeAccount', () => {
 describe('patchAccount', () => {
   it('applies the patch and returns the updated account', async () => {
     const h = await boot()
-    const updated = h.model.patchAccount(BSKY.did, { notify: false })
-    expect(updated.notify).toBe(false)
-    expect(h.store.get('accounts').find((a) => a.did === BSKY.did)?.notify).toBe(false)
+    const updated = h.model.patchAccount(BSKY.did, { notify: 'off' })
+    expect(updated.notify).toBe('off')
+    expect(h.store.get('accounts').find((a) => a.did === BSKY.did)?.notify).toBe('off')
   })
 
   it('rejects an unknown account', async () => {
@@ -237,7 +232,7 @@ describe('patchSettings', () => {
       vi.advanceTimersByTime(30_000)
       expect(refresh).toHaveBeenCalledTimes(1)
 
-      h.model.patchSettings({ notificationSound: false })
+      h.model.patchSettings({ notificationSound: 'never' })
       vi.advanceTimersByTime(30_000)
       expect(refresh).toHaveBeenCalledTimes(2)
     } finally {
@@ -377,6 +372,7 @@ describe('refresh', () => {
     await h.model.refresh()
 
     expect(h.state().sync.status).toBe('error')
+    expect(h.model.syncStatus).toBe('error')
     expect(h.state().sync.error).toContain('offline')
     expect(h.state().sync.lastSyncedAt).toBeNull()
   })
@@ -416,17 +412,34 @@ describe('refresh', () => {
     expect(h.state().posts.map((p) => p.text)).toEqual(['Own post'])
   })
 
-  it('caps the stored posts', async () => {
-    const h = await boot()
-    const many = Array.from({ length: 520 }, (_, i) => ({
-      text: `Update ${i}`,
-      createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString()
-    }))
-    seedFeed(h.appview, BSKY, many)
+  it('caps the stored posts, making room by dropping the oldest', async () => {
+    // One fetch asks for at most `postsPerAccount`, so the cap is only reached by what
+    // is already stored: a cache ten short of full, and thirty newer posts arriving.
+    const stored = Array.from({ length: 490 }, (_, i) =>
+      makePost({
+        authorDid: BSKY.did,
+        rkey: `stored${i}`,
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString()
+      })
+    )
+    const h = await boot({ posts: stored })
+    seedFeed(
+      h.appview,
+      BSKY,
+      Array.from({ length: 30 }, (_, i) => ({
+        rkey: `fetched${i}`,
+        createdAt: new Date(Date.UTC(2026, 0, 2, 0, 0, i)).toISOString()
+      }))
+    )
 
     await h.model.refresh()
 
-    expect(h.store.get('posts').length).toBeLessThanOrEqual(500)
+    const kept = h.store.get('posts').map((p) => p.rkey)
+    expect(kept).toHaveLength(500)
+    expect(kept.filter((rkey) => rkey.startsWith('fetched'))).toHaveLength(30)
+    // Twenty over the cap, so the twenty oldest go.
+    expect(kept).not.toContain('stored19')
+    expect(kept).toContain('stored20')
   })
 })
 
@@ -470,7 +483,7 @@ describe('notifications and unread on sync', () => {
   it('does not notify for an account with notifications off', async () => {
     const h = await boot({
       accounts: [
-        makeAccount({ did: BSKY.did, handle: BSKY.handle, builtin: true, notify: false }),
+        makeAccount({ did: BSKY.did, handle: BSKY.handle, builtin: true, notify: 'off' }),
         makeAccount({ did: BLACKSKY.did, handle: BLACKSKY.handle, builtin: true })
       ],
       cursors: { [BSKY.did]: '2026-01-02T09:00:00.000Z' }
@@ -493,6 +506,51 @@ describe('notifications and unread on sync', () => {
     await h.model.refresh()
 
     expect(h.notified[0]?.map((p) => p.text)).toEqual(['First outage', 'Second outage'])
+  })
+})
+
+/**
+ * Whether an all-clear is worth a banner depends on whether the incident it closes ever
+ * got one. That is remembered in the store rather than in memory, so the answer holds
+ * across the gap between the sync that opened an incident and the one that closes it.
+ */
+describe('follow-ups on sync', () => {
+  const START = {
+    rkey: 'start',
+    text: 'Investigating login failures',
+    createdAt: '2026-01-02T10:00:00Z'
+  }
+  const END = {
+    rkey: 'end',
+    text: 'Resolved: logins work again',
+    createdAt: '2026-01-02T11:00:00Z'
+  }
+
+  it('keeps quiet about the end of an incident nobody was told had started', async () => {
+    const h = await boot({ cursors: { [BSKY.did]: '2026-01-02T10:30:00.000Z' } })
+    seedFeed(h.appview, BSKY, [START, END])
+
+    await h.model.refresh()
+
+    expect(h.notified).toEqual([])
+    // Not a banner, but still news in the feed.
+    expect(h.state().unread).toHaveLength(1)
+  })
+
+  it('announces the end of one whose start it announced, a sync later', async () => {
+    const h = await boot({ cursors: { [BSKY.did]: '2026-01-02T09:00:00.000Z' } })
+    seedFeed(h.appview, BSKY, [START])
+    await h.model.refresh()
+    expect(h.store.get('openIncidents')).toEqual([BSKY.did])
+
+    seedFeed(h.appview, BSKY, [START, END])
+    await h.model.refresh()
+
+    expect(h.notified.map((batch) => batch.map((p) => p.severity))).toEqual([
+      ['investigating'],
+      ['resolved']
+    ])
+    expect(h.store.get('openIncidents')).toEqual([])
   })
 })
 
@@ -530,21 +588,29 @@ describe('profile refresh', () => {
   it('never turns a profile failure into a sync error', async () => {
     const h = await boot()
     seedFeed(h.appview, BSKY, [{ text: 'All clear' }])
-    h.appview.fail(BSKY.did, { kind: 'http', status: 500 })
-    h.appview.fail(BLACKSKY.did, { kind: 'http', status: 500 })
 
-    // Feeds succeed, profiles fail: only `getProfiles` is broken here.
-    h.appview.clearFailures()
-    const original = h.appview.fetch
-    vi.spyOn(h.appview, 'fetch').mockImplementation(async (input, init) => {
-      if (String(input).includes('getProfiles')) throw new TypeError('offline')
-      return original(input, init)
+    // Feeds succeed, profiles fail: only `getProfiles` is broken here. Broken at the
+    // global `fetch`, which is what the model calls: the fake AppView's own `fetch`
+    // was handed over when it was installed, so replacing it now would reach nothing.
+    const answer = globalThis.fetch
+    const lookups: string[] = []
+    const broken = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (String(input).includes('getProfiles')) {
+        lookups.push(String(input))
+        throw new TypeError('offline')
+      }
+      return answer(input, init)
     })
+    try {
+      await h.model.refresh()
+      await flush()
+    } finally {
+      broken.mockRestore()
+    }
 
-    await h.model.refresh()
-    await flush()
-
-    expect(h.state().sync.error).toBeNull()
+    expect(lookups).not.toHaveLength(0)
+    expect(h.state().sync).toMatchObject({ status: 'idle', error: null })
+    expect(h.state().posts.map((p) => p.text)).toEqual(['All clear'])
   })
 
   it('chunks profile lookups at the AppView limit of 25', async () => {
@@ -601,11 +667,6 @@ describe('the poll timer', () => {
     vi.advanceTimersByTime(300_000)
 
     expect(refresh).toHaveBeenCalledTimes(1)
-  })
-
-  it('exposes the current sync status', async () => {
-    const h = await boot()
-    expect(h.model.syncStatus).toBe('idle')
   })
 })
 

@@ -94,6 +94,9 @@ async function boot({ prepare, seed }: BootOptions = {}): Promise<Booted> {
 afterEach(() => {
   booted?.dispose()
   booted = null
+  // Console spies are restored in the tests that make them, but only on the way out of a
+  // test that passed; one that failed first must not silence the rest of the file.
+  vi.restoreAllMocks()
 })
 
 describe('single instance', () => {
@@ -136,7 +139,7 @@ describe('bootstrap', () => {
 
     // One handler per non-event method in schemas/statusky.eipc, all bound to the
     // popover's own WebContents rather than registered globally.
-    expect(window.webContents.ipc.handlers.size).toBe(22)
+    expect(window.webContents.ipc.handlers.size).toBe(24)
     expect(electron.ipcMain.handlers.size).toBe(0)
   })
 
@@ -173,9 +176,14 @@ describe('bootstrap', () => {
     ])
   })
 
-  it('starts polling, and fetches once on launch', async () => {
+  it('fetches every built-in source once on launch', async () => {
     const { appview } = await boot()
-    expect(appview.requestsFor('app.bsky.feed.getAuthorFeed').length).toBeGreaterThan(0)
+    const { BUILTIN_PROFILES } = await import('../test/harness')
+
+    const actors = appview.requestsFor('app.bsky.feed.getAuthorFeed').map((r) => r.actor)
+    expect(actors.toSorted()).toEqual(
+      [BUILTIN_PROFILES.bsky.did, BUILTIN_PROFILES.blacksky.did].toSorted()
+    )
   })
 
   it('applies the persisted theme to the native theme source on launch', async () => {
@@ -332,23 +340,28 @@ describe('IPC wiring mismatch', () => {
 
 describe('state changes', () => {
   it('pushes state to the renderer and updates the tray', async () => {
-    const { electron, api } = await boot()
+    const session = await boot({ seed: AWAY_SEED })
+    const { electron, api } = session
     const window = electron.BrowserWindow.instances[0]!
-    const sentBefore = window.webContents.sent.length
+    await twoUpdates(session)
+    expect(electron.trays[0]!.tooltip).toContain('2 unread updates')
 
-    await api.Feed.markAllRead()
     await api.Accounts.patch('did:plc:4dtbz2ivhp5app3sbntcccxc', {
       muted: true
     })
 
-    expect(window.webContents.sent.length).toBeGreaterThan(sentBefore)
     // The channel carries a per-build random prefix; what matters is that it is the
-    // generated `State.changed` event and that it carried the new snapshot.
-    expect(window.webContents.sent.at(-1)?.channel).toMatch(/statusky_\$_State_\$_changed$/)
-    expect(window.webContents.sent.at(-1)?.payload).toMatchObject({
-      accounts: expect.arrayContaining([expect.objectContaining({ muted: true })])
+    // generated `State.changed` event and that it carried the new snapshot. The network
+    // checks publish on their own channel meanwhile, so the last message is not it.
+    const pushed = window.webContents.sent.filter(({ channel }) =>
+      channel.endsWith('statusky_$_State_$_changed')
+    )
+    expect(pushed.at(-1)?.payload).toMatchObject({
+      accounts: expect.arrayContaining([expect.objectContaining({ muted: true })]),
+      unread: []
     })
-    expect(electron.trays[0]!.tooltip).toContain('Statusky')
+    // The muted source's updates stop counting, and the tray says so.
+    expect(electron.trays[0]!.tooltip).not.toContain('unread')
   })
 
   it('mirrors a theme change onto nativeTheme', async () => {
@@ -460,7 +473,8 @@ describe('reduced motion', () => {
   // whose renderer will not start leaves the app in for good.
   it('does not beat before any page has reported at all', async () => {
     const { electron } = await withUnread()
-    expect(electron.trays[0]?.image.path).not.toMatch(/trayBeat/)
+    // Still saying there is something unread, just holding still while it does.
+    expect(electron.trays[0]?.image.path).toMatch(/Dot\.png$/)
   })
 })
 
@@ -472,7 +486,7 @@ describe('launch at login', () => {
     await api.Preferences.patch({ launchAtLogin: true })
     expect(electron.app.setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true })
 
-    await api.Preferences.patch({ notificationSound: false })
+    await api.Preferences.patch({ notificationSound: 'never' })
     expect(electron.app.setLoginItemSettings).toHaveBeenCalledTimes(1)
 
     await api.Preferences.patch({ launchAtLogin: false })
@@ -517,7 +531,9 @@ describe('launch at login', () => {
 
     const state = await api.State.get()
     expect(state.loginItem.registered).toBe(false)
-    expect(state.loginItem.error).toBeTruthy()
+    // Worded for the platform, but always a sentence about the login item rather than a
+    // stack trace. See `explainLoginItemFailure`.
+    expect(state.loginItem.error).toContain('would not open Statusky at login')
   })
 
   it('clears the explanation once the OS accepts', async () => {
@@ -528,7 +544,7 @@ describe('launch at login', () => {
     })
 
     await api.Preferences.patch({ launchAtLogin: true })
-    expect((await api.State.get()).loginItem.error).toBeTruthy()
+    expect((await api.State.get()).loginItem.error).toContain('would not open Statusky at login')
 
     // The user moved Statusky into /Applications and tried again.
     electron.app.loginItemRefuses = false
@@ -612,7 +628,7 @@ describe('notifications', () => {
     const after = await api.State.get()
 
     expect(after.unread).toHaveLength(0)
-    expect(electron.openedExternally).toHaveLength(1)
+    expect(electron.openedExternally).toEqual([state.posts[0]!.url])
   })
 })
 
@@ -717,14 +733,17 @@ describe('network checks', () => {
 describe('lifecycle events', () => {
   it('refreshes when the machine wakes or unlocks', async () => {
     const { electron, appview } = await boot()
-    const before = appview.requestsFor('app.bsky.feed.getAuthorFeed').length
+    const feeds = (): number => appview.requestsFor('app.bsky.feed.getAuthorFeed').length
+    const launched = feeds()
 
     electron.powerMonitor.emit('resume')
     await settle()
+    const woken = feeds()
+    expect(woken).toBeGreaterThan(launched)
+
     electron.powerMonitor.emit('unlock-screen')
     await settle()
-
-    expect(appview.requestsFor('app.bsky.feed.getAuthorFeed').length).toBeGreaterThan(before)
+    expect(feeds()).toBeGreaterThan(woken)
   })
 
   it('shows the popover for a second launch and for activation', async () => {
@@ -751,9 +770,19 @@ describe('lifecycle events', () => {
   })
 
   it('stops the poll timer before quitting', async () => {
-    const { electron } = await boot()
-    electron.app.emit('before-quit')
-    expect(electron.app.quit).not.toHaveBeenCalled()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const { electron, appview } = await boot({ seed: { settings: { pollIntervalSec: 60 } } })
+      const feeds = (): number => appview.requestsFor('app.bsky.feed.getAuthorFeed').length
+
+      electron.app.emit('before-quit')
+      const quitting = feeds()
+      await vi.advanceTimersByTimeAsync(300_000)
+
+      expect(feeds()).toBe(quitting)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('refreshes and marks everything read from the tray menu', async () => {
@@ -941,6 +970,64 @@ describe('banners raised while nobody is there', () => {
     await twoUpdates(session)
 
     expect(session.electron.notifications).toHaveLength(0)
+  })
+})
+
+/**
+ * *Pause notifications* in the tray menu, which is where somebody reaches for it — a call
+ * starting, a screen about to be shared — and not a moment to go looking in Settings.
+ * When the snooze ends is `snoozeEnd`'s own test; this is the wiring, and the promise
+ * that resuming says at once what the pause held back rather than leaving it for a timer.
+ */
+describe('pausing notifications from the tray', () => {
+  it('holds banners for an hour, and says what it held the moment it is resumed', async () => {
+    const session = await boot({ seed: AWAY_SEED })
+    const { electron, api } = session
+
+    electron.trays[0]!.emit('right-click')
+    const pause = trayMenu(electron).submenu('Pause notifications')!
+    const before = Date.now()
+    pause.find((entry) => entry.label === 'For 1 hour')!.click!()
+    const after = Date.now()
+
+    const until = Date.parse((await api.State.get()).settings.notificationsSnoozedUntil!)
+    expect(until).toBeGreaterThanOrEqual(before + 60 * 60_000)
+    expect(until).toBeLessThanOrEqual(after + 60 * 60_000)
+
+    await twoUpdates(session)
+    expect(electron.notifications).toHaveLength(0)
+
+    electron.trays[0]!.emit('right-click')
+    const resume = trayMenu(electron).template.find((entry) =>
+      entry.label?.startsWith('Resume notifications')
+    )!
+    resume.click!()
+
+    expect((await api.State.get()).settings.notificationsSnoozedUntil).toBeNull()
+    expect(electron.notifications).toHaveLength(1)
+    expect(electron.notifications[0]?.options.title).toBe(
+      'Statusky · While notifications were paused'
+    )
+    expect(electron.notifications[0]?.options.body).toContain('2 updates')
+  })
+
+  it('lets nothing it held go up once the app is quitting', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const session = await boot({ seed: AWAY_SEED })
+      const { electron } = session
+      electron.trays[0]!.emit('right-click')
+      const pause = trayMenu(electron).submenu('Pause notifications')!
+      pause.find((entry) => entry.label === 'For 1 hour')!.click!()
+      await twoUpdates(session)
+
+      electron.app.emit('before-quit')
+      await vi.advanceTimersByTimeAsync(2 * 60 * 60_000)
+
+      expect(electron.notifications).toHaveLength(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -1134,7 +1221,7 @@ describe('the global shortcut', () => {
     await api.Preferences.patch({ globalShortcut: 'Alt+Shift+S' })
     electron.globalShortcut.register.mockClear()
 
-    await api.Preferences.patch({ notificationSound: false })
+    await api.Preferences.patch({ notificationSound: 'never' })
 
     expect(electron.globalShortcut.register).not.toHaveBeenCalled()
   })

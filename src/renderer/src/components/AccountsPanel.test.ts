@@ -25,11 +25,17 @@ describe('AccountsPanel', () => {
   })
 
   it('counts how many are actually notifying', async () => {
-    const silent = { ...b, notify: false }
+    // Any level short of off still puts banners up; muting takes an account out entirely.
+    const outagesOnly = makeAccount({ did: 'did:plc:d', notify: 'outages' })
+    const silent = { ...b, notify: 'off' as const }
     const muted = makeAccount({ did: 'did:plc:c', muted: true })
-    const { getByText } = await renderWith(AccountsPanel, {}, { accounts: [a, silent, muted] })
+    const { getByText } = await renderWith(
+      AccountsPanel,
+      {},
+      { accounts: [a, outagesOnly, silent, muted] }
+    )
 
-    expect(getByText('1 notifying')).toBeTruthy()
+    expect(getByText('2 notifying')).toBeTruthy()
   })
 
   it('lists muted accounts too, so they can be un-muted', async () => {

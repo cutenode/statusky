@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fireEvent } from '@testing-library/svelte'
+import { fireEvent, within } from '@testing-library/svelte'
 import { HEALTH_LABEL } from '@shared/status'
 import { SERVICES, probeAccount, probePost } from '@shared/network'
 import { nav } from '$lib/nav.svelte'
@@ -380,8 +380,18 @@ describe('the tabs', () => {
       }
     )
 
-    expect(tab(getByRole, /Timeline/).textContent).toContain('2')
-    expect(tab(getByRole, /^Feed$/).textContent).toContain('1')
+    // Both on the timeline, which shows everything; only the post on the feed, where
+    // the measurement is not listed.
+    expect(within(tab(getByRole, /Timeline/)).getByLabelText('2 unread')).toBeTruthy()
+    expect(within(tab(getByRole, /^Feed$/)).getByLabelText('1 unread')).toBeTruthy()
+  })
+
+  it('names each tab in a tooltip, since only the selected one spells itself out', async () => {
+    const { getByRole, findByText } = await renderWith(Header, { now: NOW })
+
+    await fireEvent.focus(tab(getByRole, /^Feed$/))
+
+    expect(await findByText('Feed')).toBeTruthy()
   })
 
   it.each([
@@ -429,6 +439,15 @@ describe('the tabs', () => {
 })
 
 describe('refreshing on the network tab', () => {
+  it('says what refreshing means there, in its tooltip', async () => {
+    const { getByLabelText, getByRole, findByText } = await renderWith(Header, { now: NOW })
+    await fireEvent.click(getByRole('tab', { name: /Network/ }))
+
+    await fireEvent.focus(getByLabelText('Run network checks'))
+
+    expect(await findByText('Run network checks')).toBeTruthy()
+  })
+
   it('runs the checks instead of polling', async () => {
     const { bridge, getByLabelText, getByRole } = await renderWith(Header, { now: NOW })
     await fireEvent.click(getByRole('tab', { name: /Network/ }))

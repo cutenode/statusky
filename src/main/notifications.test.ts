@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Notification, notifications, openedExternally } from '../test/electron'
 import { makePost, makeSettings } from '../test/factories'
 import { PROBE_SOURCE_DID } from '../shared/network'
-import type { StatusPost } from '../shared/types'
+import type { Settings, StatusPost } from '../shared/types'
 import {
+  BURST_WINDOW_MS,
   createNotifier,
   explainFailure,
   notifyDigest,
@@ -94,11 +95,6 @@ describe('notifyPosts', () => {
   it('falls back to a placeholder body for an empty post', () => {
     notifyPosts([makePost({ text: '   ' })], settings, banner())
     expect(notifications[0]?.options.body).toBe('Posted a status update.')
-  })
-
-  it('silences the sound when the preference is off', () => {
-    notifyPosts([makePost()], makeSettings({ notificationSound: false }), banner())
-    expect(notifications[0]?.options.silent).toBe(true)
   })
 
   it('opens the post and marks it read when clicked', () => {
@@ -263,6 +259,14 @@ describe('notifyTest', () => {
     await expect(notifyTest(settings)).rejects.toThrow('does not support notifications')
     expect(notifications).toHaveLength(0)
   })
+
+  /** The button is how somebody finds out what a banner will sound like, if anything. */
+  it('makes a sound unless every banner is set to arrive silently', async () => {
+    await notifyTest(makeSettings({ notificationSound: 'urgent' }))
+    await notifyTest(makeSettings({ notificationSound: 'never' }))
+
+    expect(notifications.map((n) => n.options.silent)).toEqual([false, true])
+  })
 })
 
 describe('an OS that answers oddly', () => {
@@ -391,7 +395,7 @@ describe('notifyDigest', () => {
   })
 
   it('silences the sound when the preference is off', () => {
-    notifyDigest(away, makeSettings({ notificationSound: false }), { onOpened: vi.fn() })
+    notifyDigest(away, makeSettings({ notificationSound: 'never' }), { onOpened: vi.fn() })
     expect(notifications[0]?.options.silent).toBe(true)
   })
 
@@ -570,5 +574,398 @@ describe('explainFailure', () => {
 
   it('passes an unrecognised error through untouched', () => {
     expect(explainFailure('UNErrorDomain error 3')).toBe('UNErrorDomain error 3')
+  })
+})
+
+describe('how a banner presents itself', () => {
+  it('plays the sound only for outages when asked to', () => {
+    const quiet = makeSettings({ notificationSound: 'urgent' })
+    notifyPosts(
+      [makePost({ severity: 'outage' }), makePost({ severity: 'monitoring' })],
+      quiet,
+      banner()
+    )
+
+    expect(notifications.map((n) => n.options.silent)).toEqual([false, true])
+  })
+
+  it('plays it for everything, or for nothing', () => {
+    notifyPosts(
+      [makePost({ severity: 'update' })],
+      makeSettings({ notificationSound: 'all' }),
+      banner()
+    )
+    notifyPosts(
+      [makePost({ severity: 'outage' })],
+      makeSettings({ notificationSound: 'never' }),
+      banner()
+    )
+
+    expect(notifications.map((n) => n.options.silent)).toEqual([false, true])
+  })
+
+  it('leaves an outage on screen until dismissed, and lets the rest time out', () => {
+    notifyPosts(
+      [makePost({ severity: 'outage' }), makePost({ severity: 'degraded' })],
+      makeSettings({ notifyStickyOutages: true }),
+      banner()
+    )
+    notifyPosts(
+      [makePost({ severity: 'outage' })],
+      makeSettings({ notifyStickyOutages: false }),
+      banner()
+    )
+
+    expect(notifications.map((n) => n.options.timeoutType)).toEqual(['never', 'default', 'default'])
+  })
+
+  it('keeps the update’s text out of the banner when asked to', () => {
+    notifyPosts(
+      [
+        makePost({
+          text: 'The AppView is down',
+          authorDisplayName: 'Bluesky Status',
+          severity: 'outage'
+        })
+      ],
+      makeSettings({ notificationShowBody: false }),
+      banner()
+    )
+
+    expect(notifications[0]?.options.title).toBe('Bluesky Status · Outage')
+    expect(notifications[0]?.options.body).toBe('Posted a status update.')
+  })
+
+  it('sounds a summary if anything in it is an outage', () => {
+    notifyDigest(
+      [makePost({ severity: 'monitoring' }), makePost({ severity: 'outage' })],
+      makeSettings({ notificationSound: 'urgent' }),
+      { onOpened: vi.fn() }
+    )
+
+    expect(notifications[0]?.options.silent).toBe(false)
+  })
+})
+
+/** A measured outage, and the recovery that answers it. */
+function down(service = 'relay:bsky.network', at = 1767225600): StatusPost {
+  return makePost({
+    authorDid: PROBE_SOURCE_DID,
+    authorDisplayName: 'Network checks',
+    uri: `${PROBE_SOURCE_DID}/${service}/${at}`,
+    url: '',
+    text: `${service} is not responding`,
+    severity: 'outage'
+  })
+}
+
+function up(service = 'relay:bsky.network', at = 1767225900): StatusPost {
+  return { ...down(service, at), text: `${service} is responding again`, severity: 'resolved' }
+}
+
+describe('when a banner goes up', () => {
+  /** 2026-01-01T12:00 local time: the middle of the day, outside default quiet hours. */
+  const NOON = new Date(2026, 0, 1, 12, 0).getTime()
+
+  interface Timed {
+    notifier: ReturnType<typeof createNotifier>
+    settings: { value: Settings }
+    away: { value: boolean }
+    dealtWith: Set<string>
+  }
+
+  function timed(overrides: Partial<Settings> = {}): Timed {
+    vi.useFakeTimers({ now: NOON })
+    const current = { value: makeSettings(overrides) }
+    const away = { value: false }
+    const dealtWith = new Set<string>()
+    const notifier = createNotifier(() => current.value, {
+      away: () => away.value,
+      stillWorthSaying: (posts) => posts.filter((post) => !dealtWith.has(post.uri)),
+      onCatchUp: vi.fn(),
+      ...banner()
+    })
+    return { notifier, settings: current, away, dealtWith }
+  }
+
+  afterEach(() => vi.useRealTimers())
+
+  describe('the grace period on a measured outage', () => {
+    it('waits before announcing it', () => {
+      const t = timed({ notifyProbeGraceSec: 300 })
+
+      t.notifier.notify([down()])
+      expect(notifications).toHaveLength(0)
+
+      vi.advanceTimersByTime(300_000)
+      expect(notifications.map((n) => n.options.body)).toEqual([
+        'relay:bsky.network is not responding'
+      ])
+    })
+
+    it('says nothing at all about an outage that ended inside it', () => {
+      const t = timed({ notifyProbeGraceSec: 300 })
+
+      t.notifier.notify([down()])
+      vi.advanceTimersByTime(60_000)
+      t.notifier.notify([up()])
+      vi.advanceTimersByTime(600_000)
+
+      expect(notifications).toHaveLength(0)
+    })
+
+    it('announces the latest condition when it changed during the wait, on the original clock', () => {
+      const t = timed({ notifyProbeGraceSec: 300 })
+
+      t.notifier.notify([down()])
+      vi.advanceTimersByTime(200_000)
+      t.notifier.notify([
+        {
+          ...down(),
+          uri: `${PROBE_SOURCE_DID}/relay:bsky.network/2`,
+          severity: 'degraded',
+          text: 'partly'
+        }
+      ])
+      vi.advanceTimersByTime(100_000)
+
+      expect(notifications.map((n) => n.options.body)).toEqual(['partly'])
+    })
+
+    it('announces an outage straight away with no grace period', () => {
+      const t = timed({ notifyProbeGraceSec: 0 })
+      t.notifier.notify([down()])
+      expect(notifications).toHaveLength(1)
+    })
+
+    it('leaves status posts alone', () => {
+      const t = timed({ notifyProbeGraceSec: 300 })
+      t.notifier.notify([makePost({ severity: 'outage' })])
+      expect(notifications).toHaveLength(1)
+    })
+
+    it('says nothing if notifications are switched off before the wait is over', () => {
+      const t = timed({ notifyProbeGraceSec: 300 })
+      t.notifier.notify([down()])
+
+      t.settings.value = { ...t.settings.value, notificationsEnabled: false }
+      vi.advanceTimersByTime(300_000)
+
+      expect(notifications).toHaveLength(0)
+    })
+  })
+
+  describe('quiet hours', () => {
+    const night = { quietHoursEnabled: true, quietHoursStart: '11:00', quietHoursEnd: '13:00' }
+
+    it('holds banners until they end, then summarises them', () => {
+      const t = timed({ ...night, quietHoursBreakthrough: false })
+
+      t.notifier.notify([makePost({ severity: 'monitoring' })])
+      t.notifier.notify([makePost({ severity: 'outage' })])
+      expect(notifications).toHaveLength(0)
+
+      vi.advanceTimersByTime(60 * 60_000 + 2_000)
+      expect(notifications).toHaveLength(1)
+      expect(notifications[0]?.options.title).toBe('Statusky · During quiet hours')
+    })
+
+    it('lets outages through when asked to', () => {
+      const t = timed({ ...night, quietHoursBreakthrough: true })
+
+      t.notifier.notify([
+        makePost({ severity: 'outage', text: 'down' }),
+        makePost({ severity: 'monitoring' })
+      ])
+
+      expect(notifications.map((n) => n.options.body)).toEqual(['down'])
+    })
+
+    it('stops holding as soon as they are switched off', () => {
+      const t = timed({ ...night, quietHoursBreakthrough: false })
+      t.notifier.notify([makePost({ severity: 'monitoring', text: 'watching' })])
+
+      t.settings.value = { ...t.settings.value, quietHoursEnabled: false }
+      t.notifier.reconsider()
+
+      expect(notifications.map((n) => n.options.body)).toEqual(['watching'])
+    })
+  })
+
+  describe('a snooze', () => {
+    it('holds everything, outages included, until it runs out', () => {
+      const t = timed({ notificationsSnoozedUntil: new Date(NOON + 60 * 60_000).toISOString() })
+
+      t.notifier.notify([makePost({ severity: 'outage' }), makePost({ severity: 'monitoring' })])
+      expect(notifications).toHaveLength(0)
+
+      vi.advanceTimersByTime(60 * 60_000 + 2_000)
+      expect(notifications).toHaveLength(1)
+      expect(notifications[0]?.options.title).toBe('Statusky · While notifications were paused')
+    })
+
+    it('lets go of what it held when resumed early', () => {
+      const t = timed({ notificationsSnoozedUntil: new Date(NOON + 60 * 60_000).toISOString() })
+      t.notifier.notify([makePost({ text: 'held' })])
+
+      t.settings.value = { ...t.settings.value, notificationsSnoozedUntil: null }
+      t.notifier.reconsider()
+
+      expect(notifications.map((n) => n.options.body)).toEqual(['held'])
+    })
+
+    // Its wake-up is booked a second after the end, and an update delivered in that
+    // second books a new one. By then there is no snooze left to book it for.
+    it('still lets go when an update lands in the second after it ends', () => {
+      const t = timed({ notificationsSnoozedUntil: new Date(NOON + 60_000).toISOString() })
+      t.notifier.notify([makePost({ text: 'held' })])
+
+      vi.advanceTimersByTime(60_000 + 500)
+      t.notifier.notify([makePost({ text: 'fresh' })])
+      vi.advanceTimersByTime(2_000)
+
+      expect(notifications.map((n) => n.options.body)).toEqual(['fresh', 'held'])
+    })
+
+    it('ignores one that has already run out', () => {
+      const t = timed({ notificationsSnoozedUntil: new Date(NOON - 1).toISOString() })
+      t.notifier.notify([makePost()])
+      expect(notifications).toHaveLength(1)
+    })
+  })
+
+  describe('while nobody is there', () => {
+    it('shows banners as they come when asked to deliver anyway', () => {
+      const t = timed({ notifyWhenAway: 'deliver' })
+      t.away.value = true
+
+      t.notifier.notify([makePost()])
+
+      expect(notifications).toHaveLength(1)
+    })
+
+    it('says nothing, even on the way back, when asked to stay silent', () => {
+      const t = timed({ notifyWhenAway: 'drop' })
+      t.away.value = true
+      t.notifier.notify([makePost(), makePost()])
+
+      t.away.value = false
+      t.notifier.release()
+
+      expect(notifications).toHaveLength(0)
+    })
+
+    it('does not release an absence on a settings change, only on a return', () => {
+      const t = timed({ notifyWhenAway: 'digest' })
+      t.away.value = true
+      t.notifier.notify([makePost()])
+
+      t.notifier.reconsider()
+      expect(notifications).toHaveLength(0)
+
+      t.notifier.release()
+      expect(notifications).toHaveLength(1)
+    })
+  })
+
+  describe('bursts', () => {
+    it('folds updates that follow a banner closely into one summary', () => {
+      const t = timed({ notifyCombineBursts: true })
+
+      t.notifier.notify([makePost({ text: 'first' })])
+      vi.advanceTimersByTime(30_000)
+      t.notifier.notify([makePost({ text: 'second' })])
+      t.notifier.notify([makePost({ text: 'third' })])
+      expect(notifications).toHaveLength(1)
+
+      vi.advanceTimersByTime(BURST_WINDOW_MS)
+      expect(notifications).toHaveLength(2)
+      expect(notifications[1]?.options.title).toBe('Statusky · More updates')
+      expect(notifications[1]?.options.body).toContain('2 updates')
+    })
+
+    it('raises a lone follower as an ordinary banner', () => {
+      const t = timed({ notifyCombineBursts: true })
+      t.notifier.notify([makePost({ text: 'first' })])
+      t.notifier.notify([makePost({ text: 'second' })])
+
+      vi.advanceTimersByTime(BURST_WINDOW_MS)
+
+      expect(notifications.map((n) => n.options.body)).toEqual(['first', 'second'])
+    })
+
+    it('raises each banner as it comes when switched off', () => {
+      const t = timed({ notifyCombineBursts: false })
+      t.notifier.notify([makePost({ text: 'first' })])
+      t.notifier.notify([makePost({ text: 'second' })])
+
+      expect(notifications.map((n) => n.options.body)).toEqual(['first', 'second'])
+    })
+
+    it('leaves out what was read while the summary waited, and opens no window for silence', () => {
+      const t = timed({ notifyCombineBursts: true })
+      t.notifier.notify([makePost({ text: 'first' })])
+      const second = makePost({ text: 'second' })
+      t.notifier.notify([second])
+      t.dealtWith.add(second.uri)
+
+      vi.advanceTimersByTime(BURST_WINDOW_MS)
+      // Nothing was said at the end of that window, so nothing is folded into another.
+      t.notifier.notify([makePost({ text: 'later' })])
+
+      expect(notifications.map((n) => n.options.body)).toEqual(['first', 'later'])
+    })
+
+    it('treats updates after the window as news in their own right', () => {
+      const t = timed({ notifyCombineBursts: true })
+      t.notifier.notify([makePost({ text: 'first' })])
+      vi.advanceTimersByTime(BURST_WINDOW_MS + 1)
+      t.notifier.notify([makePost({ text: 'later' })])
+
+      expect(notifications.map((n) => n.options.body)).toEqual(['first', 'later'])
+    })
+  })
+
+  it('drops everything it held when notifications are switched off', () => {
+    const t = timed({ notificationsSnoozedUntil: new Date(NOON + 60_000).toISOString() })
+    t.notifier.notify([makePost()])
+
+    t.settings.value = {
+      ...t.settings.value,
+      notificationsEnabled: false,
+      notificationsSnoozedUntil: null
+    }
+    t.notifier.reconsider()
+    vi.advanceTimersByTime(120_000)
+    expect(notifications).toHaveLength(0)
+
+    // Dropped rather than merely not yet said: switching them back on brings none of it back.
+    t.settings.value = { ...t.settings.value, notificationsEnabled: true }
+    t.notifier.reconsider()
+    t.notifier.release()
+
+    expect(notifications).toHaveLength(0)
+  })
+
+  it('forgets every wait it was keeping when disposed', () => {
+    const t = timed({ notifyProbeGraceSec: 300, notifyCombineBursts: true })
+    t.notifier.notify([makePost({ text: 'first' })])
+    // A burst waiting to be summarised, and an outage waiting out its grace period…
+    t.notifier.notify([makePost({ text: 'second' })])
+    t.notifier.notify([down()])
+    // …and a banner held by a snooze, with a wake-up booked for when it ends.
+    t.settings.value = {
+      ...t.settings.value,
+      notificationsSnoozedUntil: new Date(NOON + 60_000).toISOString()
+    }
+    t.notifier.notify([makePost({ text: 'snoozed' })])
+
+    t.notifier.dispose()
+    vi.advanceTimersByTime(60 * 60_000)
+    t.settings.value = { ...t.settings.value, notificationsSnoozedUntil: null }
+    t.notifier.reconsider()
+    t.notifier.release()
+
+    expect(notifications.map((n) => n.options.body)).toEqual(['first'])
   })
 })

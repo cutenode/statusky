@@ -5,11 +5,12 @@ import {
   makePost,
   makeService,
   makeSettings,
-  makeSnapshot,
-  makeState
+  makeSnapshot
 } from '../../../test/factories'
 import { installBridge, type TestBridge } from '../../../test/bridge'
+import { DEFAULT_SETTINGS } from '@shared/defaults'
 import { PROBE_SOURCE_DID, probeAccount } from '@shared/network'
+import { DEFAULT_PROBE_TARGETS } from '@shared/probe-targets'
 import { webhookAccount } from '@shared/webhook'
 import { HEALTH_LABEL } from '@shared/status'
 import { app } from './app-state.svelte'
@@ -17,7 +18,8 @@ import { nav } from './nav.svelte'
 
 /**
  * The renderer store is a singleton, so each test re-points it at a fresh bridge
- * and re-runs `init()` — the same sequence the popover performs on load.
+ * and re-runs `init()` — the same sequence the popover performs on load — and is
+ * reset afterwards, since `init()` leaves what the last test did to `actionError` alone.
  */
 
 let bridge: TestBridge
@@ -33,6 +35,7 @@ afterEach(() => {
   stop?.()
   stop = null
   bridge?.restore()
+  app.reset()
   nav.reset()
 })
 
@@ -271,18 +274,27 @@ describe('actions', () => {
     await app.patchSettings({ theme: 'dark' })
     await app.markRead(['at://x'])
     await app.markAllRead()
+    await app.markReadThrough('at://x')
     await app.testNotification()
+    await app.regenerateWebhookSecret()
+    await app.copyText('https://example.test/hook')
     await app.showPostMenu('at://x')
     app.openExternal('https://bsky.app')
+    app.hide()
 
     expect(local.api.Feed.refresh).toHaveBeenCalled()
     expect(local.api.Accounts.patch).toHaveBeenCalledWith('did:plc:a', { muted: true })
     expect(local.api.Preferences.patch).toHaveBeenCalledWith({ theme: 'dark' })
     expect(local.api.Feed.markRead).toHaveBeenCalledWith(['at://x'])
     expect(local.api.Feed.markAllRead).toHaveBeenCalled()
+    expect(local.api.Feed.markReadThrough).toHaveBeenCalledWith('at://x')
     expect(local.api.Host.sendTestNotification).toHaveBeenCalled()
+    expect(local.api.Webhook.regenerateSecret).toHaveBeenCalled()
+    expect(local.api.Host.copyText).toHaveBeenCalledWith('https://example.test/hook')
     expect(local.api.Popover.postMenu).toHaveBeenCalledWith('at://x')
     expect(local.api.Host.openExternal).toHaveBeenCalledWith('https://bsky.app')
+    expect(local.api.Host.hideWindow).toHaveBeenCalled()
+    expect(app.actionError).toBeNull()
   })
 
   it('returns the value on success', async () => {
@@ -368,15 +380,40 @@ describe('actions', () => {
   })
 })
 
+/**
+ * What a component mounted before the first state arrives reads, and what `reset()` puts
+ * back — which is what keeps one test's state from being the next one's first tick.
+ */
 describe('before init', () => {
-  it('exposes an empty but valid state', async () => {
-    // Re-initialise onto a state that matches the module's own EMPTY default.
-    await connect(makeState({ version: '0.0.0' }))
+  it('holds an empty but valid state, and is not ready', async () => {
+    await connect({
+      accounts: [makeAccount()],
+      posts: [makePost()],
+      unread: [makePost().uri],
+      settings: makeSettings({ theme: 'dark' }),
+      snapshot: makeSnapshot({ services: [makeService()] }),
+      platform: 'win32',
+      version: '1.2.3',
+      resolveError: 'Profile not found'
+    })
+    await app.addAccount('nobody.invalid')
+    expect(app.actionError).not.toBeNull()
+    stop?.()
+    stop = null
+
+    app.reset()
+
+    expect(app.ready).toBe(false)
+    expect(app.busy).toBe(false)
+    expect(app.actionError).toBeNull()
     expect(app.posts).toEqual([])
     expect(app.accounts).toEqual([])
     expect(app.unreadCount).toBe(0)
-    expect(app.settings.pollIntervalSec).toBeGreaterThan(0)
-    expect(app.sync).toMatchObject({ status: 'idle' })
+    expect(app.settings).toEqual(DEFAULT_SETTINGS)
+    expect(app.sync).toEqual({ status: 'idle', lastSyncedAt: null, error: null })
+    expect(app.snapshot.services).toEqual([])
+    expect(app.platform).toBe('darwin')
+    expect(app.version).toBe('0.0.0')
   })
 })
 
@@ -395,10 +432,10 @@ describe('the network dashboard', () => {
 
   it('unsubscribes from every channel on the way out', async () => {
     const local = await connect()
-    expect(local.pushListenerCount()).toBe(3)
+    expect([local.listenerCount(), local.pushListenerCount()]).toEqual([1, 3])
     stop?.()
     stop = null
-    expect(local.pushListenerCount()).toBe(0)
+    expect([local.listenerCount(), local.pushListenerCount()]).toEqual([0, 0])
   })
 
   it('shows the dashboard when main asks', async () => {
@@ -458,12 +495,17 @@ describe('the network dashboard', () => {
       expect(local.api.Network.run).not.toHaveBeenCalled()
     })
 
+    // Both ways, so a clock stuck at either end of time could not pass for the real one.
     it('reads the clock itself when not handed one', async () => {
       const local = await connect({
         snapshot: makeSnapshot({ finishedAt: new Date().toISOString() })
       })
       app.runNetworkChecksIfStale(120_000)
       expect(local.api.Network.run).not.toHaveBeenCalled()
+
+      local.pushNetwork({ finishedAt: new Date(Date.now() - 10 * 60_000).toISOString() })
+      app.runNetworkChecksIfStale(120_000)
+      expect(local.api.Network.run).toHaveBeenCalledTimes(1)
     })
   })
 })
@@ -489,7 +531,6 @@ describe('what only the page is told', () => {
   // checks work whether or not this call gets through.
   it('says nothing to the user when the hint itself fails', async () => {
     const local = await connect()
-    app.clearError()
     vi.mocked(local.api.Popover.online).mockRejectedValueOnce(new Error('refused'))
 
     app.reportOnline(true)
@@ -522,7 +563,6 @@ describe('what only the page is told', () => {
   // than asked for rather than louder — which is not worth a banner.
   it('says nothing to the user when the report itself fails', async () => {
     const local = await connect()
-    app.clearError()
     vi.mocked(local.api.Popover.reduceMotion).mockRejectedValueOnce(new Error('refused'))
 
     app.reportReducedMotion(true)
@@ -625,6 +665,66 @@ describe('the headline', () => {
       at: hoursAgo(72),
       others: 0,
       stale: true
+    })
+  })
+})
+
+// The check targets editor reports its own failures, beside the control that asked.
+describe('check target actions', () => {
+  it('looks an account up without tracking it', async () => {
+    const local = await connect()
+
+    const outcome = await app.lookUpActor('status.example.test')
+
+    expect(outcome).toMatchObject({ ok: true, value: { handle: 'status.example.test' } })
+    expect(local.api.Actors.resolve).toHaveBeenCalledWith('status.example.test')
+    expect(local.api.Accounts.add).not.toHaveBeenCalled()
+  })
+
+  it('hands a failure back rather than putting it on actionError', async () => {
+    await connect({ resolveError: 'Profile not found' })
+
+    expect(await app.lookUpActor('nobody.invalid')).toEqual({
+      ok: false,
+      error: 'Profile not found'
+    })
+    expect(app.actionError).toBeNull()
+  })
+
+  it('replaces the targets, and goes back to the defaults with null', async () => {
+    const local = await connect()
+    const targets = structuredClone(DEFAULT_PROBE_TARGETS)
+    targets.feeds = []
+
+    const saved = await app.setProbeTargets(targets)
+    expect(saved.ok && saved.value.probeTargets).toEqual(targets)
+    expect(local.api.Preferences.patch).toHaveBeenLastCalledWith({ probeTargets: targets })
+
+    await app.setProbeTargets(null)
+    expect(local.api.Preferences.patch).toHaveBeenLastCalledWith({ probeTargets: null })
+  })
+
+  it('exports and opens through main, passing a cancelled dialog on as null', async () => {
+    const local = await connect({ openedFile: { name: 'mine.json', text: '{}' } })
+
+    expect(await app.exportProbeTargets()).toEqual({
+      ok: true,
+      value: 'statusky-probe-targets.json'
+    })
+    expect(await app.openProbeTargetsFile()).toEqual({
+      ok: true,
+      value: { name: 'mine.json', text: '{}' }
+    })
+
+    vi.mocked(local.api.ProbeTargetsFile.save).mockResolvedValueOnce(null)
+    expect(await app.exportProbeTargets()).toEqual({ ok: true, value: null })
+
+    vi.mocked(local.api.ProbeTargetsFile.open).mockRejectedValueOnce(
+      new Error("Error invoking remote method 'x': Error: Could not read mine.json")
+    )
+    expect(await app.openProbeTargetsFile()).toEqual({
+      ok: false,
+      error: 'Could not read mine.json'
     })
   })
 })

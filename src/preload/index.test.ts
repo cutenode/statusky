@@ -55,6 +55,7 @@ describe('the bridge', () => {
         'Network',
         'Popover',
         'Preferences',
+        'ProbeTargetsFile',
         'State',
         'Webhook'
       ].toSorted()
@@ -74,6 +75,7 @@ describe('the bridge', () => {
     ])
     expect(Object.keys(api!.Actors).toSorted()).toEqual(['resolve'])
     expect(Object.keys(api!.Webhook).toSorted()).toEqual(['regenerateSecret'])
+    expect(Object.keys(api!.ProbeTargetsFile).toSorted()).toEqual(['open', 'save'])
     expect(Object.keys(api!.Popover).toSorted()).toEqual(
       ['onCatchUp', 'online', 'postMenu', 'reduceMotion'].toSorted()
     )

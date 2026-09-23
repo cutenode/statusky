@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fireEvent } from '@testing-library/svelte'
-import { makeProfile } from '../../../test/factories'
+import type { Account } from '@shared/types'
+import { makeAccount, makeProfile } from '../../../test/factories'
+import { renderWith } from '../test/render'
+import AddAccountForm from './AddAccountForm.svelte'
 
 /** A promise a test can settle by hand, to hold an action in flight. */
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -8,8 +11,6 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   const promise = new Promise<T>((settle) => (resolve = settle))
   return { promise, resolve }
 }
-import { renderWith } from '../test/render'
-import AddAccountForm from './AddAccountForm.svelte'
 
 describe('AddAccountForm', () => {
   it('explains what it accepts', async () => {
@@ -110,18 +111,26 @@ describe('AddAccountForm', () => {
 
   it('ignores a second submit while the first is in flight', async () => {
     const { bridge, container, getByPlaceholderText } = await renderWith(AddAccountForm)
-    const pending = deferred<{ ok: true; value: never }>()
-    bridge.api.Accounts.add = (() => pending.promise) as never
+    const pending = deferred<Account>()
+    const add = vi.fn(() => pending.promise)
+    bridge.api.Accounts.add = add
+    const input = getByPlaceholderText('handle, DID, or bsky.app profile link') as HTMLInputElement
 
-    await fireEvent.input(getByPlaceholderText('handle, DID, or bsky.app profile link'), {
-      target: { value: 'status.example.test' }
-    })
+    await fireEvent.input(input, { target: { value: 'status.example.test' } })
 
     const form = container.querySelector('form')!
     void fireEvent.submit(form)
     await fireEvent.submit(form)
 
+    expect(add).toHaveBeenCalledTimes(1)
     expect(container.querySelector('.animate-spin')).not.toBeNull()
-    pending.resolve({ ok: true, value: null as never })
+    expect(input.disabled).toBe(true)
+
+    // Once the first lands the form is itself again, ready for the next account.
+    pending.resolve(makeAccount({ handle: 'status.example.test' }))
+
+    await vi.waitFor(() => expect(input.value).toBe(''))
+    expect(container.querySelector('.animate-spin')).toBeNull()
+    expect(input.disabled).toBe(false)
   })
 })

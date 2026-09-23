@@ -3,6 +3,7 @@ import { fireEvent } from '@testing-library/svelte'
 import { SEVERITY_STYLE } from '$lib/severity'
 import { nav } from '$lib/nav.svelte'
 import { SERVICES, probePost } from '@shared/network'
+import { absoluteTime } from '@shared/time'
 import { makeCheck, makeEmbed, makePost, makeSettings } from '../../../test/factories'
 import { pushState, renderWith } from '../test/render'
 import { scrollIntoView } from '../test/setup'
@@ -31,7 +32,7 @@ describe('PostCard', () => {
 
     const time = container.querySelector('time')
     expect(time?.getAttribute('datetime')).toBe('2026-01-01T11:30:00Z')
-    expect(time?.getAttribute('title')).toBeTruthy()
+    expect(time?.getAttribute('title')).toBe(absoluteTime('2026-01-01T11:30:00Z'))
   })
 
   it('colours the severity rail', async () => {
@@ -91,7 +92,7 @@ describe('PostCard', () => {
 
       await fireEvent.click(getByLabelText('Open the original'))
 
-      expect(bridge.api.Host.openExternal).toHaveBeenCalled()
+      expect(bridge.api.Host.openExternal).toHaveBeenCalledWith(post.url)
       expect(bridge.api.Feed.markRead).not.toHaveBeenCalled()
     })
   })

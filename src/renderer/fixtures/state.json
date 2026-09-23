@@ -6,7 +6,7 @@
       "displayName": "Bluesky Status",
       "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
       "description": "Status page for the Bluesky AppView, PDS fleet and relay.",
-      "notify": true,
+      "notify": "default",
       "muted": false,
       "builtin": true,
       "kind": "atproto",
@@ -18,7 +18,7 @@
       "displayName": "Blacksky Status",
       "avatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:njxo6cs5a6jjk4c2z6dhecsc/bafkreiajfk4w46mnumnkmf3luaoawkqmpnom2ocj35njq4m2mym4vfhur4",
       "description": "Status page for outages or updates affecting Blacksky.",
-      "notify": true,
+      "notify": "default",
       "muted": false,
       "builtin": true,
       "kind": "atproto",
@@ -30,7 +30,7 @@
       "displayName": "status.bsky.app",
       "avatar": null,
       "description": "Degraded",
-      "notify": true,
+      "notify": "default",
       "muted": false,
       "addedAt": "2026-09-20T19:32:37.334Z",
       "builtin": false,
@@ -42,7 +42,7 @@
       "displayName": "Network checks",
       "avatar": null,
       "description": "Outages and recoveries measured from this computer.",
-      "notify": true,
+      "notify": "default",
       "muted": false,
       "addedAt": "2026-09-20T19:32:37.334Z",
       "builtin": true,
@@ -1452,7 +1452,31 @@
   "settings": {
     "pollIntervalSec": 120,
     "notificationsEnabled": true,
-    "notificationSound": true,
+    "notificationSound": "all",
+    "notifyStickyOutages": true,
+    "notifySeverities": [
+      "outage",
+      "degraded",
+      "investigating",
+      "identified",
+      "monitoring",
+      "resolved"
+    ],
+    "notifyFollowUpsOnly": true,
+    "notifySources": ["atproto", "webhook", "probe"],
+    "notifyProbeScope": "core",
+    "notifyProbeGraceSec": 0,
+    "notifyProbeRecovery": true,
+    "notifyProbePartial": true,
+    "quietHoursEnabled": false,
+    "quietHoursStart": "22:00",
+    "quietHoursEnd": "08:00",
+    "quietHoursBreakthrough": true,
+    "notifyWhenAway": "digest",
+    "notifyCombineBursts": true,
+    "notificationsSnoozedUntil": null,
+    "notificationShowBody": true,
+    "pinnedServices": [],
     "theme": "system",
     "launchAtLogin": false,
     "trayUnreadStyle": "beat",
@@ -1461,7 +1485,9 @@
     "webhookEnabled": true,
     "webhookPort": 7385,
     "networkChecks": true,
-    "networkIntervalSec": 600
+    "networkIntervalSec": 600,
+    "globalShortcut": "",
+    "probeTargets": null
   },
   "unread": [
     "probe:network/relay:europe.firehose.network/1789923400808",
@@ -1489,7 +1515,20 @@
     "degraded": [],
     "community": [],
     "running": false,
-    "lastSweepAt": "2026-09-20T19:32:40.808Z"
+    "lastSweepAt": "2026-09-20T19:32:40.808Z",
+    "restraint": null
   },
-  "version": "0.1.0-preview"
+  "version": "0.1.0-preview",
+  "loginItem": {
+    "registered": false,
+    "error": null
+  },
+  "shortcut": {
+    "registered": false,
+    "error": null
+  },
+  "update": {
+    "stage": "current",
+    "version": null
+  }
 }

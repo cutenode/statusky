@@ -43,6 +43,7 @@
       import fixture from './fixtures/state.json'
       import networkFixture from './fixtures/network.json'
       import { summarizeNetwork } from '@shared/network'
+      import { effectiveProbeTargets } from '@shared/probe-targets'
 
       const params = new URLSearchParams(location.search)
       const state = structuredClone(fixture)
@@ -107,7 +108,7 @@
           { at: minutesAgo(10), state: 'partial', latencyMs: 700 },
           { at: minutesAgo(1), state: 'partial', latencyMs: 690 }
         )
-        const appview = serviceById('appview:api.pop2.bsky.app')
+        const appview = serviceById('appview:public.api.bsky.app')
         Object.assign(appview, { state: 'slow', latencyMs: 16400 })
       } else if (scenario === 'offline') {
         network.offline = true
@@ -279,6 +280,20 @@
             revealListeners.add(listener)
             return () => revealListeners.delete(listener)
           }
+        },
+        // Main's file dialogs, which a browser has none of. An export logs what it would
+        // write. An import reads `window.importTargets` — set it from the console to a JSON
+        // string to try a document — and is otherwise a cancelled dialog.
+        ProbeTargetsFile: {
+          save: async () => {
+            const targets = effectiveProbeTargets(state.settings.probeTargets)
+            console.log('[preview] export', JSON.stringify(targets, null, 2))
+            return 'statusky-probe-targets.json'
+          },
+          open: async () =>
+            window.importTargets
+              ? { name: 'preview-targets.json', text: window.importTargets }
+              : null
         },
         Webhook: {
           regenerateSecret: async () => {

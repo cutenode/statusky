@@ -34,6 +34,7 @@
     "src/test/factories.ts",
     "src/test/cbor.ts",
     "src/shared/**/*.ts",
+    "src/shared/**/*.json",
     "src/ipc/common/**/*.ts",
     "src/ipc/renderer/**/*.ts",
     "src/ipc/_internal/common/**/*.ts",

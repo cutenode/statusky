@@ -233,11 +233,13 @@ describe('the port', () => {
     expect(bridge.api.Preferences.patch).not.toHaveBeenCalled()
   })
 
-  it('ignores a value that is not a number', async () => {
+  // A number input reads back as '' for anything that is not a number, which is
+  // also what it holds halfway through an edit.
+  it.each(['', '0', '-80'])('ignores %j, which is no port at all', async (value) => {
     const { bridge, getByLabelText } = await renderWith(WebhookPanel, { now: NOW }, on())
     const input = getByLabelText('Webhook port') as HTMLInputElement
 
-    input.value = ''
+    input.value = value
     await fireEvent.change(input)
 
     expect(bridge.api.Preferences.patch).not.toHaveBeenCalled()

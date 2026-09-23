@@ -123,13 +123,6 @@ describe('catching up', () => {
     expect(bridge.state.unread).toEqual([])
   })
 
-  it('keeps showing what it just read, so the list does not empty itself', async () => {
-    const { getByText } = await renderWith(TimelinePanel, { now: NOW }, populated)
-    await settle()
-
-    expect(getByText('We are investigating a problem')).toBeTruthy()
-  })
-
   it('ignores the mark-as-read setting: opening this tab is reading it', async () => {
     const { bridge } = await renderWith(
       TimelinePanel,
@@ -156,13 +149,22 @@ describe('catching up', () => {
   })
 
   it('catches up again when the popover comes back to the front', async () => {
-    const { bridge } = await renderWith(TimelinePanel, { now: NOW }, populated)
+    const { bridge, getByText, queryByText } = await renderWith(
+      TimelinePanel,
+      { now: NOW },
+      populated
+    )
     await pushState(bridge, { unread: [read.uri] })
 
     window.dispatchEvent(new Event('focus'))
     await settle()
 
     expect(bridge.api.Feed.markAllRead).toHaveBeenCalledTimes(2)
+    // Swept into the batch it is holding, so it stays above the line although it is
+    // now read — which leaves nothing below it.
+    expect(bridge.state.unread).toEqual([])
+    expect(order(getByText('Unread'), getByText('Dealt with days ago'))).toBe(true)
+    expect(queryByText('Read')).toBeNull()
   })
 
   it('stops listening once the tab is gone', async () => {

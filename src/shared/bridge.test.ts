@@ -47,11 +47,13 @@ describe('ipcErrorMessage', () => {
     expect(ipcErrorMessage(undefined)).toBe('undefined')
   })
 
-  it('never leaks the generated channel name to the user', () => {
+  // Electron sends a failure back as `String(error)`, so it names whatever class main
+  // threw; neither that nor the generated channel name is anything a person should see.
+  it('unwraps a failure main threw as some other class of error', () => {
     const error = new Error(
       "Error invoking remote method '$eipc_message$_deadbeef_$_statusky_$_State_$_get': " +
-        'Error: nope'
+        "TypeError: Cannot read properties of undefined (reading 'did')"
     )
-    expect(ipcErrorMessage(error)).toBe('nope')
+    expect(ipcErrorMessage(error)).toBe("Cannot read properties of undefined (reading 'did')")
   })
 })

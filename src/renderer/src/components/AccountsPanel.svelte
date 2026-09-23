@@ -4,7 +4,7 @@
   import AccountRow from './AccountRow.svelte'
   import AddAccountForm from './AddAccountForm.svelte'
 
-  const notifying = $derived(app.accounts.filter((a) => a.notify && !a.muted).length)
+  const notifying = $derived(app.accounts.filter((a) => a.notify !== 'off' && !a.muted).length)
 </script>
 
 <div class="scroll-thin h-full min-h-0 overflow-y-auto px-3 pb-4">

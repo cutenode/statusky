@@ -238,21 +238,24 @@ describe('showPostMenu', () => {
    * arrives first, and both of them end the menu, so the release has to be able to
    * happen twice. If it could not, one of the two orderings would un-pin the popover
    * while the share sheet opened from it was still on screen.
+   *
+   * The callback is taken before the click and run again by hand: the double's own
+   * `closePopup` runs each popup's callback once and then has nothing left to run, so a
+   * second `closePopup` would prove nothing.
    */
-  it('does not let go twice when a menu closes twice', () => {
+  it('does not let go of the share sheet’s hold when the menu reports closing twice', () => {
     const post = makePost()
-    const { show, popover, pinned } = build({ posts: [post] })
+    const { show, pinned } = build({ posts: [post] })
 
     show(post.uri)
-    lastMenu().click('Copy link')
-    const releases = vi.mocked(popover.setPinned).mock.calls.filter(([value]) => !value).length
+    const closed = lastMenu().popups[0]!.callback!
+    lastMenu().click('Share…')
+    closed()
 
-    lastMenu().closePopup()
+    expect(pinned()).toBe(true)
 
+    shareMenus[0]!.closePopup()
     expect(pinned()).toBe(false)
-    expect(vi.mocked(popover.setPinned).mock.calls.filter(([value]) => !value)).toHaveLength(
-      releases
-    )
   })
 
   it('pops the menu up against the popover’s own window', () => {
@@ -337,6 +340,7 @@ describe('sharing an incident', () => {
 
     await withPlatform('win32', () => show(post.uri))
 
-    expect(labels()).not.toContain('Share…')
+    // Nor a separator left dangling at the bottom where its section would have been.
+    expect(labels()).toEqual(['Copy link', 'Open in browser', '—', 'Mute Bluesky Status'])
   })
 })

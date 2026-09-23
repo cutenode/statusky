@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { StatuskyBridge } from '../shared/bridge'
 import { SERVICES } from '../shared/network'
 import type { AppState, NetworkReveal, NetworkSnapshot } from '../shared/types'
 import {
   clipboard,
   clipboardContents,
+  dialog,
   FakeWebFrameMain,
   menus,
   net,
@@ -12,12 +14,31 @@ import {
   openedExternally,
   shell
 } from '../test/electron'
-import { BUILTIN_PROFILES, createHarness, seedFeed } from '../test/harness'
+import { BUILTIN_PROFILES, createHarness, flush, seedFeed } from '../test/harness'
 import type { Harness } from '../test/harness'
 import { makePost } from '../test/factories'
 
 const BSKY = BUILTIN_PROFILES.bsky
+const REFUSED = /did not pass origin validation/
 let harness: Harness
+
+/**
+ * One call on every interface the bridge exposes. A `Record` over the bridge's own keys,
+ * so an interface added to the schema without a row here fails the type-check rather
+ * than going unasked whether it checks where its calls come from.
+ */
+const ONE_CALL_EACH: Record<keyof StatuskyBridge, (api: StatuskyBridge) => Promise<unknown>> = {
+  State: (api) => api.State.get(),
+  Accounts: (api) => api.Accounts.remove(BSKY.did),
+  Preferences: (api) => api.Preferences.patch({ theme: 'dark' }),
+  Feed: (api) => api.Feed.refresh(),
+  Actors: (api) => api.Actors.resolve(BSKY.handle),
+  Webhook: (api) => api.Webhook.regenerateSecret(),
+  ProbeTargetsFile: (api) => api.ProbeTargetsFile.open(),
+  Network: (api) => api.Network.run(),
+  Host: (api) => api.Host.quit(),
+  Popover: (api) => api.Popover.reduceMotion(true)
+}
 
 async function boot(options: Parameters<typeof createHarness>[0] = {}): Promise<Harness> {
   harness = await createHarness({ tray: false, ...options })
@@ -46,7 +67,7 @@ describe('origin validation', () => {
     const h = await boot()
     frame(h).url = 'https://status.example.test/'
 
-    await expect(h.api.State.get()).rejects.toThrow(/did not pass origin validation/)
+    await expect(h.api.State.get()).rejects.toThrow(REFUSED)
   })
 
   // file:// is one opaque origin shared by every local page, which is exactly why the
@@ -55,7 +76,7 @@ describe('origin validation', () => {
     const h = await boot()
     frame(h).url = 'file:///Applications/Statusky.app/Contents/index.html'
 
-    await expect(h.api.State.get()).rejects.toThrow(/did not pass origin validation/)
+    await expect(h.api.State.get()).rejects.toThrow(REFUSED)
   })
 
   it('refuses a sub-frame even on the right origin', async () => {
@@ -63,41 +84,42 @@ describe('origin validation', () => {
     const popover = frame(h)
     popover.parent = new FakeWebFrameMain(popover.webContents, popover.url)
 
-    await expect(h.api.State.get()).rejects.toThrow(/did not pass origin validation/)
+    await expect(h.api.State.get()).rejects.toThrow(REFUSED)
   })
 
   it('refuses a frame with no URL at all', async () => {
     const h = await boot()
     frame(h).url = ''
 
-    await expect(h.api.State.get()).rejects.toThrow(/did not pass origin validation/)
+    await expect(h.api.State.get()).rejects.toThrow(REFUSED)
   })
 
   it('refuses a URL that cannot be parsed', async () => {
     const h = await boot()
     frame(h).url = ':://nonsense'
 
-    await expect(h.api.State.get()).rejects.toThrow(/did not pass origin validation/)
+    await expect(h.api.State.get()).rejects.toThrow(REFUSED)
   })
 
   // The production wiring is compiled with `is_packaged is true`, so a build running
   // from source cannot answer the packaged app's origin even if it claims it.
   it('refuses everything when the app is not packaged', async () => {
     const h = await boot({ packaged: false })
-    await expect(h.api.State.get()).rejects.toThrow(/did not pass origin validation/)
+    await expect(h.api.State.get()).rejects.toThrow(REFUSED)
   })
 
-  it('applies to every interface, not just the first', async () => {
-    const h = await boot()
-    frame(h).url = 'https://status.example.test/'
+  it.each(Object.entries(ONE_CALL_EACH))(
+    'applies to %s as well, before anything is done',
+    async (_name, call) => {
+      const h = await boot()
+      frame(h).url = 'https://status.example.test/'
 
-    await expect(h.api.Feed.refresh()).rejects.toThrow(/did not pass origin validation/)
-    await expect(h.api.Accounts.remove(BSKY.did)).rejects.toThrow(/did not pass origin/)
-    await expect(h.api.Preferences.patch({ theme: 'dark' })).rejects.toThrow(/origin/)
-    await expect(h.api.Actors.resolve(BSKY.handle)).rejects.toThrow(/origin/)
-    await expect(h.api.Host.quit()).rejects.toThrow(/origin/)
-    expect(h.quit).not.toHaveBeenCalled()
-  })
+      await expect(call(h.api)).rejects.toThrow(REFUSED)
+      // The two rows whose handlers would have reached outside the app.
+      expect(h.quit).not.toHaveBeenCalled()
+      expect(dialog.showOpenDialog).not.toHaveBeenCalled()
+    }
+  )
 
   it('re-attaches handlers when the popover is closed and reopened', async () => {
     const h = await boot()
@@ -254,7 +276,7 @@ describe('actors', () => {
 
   it('rejects for an unknown handle', async () => {
     const h = await boot()
-    await expect(h.api.Actors.resolve('nobody.invalid')).rejects.toThrow()
+    await expect(h.api.Actors.resolve('nobody.invalid')).rejects.toThrow(/Profile not found/)
   })
 
   it('reports a rejection that is not an Error', async () => {
@@ -289,7 +311,7 @@ describe('opening links', () => {
 
   it('rejects a value that is not a URL at all', async () => {
     const h = await boot()
-    await expect(h.api.Host.openExternal('not a url')).rejects.toThrow()
+    await expect(h.api.Host.openExternal('not a url')).rejects.toThrow(/Invalid URL/)
     expect(openedExternally).toEqual([])
   })
 })
@@ -315,7 +337,7 @@ describe('test notification', () => {
   })
 
   it('honours the sound preference', async () => {
-    const h = await boot({ settings: { notificationSound: false } })
+    const h = await boot({ settings: { notificationSound: 'never' } })
     await h.api.Host.sendTestNotification()
     expect(notifications[0]?.options.silent).toBe(true)
   })
@@ -354,15 +376,31 @@ describe('window and app control', () => {
 
 describe('state pushes', () => {
   it('pushes a fresh snapshot to the renderer after every mutation', async () => {
-    const h = await boot()
+    // Not by the account muted below, whose posts would stop counting as unread.
+    const post = makePost({ authorDid: BUILTIN_PROFILES.blacksky.did })
+    const h = await boot({ posts: [post], unread: [post.uri] })
     const seen: AppState[] = []
     const stop = h.api.State.onChanged((state) => seen.push(state))
 
     await h.api.Accounts.patch(BSKY.did, { muted: true })
     await h.api.Feed.markAllRead()
 
-    expect(seen).toHaveLength(1)
+    expect(seen).toHaveLength(2)
     expect(seen[0]?.accounts.find((a) => a.did === BSKY.did)?.muted).toBe(true)
+    expect(seen[1]?.unread).toEqual([])
+    stop()
+  })
+
+  // Marking everything read with nothing unread changes nothing, so there is nothing new
+  // to send — and a push per no-op would re-render the whole feed for no reason.
+  it('sends nothing for a call that changed nothing', async () => {
+    const h = await boot()
+    const listener = vi.fn()
+    const stop = h.api.State.onChanged(listener)
+
+    await h.api.Feed.markAllRead()
+
+    expect(listener).not.toHaveBeenCalled()
     stop()
   })
 
@@ -454,8 +492,8 @@ describe('the network dashboard', () => {
   it('refuses a dashboard request from any other origin', async () => {
     const h = await boot()
     frame(h).url = 'https://evil.example/'
-    await expect(h.api.Network.run()).rejects.toThrow()
-    await expect(h.api.Network.get()).rejects.toThrow()
+    await expect(h.api.Network.run()).rejects.toThrow(REFUSED)
+    await expect(h.api.Network.get()).rejects.toThrow(REFUSED)
   })
 })
 
@@ -493,7 +531,7 @@ describe('what the page can tell main about the world', () => {
   it('refuses the report from any other origin', async () => {
     const h = await boot()
     frame(h).url = 'https://evil.example/'
-    await expect(h.api.Popover.online(true)).rejects.toThrow(/did not pass origin validation/)
+    await expect(h.api.Popover.online(true)).rejects.toThrow(REFUSED)
   })
 
   it('asks the popover to catch the user up, and does not mind if there is none', async () => {
@@ -542,8 +580,31 @@ describe('a native menu for an update', () => {
     const h = await boot()
     frame(h).url = 'https://evil.example/'
 
-    await expect(h.api.Popover.postMenu('at://anything')).rejects.toThrow(
-      /did not pass origin validation/
-    )
+    await expect(h.api.Popover.postMenu('at://anything')).rejects.toThrow(REFUSED)
+  })
+})
+
+/**
+ * The check targets' file dialogs, across the real boundary. What they read and write is
+ * src/main/probe-targets-file.ts's own test; what belongs here is that `registerIpc`
+ * builds the one-dialog-at-a-time guard once, rather than once per window.
+ */
+describe('the check targets file', () => {
+  it('keeps to one file dialog when the popover is rebuilt while one is up', async () => {
+    const h = await boot()
+    let answer!: (value: { canceled: boolean; filePaths: string[] }) => void
+    dialog.showOpenDialog.mockReturnValueOnce(new Promise((settle) => (answer = settle)))
+
+    const opening = h.api.ProbeTargetsFile.open()
+    await flush()
+    // A new window is a new WebContents, and every handler is attached to it afresh.
+    h.browserWindow()!.close()
+    h.popover.show()
+
+    await expect(h.api.ProbeTargetsFile.save()).rejects.toThrow(/already open/)
+    expect(dialog.showSaveDialog).not.toHaveBeenCalled()
+
+    answer({ canceled: true, filePaths: [] })
+    await expect(opening).resolves.toBeNull()
   })
 })

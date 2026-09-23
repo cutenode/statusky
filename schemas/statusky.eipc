@@ -173,6 +173,31 @@ interface Webhook {
     regenerateSecret() -> WebhookStatus
 }
 
+// What `ProbeTargetsFile.open` hands back: the file's name without its folder, to say
+// which one is being imported, and its text. Declared here rather than beside the other
+// payloads in src/shared/types.ts because this one call is all that ever carries it.
+structure OpenedFile {
+    name: string
+    text: string
+}
+
+// The network checks' targets as a file of the user's choosing, in both directions.
+//
+// Both go through a dialog main draws, so the page never names a path. `save` writes
+// the targets in force, which main works out from what it has stored — the page cannot
+// put words of its own into a file on disk — and answers with the name it was saved
+// under, or null if the dialog was cancelled. `open` hands back what the chosen file
+// says, unparsed: the Settings panel checks it field by field and shows what would
+// change before anything is applied, and applying it is an ordinary
+// `Preferences.patch`, validated there like any other. See src/main/probe-targets-file.ts.
+[RendererAPI]
+[Validator=PopoverOnly]
+[ContextBridge]
+interface ProbeTargetsFile {
+    save() -> string?
+    open() -> OpenedFile?
+}
+
 // The live network dashboard. Its snapshot changes with every request a sweep makes, so
 // it travels on its own channel rather than on `State.changed`, which carries every post;
 // the summary the header and tray need is on `AppState.network`.

@@ -40,13 +40,13 @@ describe('ReachabilityRing', () => {
   })
 
   it('shows how many answered, out of how many', async () => {
-    const { container } = await renderWith(ReachabilityRing, {
-      states: ['live', 'down'],
-      reachable: 1,
-      total: 2
+    const { getByText } = await renderWith(ReachabilityRing, {
+      states: ['live', 'down', 'live'],
+      reachable: 2,
+      total: 3
     })
-    expect(container.textContent).toContain('1')
-    expect(container.textContent).toContain('of 2')
+    expect(getByText('2').className).toContain('font-semibold')
+    expect(getByText('of 3')).toBeTruthy()
   })
 
   it('draws a lone service as a near-complete ring rather than nothing', async () => {

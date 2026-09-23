@@ -1,13 +1,14 @@
 <script lang="ts">
   import { Avatar, AvatarFallback, AvatarImage } from '$lib/components/ui/avatar'
-  import { Switch } from '$lib/components/ui/switch'
+  import { Select, SelectContent, SelectItem, SelectTrigger } from '$lib/components/ui/select'
   import { Tooltip, TooltipContent, TooltipTrigger } from '$lib/components/ui/tooltip'
   import { app } from '$lib/app-state.svelte'
   import { nav } from '$lib/nav.svelte'
   import { cn } from '$lib/utils'
+  import { NOTIFY_LEVEL_CHOICES } from '@shared/notify'
   import { HEALTH_LABEL } from '@shared/status'
   import { sourceLabel } from '@shared/webhook'
-  import type { Account } from '@shared/types'
+  import type { Account, NotifyLevel } from '@shared/types'
   import Bell from '@lucide/svelte/icons/bell'
   import BellOff from '@lucide/svelte/icons/bell-off'
   import Eye from '@lucide/svelte/icons/eye'
@@ -21,6 +22,10 @@
   let { account }: { account: Account } = $props()
 
   const pushed = $derived(account.kind === 'webhook')
+  const level = $derived(
+    NOTIFY_LEVEL_CHOICES.find((choice) => choice.value === account.notify) ??
+      NOTIFY_LEVEL_CHOICES[0]!
+  )
   /** The network checks' own source: it lives in the dashboard, not on the web. */
   const measured = $derived(account.kind === 'probe')
 
@@ -146,22 +151,29 @@
       </Tooltip>
     {/if}
 
-    <Tooltip>
-      <TooltipTrigger class="ml-1 flex items-center gap-1.5" aria-label="Toggle notifications">
-        {#if account.notify}
-          <Bell class="size-3.5 text-primary" />
-        {:else}
+    <Select
+      type="single"
+      value={account.notify}
+      onValueChange={(value) =>
+        void app.patchAccount(account.did, { notify: value as NotifyLevel })}
+    >
+      <SelectTrigger
+        class="ml-1 h-7 w-auto gap-1 px-1.5 text-[11.5px]"
+        aria-label={`Notifications for ${sourceLabel(account.did, account.handle)}`}
+        title={level.hint}
+      >
+        {#if account.notify === 'off'}
           <BellOff class="size-3.5 text-muted-foreground" />
+        {:else}
+          <Bell class="size-3.5 text-primary" />
         {/if}
-        <Switch
-          checked={account.notify}
-          onCheckedChange={(checked) => void app.patchAccount(account.did, { notify: checked })}
-          aria-label={`Notifications for ${sourceLabel(account.did, account.handle)}`}
-        />
-      </TooltipTrigger>
-      <TooltipContent>
-        {account.notify ? 'Notifying you about new posts' : 'Notifications off'}
-      </TooltipContent>
-    </Tooltip>
+        <span>{level.short}</span>
+      </SelectTrigger>
+      <SelectContent align="end">
+        {#each NOTIFY_LEVEL_CHOICES as choice (choice.value)}
+          <SelectItem value={choice.value} label={choice.label} />
+        {/each}
+      </SelectContent>
+    </Select>
   </div>
 </div>

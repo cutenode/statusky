@@ -1,5 +1,12 @@
 import { Notification, shell } from 'electron'
 import { probeServiceId } from '../shared/network'
+import {
+  bannerSound,
+  inQuietHours,
+  quietHoursEnd,
+  snoozedUntil,
+  URGENT_SEVERITIES
+} from '../shared/notify'
 import { SEVERITY_LABEL } from '../shared/status'
 import { sourceLabel } from '../shared/webhook'
 import type { Settings, StatusPost } from '../shared/types'
@@ -183,10 +190,16 @@ export function notifyPosts(posts: StatusPost[], settings: Settings, deps: Notif
     const actions = bannerActions(post, deps)
     const notification = new Notification({
       title: `${post.authorDisplayName} · ${SEVERITY_LABEL[post.severity]}`,
-      body: truncate(post.text, MAX_BODY) || 'Posted a status update.',
+      // Hidden text still leaves a body: an empty one reads as a broken banner.
+      body: settings.notificationShowBody
+        ? truncate(post.text, MAX_BODY) || 'Posted a status update.'
+        : 'Posted a status update.',
       subtitle: sourceLabel(post.authorDid, post.authorHandle),
-      silent: !settings.notificationSound,
-      timeoutType: 'default',
+      silent: !bannerSound(settings, [post.severity]),
+      // `never` only holds on macOS when Statusky's banners are set to the Alerts style,
+      // which forge.config.ts asks for; everywhere else it is a request the OS may round
+      // down, and the worst it can do is behave like `default`.
+      timeoutType: settings.notifyStickyOutages && post.severity === 'outage' ? 'never' : 'default',
       actions: actions.map((action) => ({ type: 'button' as const, text: action.text })),
       ...collapseKeys(post)
     })
@@ -235,7 +248,12 @@ export interface DigestDeps {
  * Deliberately not a per-post path with a different title: it opens nowhere in
  * particular and marks nothing read, because the user has not read any of it yet.
  */
-export function notifyDigest(posts: StatusPost[], settings: Settings, deps: DigestDeps): void {
+export function notifyDigest(
+  posts: StatusPost[],
+  settings: Settings,
+  deps: DigestDeps,
+  heading: string = 'While you were away'
+): void {
   if (!Notification.isSupported()) {
     deps.onFailed?.('This system does not support notifications.')
     return
@@ -249,9 +267,12 @@ export function notifyDigest(posts: StatusPost[], settings: Settings, deps: Dige
   // waiting room in `createNotifier` exists to avoid. Its single gesture is the click
   // that opens the Timeline, where the updates are, in order, still unread.
   const notification = new Notification({
-    title: 'Statusky · While you were away',
+    title: `Statusky · ${heading}`,
     body: truncate(`${posts.length} updates from ${sources}`, MAX_BODY),
-    silent: !settings.notificationSound,
+    silent: !bannerSound(
+      settings,
+      posts.map((post) => post.severity)
+    ),
     timeoutType: 'default'
   })
 
@@ -266,17 +287,54 @@ export interface NotifierDeps extends NotificationDeps {
   stillWorthSaying(posts: StatusPost[]): StatusPost[]
   /** The summary was clicked: show the Timeline. */
   onCatchUp(): void
+  /** The clock, for tests. */
+  now?(): number
 }
 
 export interface Notifier {
-  /** Announce these updates, or hold them back if there is nobody there to see them. */
+  /** Announce these updates, or hold them back if this is not the moment. */
   notify(posts: StatusPost[]): void
-  /** Somebody is back: say once what was held back, and forget it either way. */
+  /** Somebody is back at the machine: say once what was held for them. */
   release(): void
+  /**
+   * The settings changed, or a timer came due: announce whatever is no longer held back
+   * by a snooze or quiet hours. Unlike `release` this does not take anyone's presence
+   * for granted, so it is safe to call on every state change.
+   */
+  reconsider(): void
+  /** Forget every timer, for shutdown and for tests. */
+  dispose(): void
+}
+
+/** Why a banner is waiting. Each has its own line on the summary that ends the wait. */
+type HoldReason = 'snooze' | 'quiet' | 'away'
+
+const DIGEST_HEADING: Record<HoldReason | 'burst', string> = {
+  snooze: 'While notifications were paused',
+  quiet: 'During quiet hours',
+  away: 'While you were away',
+  burst: 'More updates'
 }
 
 /**
+ * How long after a banner further updates are folded into one summary rather than
+ * raised one by one. An incident tends to arrive as a status post, a second post that
+ * corrects it and the checks' own entry within a minute or two of each other.
+ */
+export const BURST_WINDOW_MS = 2 * 60_000
+
+/** Slack on the timers that end a hold, so they land after the boundary and not on it. */
+const WAKE_SLACK_MS = 1_000
+
+/**
  * The notification path, with a waiting room in front of it.
+ *
+ * `selectNotifiable` and `applyFollowUps` have already decided *what* is worth a banner;
+ * this decides *when*. A measured outage can be made to wait out a grace period, and a
+ * recovery inside it cancels both banners. Banners wait out a snooze, quiet hours (bar
+ * outages, if the user lets them through) and an absence, then go up as one summary.
+ * Updates that arrive just after a banner are folded into one summary at the end of a
+ * short window.
  *
  * Holding changes nothing about what an update *is*: a held banner marks nothing read
  * and moves no cursor, so an incident the user never saw a banner for is still unread
@@ -286,33 +344,191 @@ export interface Notifier {
  * the notification resurrecting something the user had already finished with.
  */
 export function createNotifier(settings: () => Settings, deps: NotifierDeps): Notifier {
-  let pending: StatusPost[] = []
+  const now = (): number => deps.now?.() ?? Date.now()
+
+  let held: { post: StatusPost; reason: HoldReason }[] = []
+  /** Measured outages waiting out `notifyProbeGraceSec`, by service. */
+  const grace = new Map<string, { post: StatusPost; timer: ReturnType<typeof setTimeout> }>()
+  let burst: StatusPost[] = []
+  let burstUntil = 0
+  let burstTimer: ReturnType<typeof setTimeout> | null = null
+  let wakeTimer: ReturnType<typeof setTimeout> | null = null
+
+  function holdReason(post: StatusPost, presenceKnown: boolean): HoldReason | null {
+    const current = settings()
+    const at = new Date(now())
+    if (snoozedUntil(current, at)) return 'snooze'
+    const breaksThrough =
+      current.quietHoursBreakthrough && URGENT_SEVERITIES.includes(post.severity)
+    if (inQuietHours(current, at) && !breaksThrough) return 'quiet'
+    if (!presenceKnown && current.notifyWhenAway !== 'deliver' && deps.away()) return 'away'
+    return null
+  }
+
+  /** Book a wake-up for when the snooze or quiet hours holding something end. */
+  function scheduleWake(): void {
+    if (wakeTimer) clearTimeout(wakeTimer)
+    wakeTimer = null
+    if (!held.some((entry) => entry.reason !== 'away')) return
+
+    const current = settings()
+    const at = new Date(now())
+    const ends = [
+      snoozedUntil(current, at),
+      inQuietHours(current, at) ? quietHoursEnd(current, at) : null
+    ].filter((end): end is Date => end !== null)
+    // No end in sight means the hold ended while its wake-up was still waiting out the
+    // slack, and an update delivered in that second has just cleared it. What it held is
+    // free to go, so book the wake-up for now rather than drop it.
+    const soonest = ends.length ? Math.min(...ends.map((end) => end.getTime())) : now()
+    wakeTimer = setTimeout(
+      () => {
+        wakeTimer = null
+        settle(false)
+      },
+      Math.max(soonest - now(), 0) + WAKE_SLACK_MS
+    )
+    wakeTimer.unref?.()
+  }
+
+  /** One update is a banner; more than one is a summary that opens the Timeline. */
+  function summarise(posts: StatusPost[], reason: HoldReason | 'burst'): void {
+    if (!posts.length) return
+    // One update is not a digest. Summarising a single incident as "1 update from
+    // Bluesky" throws away the sentence the operator wrote, and the ordinary banner
+    // already opens the right thing.
+    if (posts.length === 1) {
+      notifyPosts(posts, settings(), deps)
+      return
+    }
+    notifyDigest(
+      posts,
+      settings(),
+      { onOpened: () => deps.onCatchUp(), onFailed: deps.onFailed },
+      DIGEST_HEADING[reason]
+    )
+  }
+
+  function flushBurst(): void {
+    burstTimer = null
+    const posts = deps.stillWorthSaying(burst.splice(0))
+    summarise(posts, 'burst')
+    if (posts.length) burstUntil = now() + BURST_WINDOW_MS
+  }
+
+  function present(posts: StatusPost[]): void {
+    if (!posts.length) return
+    const current = settings()
+    if (!current.notifyCombineBursts) {
+      notifyPosts(posts, current, deps)
+      return
+    }
+    if (now() < burstUntil) {
+      burst.push(...posts)
+      if (!burstTimer) {
+        burstTimer = setTimeout(flushBurst, burstUntil - now())
+        burstTimer.unref?.()
+      }
+      return
+    }
+    notifyPosts(posts, current, deps)
+    burstUntil = now() + BURST_WINDOW_MS
+  }
+
+  function deliver(posts: StatusPost[]): void {
+    if (!settings().notificationsEnabled) return
+    const ready: StatusPost[] = []
+    for (const post of posts) {
+      const reason = holdReason(post, false)
+      if (!reason) ready.push(post)
+      // Staying silent while away is holding and then saying nothing, which is the same
+      // as never holding: the update is unread either way.
+      else if (reason !== 'away' || settings().notifyWhenAway === 'digest') {
+        held.push({ post, reason })
+      }
+    }
+    scheduleWake()
+    present(ready)
+  }
+
+  /** Announce whatever is no longer held back. `presenceKnown`: somebody just came back. */
+  function settle(presenceKnown: boolean): void {
+    if (!held.length) return
+    if (!settings().notificationsEnabled) {
+      held = []
+      scheduleWake()
+      return
+    }
+    const waiting: typeof held = []
+    const ready: typeof held = []
+    for (const entry of held) {
+      const reason = holdReason(entry.post, presenceKnown)
+      if (reason) waiting.push({ post: entry.post, reason })
+      else ready.push(entry)
+    }
+    held = waiting
+    scheduleWake()
+    if (!ready.length) return
+
+    const worthSaying = deps.stillWorthSaying(ready.map((entry) => entry.post))
+    summarise(worthSaying, ready[0]!.reason)
+  }
 
   return {
     notify(posts: StatusPost[]): void {
       if (!posts.length) return
-      if (deps.away()) {
-        pending.push(...posts)
-        return
+      const graceMs = settings().notifyProbeGraceSec * 1000
+      const immediate: StatusPost[] = []
+
+      for (const post of posts) {
+        const serviceId = probeServiceId(post)
+        const pending = serviceId ? grace.get(serviceId) : undefined
+
+        if (serviceId && pending) {
+          if (post.severity === 'resolved') {
+            // Back inside the grace period: a blip, and not worth either banner.
+            clearTimeout(pending.timer)
+            grace.delete(serviceId)
+          } else {
+            // Down became partial or the other way round; the clock keeps running.
+            pending.post = post
+          }
+          continue
+        }
+
+        if (serviceId && graceMs > 0 && post.severity !== 'resolved') {
+          const timer = setTimeout(() => {
+            const entry = grace.get(serviceId)
+            grace.delete(serviceId)
+            if (entry) deliver([entry.post])
+          }, graceMs)
+          timer.unref?.()
+          grace.set(serviceId, { post, timer })
+          continue
+        }
+
+        immediate.push(post)
       }
-      notifyPosts(posts, settings(), deps)
+
+      deliver(immediate)
     },
 
     release(): void {
-      const worthSaying = deps.stillWorthSaying(pending)
-      pending = []
-      if (!worthSaying.length) return
-      // One update is not a digest. Summarising a single incident as "1 update from
-      // Bluesky" throws away the sentence the operator wrote, and the ordinary banner
-      // already opens the right thing.
-      if (worthSaying.length === 1) {
-        notifyPosts(worthSaying, settings(), deps)
-        return
-      }
-      notifyDigest(worthSaying, settings(), {
-        onOpened: () => deps.onCatchUp(),
-        onFailed: deps.onFailed
-      })
+      settle(true)
+    },
+
+    reconsider(): void {
+      settle(false)
+    },
+
+    dispose(): void {
+      for (const { timer } of grace.values()) clearTimeout(timer)
+      grace.clear()
+      if (burstTimer) clearTimeout(burstTimer)
+      if (wakeTimer) clearTimeout(wakeTimer)
+      burstTimer = wakeTimer = null
+      held = []
+      burst = []
     }
   }
 }
@@ -330,7 +546,7 @@ export async function notifyTest(settings: Settings): Promise<void> {
     new Notification({
       title: 'Statusky · Monitoring',
       body: 'Notifications are working. You will see status updates here.',
-      silent: !settings.notificationSound
+      silent: settings.notificationSound === 'never'
     })
   )
 }

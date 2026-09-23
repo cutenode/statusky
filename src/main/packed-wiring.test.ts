@@ -190,6 +190,19 @@ describe('assertProductionWiring', () => {
     )
   })
 
+  // Rollup writes `.cjs` and `.mjs` as readily as `.js` — the preload already is one —
+  // and wiring in a chunk the scan skipped would be wiring nobody checked.
+  it.each(['wiring.cjs', 'wiring.mjs'])('reads a chunk written as %s', async (chunk) => {
+    const dir = await app({
+      'out/main/index.js': mainBundle(PRODUCTION),
+      [`out/main/chunks/${chunk}`]: MINIFIED_DEVELOPMENT
+    })
+
+    await expect(assertProductionWiring(dir)).rejects.toThrow(
+      `development in ${join('out', 'main', 'chunks', chunk)}`
+    )
+  })
+
   // forge.config.ts leaves maps out of the package, and their embedded sources can
   // be older than the code beside them.
   it('ignores source maps, which are not packed', async () => {

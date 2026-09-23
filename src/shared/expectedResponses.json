@@ -1,0 +1,26 @@
+{
+  "relay": { "healthStatus": "ok" },
+  "firehose": { "eventOp": 1, "errorOp": -1, "commitType": "#commit" },
+  "jetstream": { "greeting": "Welcome to Jetstream", "commitKind": "commit" },
+  "spacedust": {
+    "source": "app.bsky.feed.like:subject.uri",
+    "linkKind": "link",
+    "liveOrigin": "live"
+  },
+  "appView": { "versionlessHealth": ["api.blacksky.community", "appview.wsocial.eu"] },
+  "dns": { "noError": 0 },
+  "ufos": { "statsCollection": "app.bsky.feed.post" },
+  "slingshot": { "profileType": "app.bsky.actor.profile" },
+  "forYou": {
+    "siteMarker": "<link rel=\"canonical\" href=\"https://foryou.club/\">",
+    "busy": "server busy",
+    "generatorServiceType": "BskyFeedGenerator"
+  },
+  "tangled": { "goImportMarker": "go-import", "notFoundTitle": "404" },
+  "hydrant": { "name": "hydrant", "mode": "indexer" },
+  "knot": { "healthCapability": "repo-did-input" },
+  "spindle": { "healthStatus": "ok" },
+  "pckt": { "status": "ok" },
+  "standardSite": { "publicationCollection": "site.standard.publication" },
+  "offprint": { "upMarker": "Application up" }
+}

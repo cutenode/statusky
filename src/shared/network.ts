@@ -13,6 +13,7 @@
  * are made in `src/main/probes.ts`; scheduling and debouncing live in
  * `src/main/network.ts`.
  */
+import { DEFAULT_PROBE_TARGETS } from './probe-targets'
 import { HEALTH_LABEL, deriveClaim, overallHealth, type Claim, type Health } from './status'
 import type {
   Account,
@@ -24,6 +25,7 @@ import type {
   ProbeGroup,
   ProbeKind,
   ProbeState,
+  ProbeTargets,
   ProbeTier,
   ServiceProbe,
   Severity,
@@ -35,6 +37,12 @@ import type {
 /**
  * What gets measured, and with what. This is status.feeds.blue's configuration, so the
  * two can be compared side by side.
+ *
+ * These are the services themselves, which do not change under anybody's feet. What each
+ * one is *asked about* — which accounts, feeds, images, repositories and documents — is
+ * other people's content, and lives in `probeTargets.json` where a user can replace it;
+ * see src/shared/probe-targets.ts. The exact words the answers are held to live in
+ * `expectedResponses.json`; see src/shared/expected-responses.ts.
  */
 export const CATALOGUE = {
   relays: [
@@ -92,22 +100,6 @@ export const CATALOGUE = {
     'morel.us-east.host.bsky.network',
     'shiitake.us-east.host.bsky.network'
   ],
-  /** Prolific posters: between them, somebody has always posted recently. */
-  authorFeedDids: [
-    'did:plc:ragtjsm2j2vknwkz3zp4oxrd',
-    'did:plc:f4z2nftgrn75h7h3wucdyzaf',
-    'did:plc:mrozf7u6e7kjpo7itbrudpc6',
-    'did:plc:65r3dy2t6xfuwidxmzvctvsh'
-  ],
-  profileDids: ['did:plc:ragtjsm2j2vknwkz3zp4oxrd', 'did:plc:rnpkyqnmsw4ipey6eotbdnnf'],
-  handles: ['pfrazee.com', 'bad-example.com', 'pds.dad'],
-  feeds: [
-    {
-      label: 'Discover feed',
-      host: 'discover.bsky.app',
-      uri: 'at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot'
-    }
-  ],
   /**
    * The For You feed: the most liked custom feed on Bluesky, and two machines wearing
    * one hostname. The feed is a single Go binary on its author's PC at home, and a small
@@ -122,13 +114,6 @@ export const CATALOGUE = {
    */
   forYou: {
     host: 'foryou.club',
-    /** What the generator record points at, and what an AppView resolves before calling. */
-    did: 'did:web:foryou.club',
-    feed: 'at://did:plc:3guzzweuqraryl3rdkimjamk/app.bsky.feed.generator/for-you',
-    /** A structural line of the site's `<head>`, rather than the copy around it. */
-    siteMarker: '<link rel="canonical" href="https://foryou.club/">',
-    /** What the site says, in plain text under a 503, when it is shedding load. */
-    busy: 'server busy',
     /**
      * Where Bluesky's own verdict on the generator is read from. Whether the feed works
      * in the app is this AppView's opinion and nobody else's, so it is worth asking.
@@ -144,20 +129,6 @@ export const CATALOGUE = {
     }
   ],
   cdnHosts: ['cdn.bsky.app'],
-  cdnImages: [
-    {
-      did: 'did:plc:ewvi7nxzyoun6zhxrhs64oiz',
-      cid: 'bafkreiebtvblnu4jwu66y57kakido7uhiigenznxdlh6r6wiswblv5m4py'
-    },
-    {
-      did: 'did:plc:z72i7hdynmk6r22z27h6tvur',
-      cid: 'bafkreicnrpnkalwhwp2td7sxgpbxbt6ii3tjth2n5hdcdok5mxfro6np3u'
-    },
-    {
-      did: 'did:plc:ragtjsm2j2vknwkz3zp4oxrd',
-      cid: 'bafkreihydtvo6guxfd7sxp5lm3ainn2iib5lghudm4vb7kg36ri2pu3rrq'
-    }
-  ],
   /**
    * Community and sandbox PDSes. Real, federated, and explicitly best-effort — `pds.rip`
    * publishes "uptime: no guarantee, backups: none" — so they are graded at the
@@ -170,9 +141,7 @@ export const CATALOGUE = {
   microcosm: {
     ufos: 'ufos-api.microcosm.blue',
     slingshot: 'slingshot.microcosm.blue',
-    spacedust: 'spacedust.microcosm.blue',
-    /** A link source that fires many times a second: a narrow one reads as down. */
-    spacedustSource: 'app.bsky.feed.like:subject.uri'
+    spacedust: 'spacedust.microcosm.blue'
   },
   /**
    * Tangled: an AppView serving HTML only, a separate XRPC API (Bobbin) with its own
@@ -181,22 +150,9 @@ export const CATALOGUE = {
    */
   tangled: {
     appview: 'tangled.org',
-    /** Static 92-byte string: routing only, no database behind it. */
-    goGetPath: '/core?go-get=1',
-    /** The full path: routing, database, identity resolution and render. */
-    repoPath: '/tangled.org/core',
-    /**
-     * What the repository page titles itself. Only the name, not the whole title: the
-     * separator after it is served as the entity `&middot;` rather than the character,
-     * and a check has no business knowing which.
-     */
-    repoTitle: 'tangled.org/core',
     api: 'api.tangled.org',
     /** Tangled's own PDS, where `*.tngl.sh` handles live. A stock PDS, probed as one. */
     pds: 'tngl.sh',
-    /** This project's own repo, as minted by its knot. */
-    repoDid: 'did:plc:j5hmlfdrwkvtxm7cjmu7j2is',
-    ownerDid: 'did:plc:wshs7t2adsemcrrd4snkeqli',
     knots: ['knot1.tangled.sh'],
     spindles: ['spindle.tangled.sh']
   },
@@ -205,16 +161,13 @@ export const CATALOGUE = {
     pckt: 'pckt.blog',
     leaflet: {
       host: 'leaflet.pub',
-      /** A published document, whose well-known route is a 77-byte index read. */
-      publication: { did: 'did:plc:btxrwcaeyodrap5mnjw2fvmz', rkey: '3lppk75kw7k26' },
-      /** A busy publication, for its feed's `<updated>`. */
-      feed: { did: 'did:plc:jbeaa5kdaladzwq3r7f5xgwe', rkey: '3gtfwwbnks225' },
+      /** What the full-text search is asked for: the app's own name always finds something. */
       query: 'leaflet'
     },
     offprint: {
       host: 'offprint.app',
-      publicationHost: 'news.offprint.app',
-      publication: 'at://did:plc:pgjkomf37an4czloay5zeth6/site.standard.publication/3mcqqd47cw22j'
+      /** A publication on a custom domain, whose well-known route resolves out of the database. */
+      publicationHost: 'news.offprint.app'
     }
   },
   internet: [
@@ -271,43 +224,56 @@ function define(
   return { id: `${kind}:${host}`, group, kind, label, host, tier }
 }
 
-/** Every service the catalogue names, in dashboard order. Discovery adds to this. */
-export const SERVICES: readonly ServiceDefinition[] = [
-  ...CATALOGUE.relays.map((host) => define('relay', 'relays', host)),
-  ...CATALOGUE.jetstreams.map((host) => define('jetstream', 'streams', host)),
-  define('spacedust', 'streams', CATALOGUE.microcosm.spacedust),
-  ...CATALOGUE.appViews.map((host) => define('appview', 'appviews', host)),
-  ...CATALOGUE.communityAppViews.map((host) =>
-    define('appview', 'appviews', host, { tier: 'community' })
-  ),
-  ...CATALOGUE.pdses.map((host) => define('pds', 'pdses', host)),
-  ...CATALOGUE.communityPdses.map((host) => define('pds', 'pdses', host, { tier: 'community' })),
-  define('tangled-appview', 'tangled', CATALOGUE.tangled.appview),
-  define('bobbin', 'tangled', CATALOGUE.tangled.api, { label: 'Bobbin (Tangled API)' }),
-  define('hydrant', 'tangled', CATALOGUE.tangled.api, { label: 'Hydrant (Bobbin upstream)' }),
-  define('pds', 'tangled', CATALOGUE.tangled.pds, { label: 'tngl.sh (Tangled PDS)' }),
-  ...CATALOGUE.tangled.knots.map((host) => define('knot', 'tangled', host)),
-  ...CATALOGUE.tangled.spindles.map((host) => define('spindle', 'tangled', host)),
-  define('pckt', 'apps', CATALOGUE.apps.pckt),
-  define('leaflet', 'apps', CATALOGUE.apps.leaflet.host),
-  define('offprint', 'apps', CATALOGUE.apps.offprint.host),
-  ...CATALOGUE.feeds.map((feed) =>
-    define('feed', 'infrastructure', feed.host, { label: feed.label })
-  ),
-  define('foryou', 'infrastructure', CATALOGUE.forYou.host, { label: 'For You feed' }),
-  ...CATALOGUE.constellationHosts.map((host) => define('constellation', 'infrastructure', host)),
-  define('ufos', 'infrastructure', CATALOGUE.microcosm.ufos),
-  define('slingshot', 'infrastructure', CATALOGUE.microcosm.slingshot),
-  ...CATALOGUE.cdnHosts.map((host) => define('cdn', 'infrastructure', host)),
-  ...CATALOGUE.internet.map((check) => ({
-    id: `internet:${check.id}`,
-    group: 'internet' as const,
-    kind: 'internet' as const,
-    label: check.label,
-    host: new URL(check.url).hostname,
-    tier: 'core' as const
-  }))
-]
+/**
+ * Every service the catalogue names, in dashboard order, under the given targets.
+ *
+ * Nearly every row is a host in `CATALOGUE` and stays put whatever the targets say. The
+ * feeds are the exception: each feed a user lists is its own row, so this list follows
+ * `ProbeTargets.feeds`, and `NetworkMonitor.retarget` rebuilds the dashboard from it when
+ * they change. A feed's row is `feed:<host>` like everything else's, which is why the
+ * schema holds each feed to a host of its own.
+ */
+export function servicesFor(targets: ProbeTargets): ServiceDefinition[] {
+  return [
+    ...CATALOGUE.relays.map((host) => define('relay', 'relays', host)),
+    ...CATALOGUE.jetstreams.map((host) => define('jetstream', 'streams', host)),
+    define('spacedust', 'streams', CATALOGUE.microcosm.spacedust),
+    ...CATALOGUE.appViews.map((host) => define('appview', 'appviews', host)),
+    ...CATALOGUE.communityAppViews.map((host) =>
+      define('appview', 'appviews', host, { tier: 'community' })
+    ),
+    ...CATALOGUE.pdses.map((host) => define('pds', 'pdses', host)),
+    ...CATALOGUE.communityPdses.map((host) => define('pds', 'pdses', host, { tier: 'community' })),
+    define('tangled-appview', 'tangled', CATALOGUE.tangled.appview),
+    define('bobbin', 'tangled', CATALOGUE.tangled.api, { label: 'Bobbin (Tangled API)' }),
+    define('hydrant', 'tangled', CATALOGUE.tangled.api, { label: 'Hydrant (Bobbin upstream)' }),
+    define('pds', 'tangled', CATALOGUE.tangled.pds, { label: 'tngl.sh (Tangled PDS)' }),
+    ...CATALOGUE.tangled.knots.map((host) => define('knot', 'tangled', host)),
+    ...CATALOGUE.tangled.spindles.map((host) => define('spindle', 'tangled', host)),
+    define('pckt', 'apps', CATALOGUE.apps.pckt),
+    define('leaflet', 'apps', CATALOGUE.apps.leaflet.host),
+    define('offprint', 'apps', CATALOGUE.apps.offprint.host),
+    ...targets.feeds.map((feed) =>
+      define('feed', 'infrastructure', feed.host, { label: feed.label })
+    ),
+    define('foryou', 'infrastructure', CATALOGUE.forYou.host, { label: 'For You feed' }),
+    ...CATALOGUE.constellationHosts.map((host) => define('constellation', 'infrastructure', host)),
+    define('ufos', 'infrastructure', CATALOGUE.microcosm.ufos),
+    define('slingshot', 'infrastructure', CATALOGUE.microcosm.slingshot),
+    ...CATALOGUE.cdnHosts.map((host) => define('cdn', 'infrastructure', host)),
+    ...CATALOGUE.internet.map((check) => ({
+      id: `internet:${check.id}`,
+      group: 'internet' as const,
+      kind: 'internet' as const,
+      label: check.label,
+      host: new URL(check.url).hostname,
+      tier: 'core' as const
+    }))
+  ]
+}
+
+/** Every service measured under the checked-in targets. */
+export const SERVICES: readonly ServiceDefinition[] = servicesFor(DEFAULT_PROBE_TARGETS)
 
 export const PROBE_GROUPS: readonly { id: ProbeGroup; title: string; blurb: string }[] = [
   { id: 'relays', title: 'Relays', blurb: 'Carry every repository commit on the firehose' },
@@ -707,7 +673,7 @@ export function probeAccount(addedAt: string): Account {
     displayName: PROBE_SOURCE_NAME,
     avatar: null,
     description: 'Outages and recoveries measured from this computer.',
-    notify: true,
+    notify: 'default',
     muted: false,
     addedAt,
     builtin: true,

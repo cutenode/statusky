@@ -33,11 +33,13 @@ import {
   probeServiceId,
   probeState,
   reportHeadline,
+  servicesFor,
   splitHost,
   summarizeNetwork,
   uptimePercent,
   type ProbeEvent
 } from './network'
+import { DEFAULT_PROBE_TARGETS } from './probe-targets'
 import { HEALTH_LABEL, type Health } from './status'
 import type { ProbeState } from './types'
 
@@ -110,6 +112,36 @@ describe('the catalogue', () => {
     for (const service of SERVICES) {
       expect(PROBE_GROUPS.some((g) => g.id === service.group)).toBe(true)
     }
+  })
+
+  it('gives each listed feed a row of its own, and leaves every other row alone', () => {
+    const feeds = [
+      {
+        label: 'Cats',
+        host: 'cats.example.test',
+        uri: 'at://did:plc:cats/app.bsky.feed.generator/cats'
+      },
+      {
+        label: 'Dogs',
+        host: 'dogs.example.test',
+        uri: 'at://did:plc:dogs/app.bsky.feed.generator/dogs'
+      }
+    ]
+    const services = servicesFor({ ...structuredClone(DEFAULT_PROBE_TARGETS), feeds })
+    expect(services.filter((s) => s.kind === 'feed').map((s) => [s.id, s.label])).toEqual([
+      ['feed:cats.example.test', 'Cats'],
+      ['feed:dogs.example.test', 'Dogs']
+    ])
+    expect(services.filter((s) => s.kind !== 'feed')).toEqual(
+      SERVICES.filter((s) => s.kind !== 'feed')
+    )
+    // No feeds is no feed rows, and nothing else missing.
+    const none = servicesFor({ ...structuredClone(DEFAULT_PROBE_TARGETS), feeds: [] })
+    expect(none).toHaveLength(SERVICES.length - DEFAULT_PROBE_TARGETS.feeds.length)
+  })
+
+  it('measures the checked-in targets unless told otherwise', () => {
+    expect(SERVICES).toEqual(servicesFor(DEFAULT_PROBE_TARGETS))
   })
 
   it('treats only the Internet group as the control', () => {
@@ -530,6 +562,57 @@ describe('reportHeadline', () => {
     expect(line.attribution?.others).toBe(1)
   })
 
+  it('names the newest claim, whichever order the sources are listed in', () => {
+    const line = reportHeadline(
+      [black, bsky],
+      [
+        makePost({ authorDid: black.did, severity: 'outage', createdAt: hoursAgo(1) }),
+        makePost({ authorDid: bsky.did, severity: 'outage', createdAt: hoursAgo(3) })
+      ],
+      quiet,
+      NOW
+    )
+    expect(line.attribution).toMatchObject({ name: 'Blacksky Status', others: 1 })
+  })
+
+  it('names a source with no display name by its handle', () => {
+    const plain = makeAccount({ handle: 'status.example.test', displayName: '' })
+    const line = reportHeadline(
+      [plain],
+      [makePost({ authorDid: plain.did, severity: 'outage', createdAt: hoursAgo(1) })],
+      quiet,
+      NOW
+    )
+    expect(line.attribution?.name).toBe('status.example.test')
+  })
+
+  /**
+   * A post's `createdAt` is whatever the client that wrote it said. One that is not a
+   * date still speaks — it is the source's latest word — but it cannot be dated, so it
+   * is never the one named.
+   */
+  it('counts a claim it cannot date, and names somebody it can', () => {
+    const line = reportHeadline(
+      [bsky, black],
+      [
+        makePost({ authorDid: bsky.did, severity: 'outage', createdAt: 'the other day' }),
+        makePost({ authorDid: black.did, severity: 'outage', createdAt: hoursAgo(2) })
+      ],
+      quiet,
+      NOW
+    )
+    expect(line.health).toBe('incident')
+    expect(line.attribution).toMatchObject({ name: 'Blacksky Status', at: hoursAgo(2) })
+
+    const alone = reportHeadline(
+      [bsky],
+      [makePost({ authorDid: bsky.did, severity: 'outage', createdAt: 'the other day' })],
+      quiet,
+      NOW
+    )
+    expect(alone).toMatchObject({ health: 'incident', attribution: null })
+  })
+
   it('counts only the withdrawn claims that agree with the one it names', () => {
     const line = reportHeadline(
       [bsky, black],
@@ -612,7 +695,7 @@ describe('the checks as a feed source', () => {
       displayName: 'Network checks',
       avatar: null,
       description: expect.any(String),
-      notify: true,
+      notify: 'default',
       muted: false,
       addedAt: '2026-01-01T00:00:00Z',
       builtin: true,
@@ -763,7 +846,8 @@ describe('describeFailure', () => {
     ['HTTP 502', '502', 'Bad gateway'],
     ['HTTP 418', '418', 'Request refused'],
     ['HTTP 599', '599', 'Server error'],
-    ['HTTP 302', '302', 'Redirected away']
+    ['HTTP 302', '302', 'Redirected away'],
+    ['HTTP 204', '204', 'Unexpected status']
   ])('sets %s as a code and a meaning', (error, code, text) => {
     expect(describeFailure(error)).toEqual({ code, text })
   })

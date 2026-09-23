@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HISTORY_LENGTH, SERVICES, type ProbeEvent } from '../shared/network'
-import type { NetworkSnapshot, ServiceProbe } from '../shared/types'
+import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
+import type { NetworkSnapshot, ProbeTargets, ServiceProbe } from '../shared/types'
 import { FakeNetwork } from '../test/network'
 import { NetworkMonitor, type MonitorTimings } from './network'
 
@@ -559,13 +560,15 @@ describe('the schedule', () => {
     const built = build()
     await start(built)
     network.requests.length = 0
+    const interval = vi.spyOn(globalThis, 'setInterval')
 
     built.monitor.configure({ enabled: true, intervalSec: 1200 })
-    await built.monitor.run().catch(() => {})
-    expect(network.requests.length).toBeGreaterThan(0)
-    network.requests.length = 0
-    built.monitor.configure({ enabled: true, intervalSec: 900 })
+    // A sweep would start a tick after it was asked for: give one every chance to.
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(interval.mock.calls.at(-1)?.[1]).toBe(1_200_000)
     expect(network.requests).toHaveLength(0)
+    expect(built.monitor.snapshot().running).toBe(false)
   })
 
   it('ignores being told what it already knows', async () => {
@@ -832,17 +835,26 @@ describe('a machine that is struggling', () => {
     const built = build()
     built.monitor.restrain('thermal')
     built.monitor.configure({ enabled: true, intervalSec: 600 })
+    await new Promise((resolve) => setTimeout(resolve, 20))
 
     expect(network.requests).toHaveLength(0)
+    expect(built.monitor.snapshot().finishedAt).toBeNull()
   })
 
   it('outranks the battery it is almost certainly also on', async () => {
+    const interval = vi.spyOn(globalThis, 'setInterval')
     const built = build()
     await start(built)
+    built.monitor.restrain('battery')
 
     built.monitor.restrain('thermal')
+    network.requests.length = 0
+    ;(interval.mock.calls.at(-1)![0] as () => void)()
+    await new Promise((resolve) => setTimeout(resolve, 20))
 
+    // Not a slower schedule, as on battery: no sweeps at all.
     expect(built.monitor.snapshot().restraint).toBe('thermal')
+    expect(network.requests).toHaveLength(0)
   })
 })
 
@@ -873,21 +885,23 @@ describe('being told the connection is back', () => {
     expect(network.requests).toHaveLength(0)
   })
 
-  it('does nothing while the machine is asleep, or the checks are off', async () => {
+  it.each([
+    ['while the machine is asleep', (monitor: NetworkMonitor) => monitor.pause()],
+    [
+      'once the checks are switched off',
+      (monitor: NetworkMonitor) => monitor.configure({ enabled: false, intervalSec: 600 })
+    ]
+  ])('does nothing %s', async (_when, stand) => {
     const built = build({ timings: { offlineRetryMs: 600_000 } })
     await start(built)
     network.goOffline()
     await built.monitor.run()
-    built.monitor.pause()
+    stand(built.monitor)
     network.goOnline()
     network.requests.length = 0
 
     built.monitor.connectionRestored()
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(network.requests).toHaveLength(0)
-
-    const off = build()
-    off.monitor.connectionRestored()
     expect(network.requests).toHaveLength(0)
   })
 })
@@ -934,5 +948,216 @@ describe('the concurrency cap', () => {
     const built = build({ ids: [...ids, ...CONTROLS], timings: { concurrency: 1 } })
     await start(built)
     expect(ids.every((id) => built.service(id).state === 'live')).toBe(true)
+  })
+})
+
+/** The checked-in targets with some part replaced, as a user's override would be. */
+function targets(changes: Partial<ProbeTargets>): ProbeTargets {
+  return { ...structuredClone(DEFAULT_PROBE_TARGETS), ...changes }
+}
+
+/** The actors one AppView's author feeds were asked for, in the last sweep. */
+function feedActors(service: ServiceProbe): (string | null)[] {
+  return service.checks
+    .filter((c) => c.label === 'getAuthorFeed')
+    .map((c) => new URL(c.target!).searchParams.get('actor'))
+}
+
+describe('new targets', () => {
+  const accounts = [{ did: 'did:plc:alice', handle: 'alice.test' }]
+
+  it('are measured at once, and a sweep of the old ones is dropped unfiled', async () => {
+    network.fail('api.bsky.app', { kind: 'hang' }, '/xrpc/app.bsky.feed.getAuthorFeed')
+    const built = build({ ids: [APPVIEW, ...CONTROLS] })
+    built.monitor.configure({ enabled: true, intervalSec: 600 })
+    const stale = built.monitor.run()
+    await vi.waitFor(() =>
+      expect(network.requestsTo('api.bsky.app').some((r) => r.path.endsWith('Feed'))).toBe(true)
+    )
+
+    network.heal()
+    network.useTargets(targets({ accounts }))
+    built.monitor.retarget(targets({ accounts }))
+    // `retarget` has already started a sweep of its own, which this shares, not repeats.
+    const fresh = built.monitor.run()
+    await Promise.all([stale, fresh])
+
+    const appview = built.service(APPVIEW)
+    expect(appview.state).toBe('live')
+    expect(feedActors(appview)).toEqual(['did:plc:alice'])
+    // One observation: the abandoned sweep of the old accounts recorded nothing.
+    expect(appview.history).toHaveLength(1)
+    expect(built.events).toEqual([])
+    expect(built.monitor.snapshot().running).toBe(false)
+  })
+
+  it('are read per sweep, not once when the monitor is made', async () => {
+    const built = build({ ids: [APPVIEW, ...CONTROLS] })
+    await start(built)
+    expect(feedActors(built.service(APPVIEW))).toEqual(
+      DEFAULT_PROBE_TARGETS.accounts.map((a) => a.did)
+    )
+
+    network.useTargets(targets({ accounts }))
+    built.monitor.retarget(targets({ accounts }))
+    await built.monitor.run()
+    expect(feedActors(built.service(APPVIEW))).toEqual(['did:plc:alice'])
+  })
+
+  it('are only taken, not measured, while the checks are off', async () => {
+    const built = build({ ids: [APPVIEW, ...CONTROLS] })
+    built.monitor.retarget(targets({ accounts }))
+    expect(network.requests).toHaveLength(0)
+
+    network.useTargets(targets({ accounts }))
+    await start(built)
+    expect(feedActors(built.service(APPVIEW))).toEqual(['did:plc:alice'])
+  })
+
+  it('wait for a machine that is too hot or asleep, like any other sweep', async () => {
+    const hot = build({ ids: [APPVIEW, ...CONTROLS] })
+    await start(hot)
+    hot.monitor.restrain('thermal')
+    const asleep = build({ ids: [APPVIEW, ...CONTROLS] })
+    await start(asleep)
+    asleep.monitor.pause()
+    network.requests.length = 0
+
+    hot.monitor.retarget(targets({ accounts }))
+    asleep.monitor.retarget(targets({ accounts }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(network.requests).toHaveLength(0)
+  })
+
+  it('drop a re-check that would have confirmed a failure of the old ones', async () => {
+    const built = build({ timings: { recheckDelayMs: 30 } })
+    await start(built)
+    breakRelay()
+    await built.monitor.run()
+    expect(built.service(RELAY).rechecking).toBe(true)
+
+    network.heal()
+    built.monitor.retarget(targets({ feeds: [] }))
+    expect(built.service(RELAY).rechecking).toBe(false)
+    await built.monitor.run()
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    // The failure was never confirmed: the fresh sweep found the relay well.
+    expect(built.events).toEqual([])
+    expect(built.service(RELAY).condition).toBe('up')
+  })
+
+  /**
+   * Every AppView is judged against the freshest post any of them returned, this sweep
+   * or last. After new accounts, "last" was about somebody else: a quieter set would read
+   * as every AppView falling behind at once.
+   */
+  it('forget the freshest post of the old accounts', async () => {
+    network.setNewestPost('api.bsky.app', new Date().toISOString())
+    const built = build({ ids: [APPVIEW, ...CONTROLS] })
+    await start(built)
+
+    network.setNewestPost('api.bsky.app', new Date(Date.now() - 3 * 3_600_000).toISOString())
+    network.useTargets(targets({ accounts }))
+    built.monitor.retarget(targets({ accounts }))
+    await built.monitor.run()
+    expect(built.service(APPVIEW).checks.find((c) => c.label === 'newest post')!.ok).toBe(true)
+  })
+
+  it('rebuild the feed rows, and leave every other row’s history where it was', async () => {
+    const monitor = new NetworkMonitor({
+      transport: network,
+      timings: FAST,
+      onSnapshot: () => {},
+      onSummaryChange: () => {},
+      onEvents: () => {}
+    })
+    running.push(monitor)
+    monitor.configure({ enabled: true, intervalSec: 600 })
+    await monitor.run()
+
+    const feeds = [
+      { ...DEFAULT_PROBE_TARGETS.feeds[0]!, label: 'What’s Hot' },
+      {
+        label: 'Cats',
+        host: 'feeds.example.test',
+        uri: 'at://did:plc:cats/app.bsky.feed.generator/cats'
+      }
+    ]
+    network.useTargets(targets({ feeds }))
+    monitor.retarget(targets({ feeds }))
+    // The new row is on the dashboard before anything has been asked of it.
+    const before = monitor.snapshot().services
+    expect(before.find((s) => s.id === 'feed:feeds.example.test')).toMatchObject({
+      label: 'Cats',
+      state: 'pending',
+      history: []
+    })
+    await monitor.run()
+
+    const services = monitor.snapshot().services
+    const ids = services.map((s) => s.id)
+    expect(ids.filter((id) => id.startsWith('feed:'))).toEqual([
+      'feed:discover.bsky.app',
+      'feed:feeds.example.test'
+    ])
+    const discover = services.find((s) => s.id === 'feed:discover.bsky.app')!
+    expect(discover).toMatchObject({ label: 'What’s Hot', state: 'live' })
+    expect(discover.history).toHaveLength(2)
+    expect(services.find((s) => s.id === 'feed:feeds.example.test')!.history).toHaveLength(1)
+    expect(services.find((s) => s.id === RELAY)!.history).toHaveLength(2)
+
+    monitor.retarget(targets({ feeds: [] }))
+    await monitor.run()
+    expect(monitor.snapshot().services.some((s) => s.kind === 'feed')).toBe(false)
+    expect(monitor.snapshot().services).toHaveLength(SERVICES.length - 1)
+  })
+
+  /**
+   * `retarget` cancels a re-check that has not come due. One that already has is queued
+   * behind the sweep in flight, still naming the rows it was booked for — and one of
+   * them may be a feed the user has just taken off the list.
+   */
+  it('take no notice of a queued re-check of a feed they no longer list', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const cats = {
+      label: 'Cats',
+      host: 'feeds.example.test',
+      uri: 'at://did:plc:cats/app.bsky.feed.generator/cats'
+    }
+    const monitor = new NetworkMonitor({
+      transport: network,
+      targets: targets({ feeds: [cats] }),
+      // Three sightings to believe a failure, so the sweep below books another re-check
+      // rather than filing one.
+      timings: { ...FAST, recheckDelayMs: 5, confirmations: 3 },
+      onSnapshot: () => {},
+      onSummaryChange: () => {},
+      onEvents: () => {}
+    })
+    running.push(monitor)
+    network.fail(cats.host, { kind: 'http', status: 500 })
+    monitor.configure({ enabled: true, intervalSec: 600 })
+    await monitor.run()
+    const feed = (): ServiceProbe | undefined =>
+      monitor.snapshot().services.find((s) => s.id === `feed:${cats.host}`)
+    expect(feed()?.rechecking).toBe(true)
+
+    // A slow sweep, for the re-check to come due behind.
+    network.fail('eurosky.social', { kind: 'delay', ms: 300 })
+    const slow = monitor.run()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    monitor.retarget(targets({ feeds: [] }))
+    await slow
+    await monitor.run()
+
+    expect(error).not.toHaveBeenCalled()
+    expect(feed()).toBeUndefined()
+    expect(monitor.snapshot().running).toBe(false)
+  })
+
+  it('leave a fixed set of rows fixed', async () => {
+    const built = build({ ids: [RELAY, ...CONTROLS] })
+    built.monitor.retarget(targets({ feeds: [] }))
+    expect(built.monitor.snapshot().services.map((s) => s.id)).toEqual([RELAY, ...CONTROLS])
   })
 })

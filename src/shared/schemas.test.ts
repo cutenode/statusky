@@ -10,6 +10,7 @@ import {
   statusPostSchema
 } from './schemas'
 import { makeAccount, makePost, makeProfile, makeState } from '../test/factories'
+import { DEFAULT_PROBE_TARGETS } from './probe-targets'
 
 /**
  * These schemas are what the generated IPC wiring runs on every argument and every
@@ -76,6 +77,21 @@ describe('rejecting what should never cross', () => {
     expect(accountPatchSchema.safeParse({ muted: 'yes' }).success).toBe(false)
   })
 
+  /** Schema 5's on/off switch is a level now; a renderer still sending the old one is stale. */
+  it('takes a notification level for an account, not the switch it replaced', () => {
+    expect(accountPatchSchema.safeParse({ notify: 'outages' }).success).toBe(true)
+    expect(accountPatchSchema.safeParse({ notify: true }).success).toBe(false)
+    expect(accountPatchSchema.safeParse({ notify: 'loud' }).success).toBe(false)
+  })
+
+  /** A time the main process cannot read would make the quiet-hours window unknowable. */
+  it('takes quiet hours only as a 24-hour HH:MM', () => {
+    expect(settingsPatchSchema.safeParse({ quietHoursStart: '23:59' }).success).toBe(true)
+    for (const time of ['8:00', '24:00', '12:60', '10pm', '']) {
+      expect(settingsPatchSchema.safeParse({ quietHoursEnd: time }).success).toBe(false)
+    }
+  })
+
   it('accepts an empty patch, which is what an untouched form sends', () => {
     expect(accountPatchSchema.safeParse({}).success).toBe(true)
     expect(settingsPatchSchema.safeParse({}).success).toBe(true)
@@ -83,5 +99,23 @@ describe('rejecting what should never cross', () => {
 
   it.each([null, undefined, 42, 'a string', []])('rejects %s as an app state', (value) => {
     expect(appStateSchema.safeParse(value).success).toBe(false)
+  })
+})
+
+describe('the probe targets override in the settings', () => {
+  const override = {
+    ...structuredClone(DEFAULT_PROBE_TARGETS),
+    accounts: [{ did: 'did:plc:someone', handle: 'someone.test' }]
+  }
+
+  it('crosses with the rest of the state, whether it is set or not', () => {
+    expect(appStateSchema.safeParse(makeState()).success).toBe(true)
+    const settings = { ...makeState().settings, probeTargets: override }
+    expect(appStateSchema.safeParse(makeState({ settings })).success).toBe(true)
+  })
+
+  it('stops the whole state crossing when it is broken, which is why main never stores one', () => {
+    const settings = { ...makeState().settings, probeTargets: { ...override, accounts: [] } }
+    expect(appStateSchema.safeParse(makeState({ settings })).success).toBe(false)
   })
 })

@@ -15,9 +15,10 @@
   } from '@shared/defaults'
   import { PROBE_SOURCE_NAME } from '@shared/network'
   import type { MarkReadTrigger, ThemePreference, TrayUnreadStyle } from '@shared/types'
-  import BellRing from '@lucide/svelte/icons/bell'
   import Download from '@lucide/svelte/icons/download'
   import type { Snippet } from 'svelte'
+  import NotificationSettings from './NotificationSettings.svelte'
+  import ProbeTargetsPanel from './ProbeTargetsPanel.svelte'
   import WebhookPanel from './WebhookPanel.svelte'
 
   /** Ticks the "last delivery" line. Optional so the panel stands alone in tests. */
@@ -60,21 +61,6 @@
   const NO_SHORTCUT = 'off'
   const shortcutValue = $derived(app.settings.globalShortcut || NO_SHORTCUT)
   const shortcutLabel = $derived(formatAccelerator(app.settings.globalShortcut, app.platform))
-
-  // A refused notification is invisible by definition, so the button has to say
-  // what happened rather than just firing and hoping.
-  let testState = $state<'idle' | 'sending' | 'sent' | 'failed'>('idle')
-  let testError = $state<string | null>(null)
-
-  async function sendTest(): Promise<void> {
-    testState = 'sending'
-    testError = null
-    await app.testNotification()
-    // `app.actionError` is cleared at the start of every action, so whatever is on it
-    // now belongs to this call.
-    testError = app.actionError
-    testState = testError === null ? 'sent' : 'failed'
-  }
 </script>
 
 {#snippet row(title: string, description: string, control: Snippet)}
@@ -88,63 +74,7 @@
 {/snippet}
 
 <div class="scroll-thin h-full min-h-0 overflow-y-auto px-3 pb-4">
-  <section>
-    <h2
-      class="mb-0.5 text-[10.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase"
-    >
-      Notifications
-    </h2>
-
-    {#snippet notificationsControl()}
-      <Switch
-        checked={app.settings.notificationsEnabled}
-        onCheckedChange={(checked) => void app.patchSettings({ notificationsEnabled: checked })}
-        aria-label="Enable notifications"
-      />
-    {/snippet}
-    {@render row(
-      'Push notifications',
-      'Master switch. Individual accounts can still be silenced.',
-      notificationsControl
-    )}
-
-    <Separator />
-
-    {#snippet soundControl()}
-      <Switch
-        checked={app.settings.notificationSound}
-        disabled={!app.settings.notificationsEnabled}
-        onCheckedChange={(checked) => void app.patchSettings({ notificationSound: checked })}
-        aria-label="Play notification sound"
-      />
-    {/snippet}
-    {@render row('Play sound', 'Use the system notification sound.', soundControl)}
-
-    <Separator />
-
-    {#snippet testControl()}
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={testState === 'sending'}
-        onclick={() => void sendTest()}
-      >
-        <BellRing class="size-3.5" />
-        {testState === 'sending' ? 'Sending…' : 'Send test'}
-      </Button>
-    {/snippet}
-    {@render row('Test notification', 'Check that macOS is letting them through.', testControl)}
-
-    {#if testState === 'sent'}
-      <p class="px-0.5 pb-2 text-[11px] text-muted-foreground" role="status">
-        Sent. If nothing appeared, check Notifications in System Settings.
-      </p>
-    {:else if testState === 'failed'}
-      <p class="px-0.5 pb-2 text-[11px] text-destructive" role="alert">
-        {testError ?? 'The system refused the notification.'}
-      </p>
-    {/if}
-  </section>
+  <NotificationSettings {now} />
 
   <Separator class="my-3" />
 
@@ -319,6 +249,10 @@
       silenced or hidden under Accounts like any other source.
     </p>
   </section>
+
+  <Separator class="my-3" />
+
+  <ProbeTargetsPanel />
 
   <Separator class="my-3" />
 

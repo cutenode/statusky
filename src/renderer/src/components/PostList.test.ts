@@ -107,7 +107,13 @@ describe('the status filters', () => {
   })
 
   it('counts only this tab’s unread beside the Unread filter, and hides it at zero', async () => {
-    const { bridge, getByText } = await renderWith(PostList, props(), populated)
+    // Unread, but handed to another tab: the badge here is not its to count.
+    const elsewhere = makePost({ authorDid: 'did:plc:elsewhere', rkey: 'elsewhere' })
+    const { bridge, getByText } = await renderWith(PostList, props(), {
+      ...populated,
+      posts: [elsewhere, today, yesterday],
+      unread: [elsewhere.uri, today.uri]
+    })
     const badge = (): Element | null => getByText('Unread').querySelector('span')
 
     expect(badge()?.textContent).toBe('1')
@@ -133,12 +139,24 @@ describe('the account chips', () => {
   })
 
   it('hide muted accounts', async () => {
+    const accountC = makeAccount({ did: 'did:plc:c', displayName: 'Gamma Status' })
+    const { queryByText } = await renderWith(
+      PostList,
+      props([today, yesterday], [accountA, { ...accountB, muted: true }, accountC]),
+      populated
+    )
+    expect(queryByText('Alpha Status')).not.toBeNull()
+    expect(queryByText('Gamma Status')).not.toBeNull()
+    expect(queryByText('Beta Status')).toBeNull()
+  })
+
+  it('count only visible accounts toward showing the chips at all', async () => {
     const { queryByText } = await renderWith(
       PostList,
       props([today, yesterday], [accountA, { ...accountB, muted: true }]),
       populated
     )
-    expect(queryByText('Beta Status')).toBeNull()
+    expect(queryByText('Everyone')).toBeNull()
   })
 
   it('filter the list to one account', async () => {

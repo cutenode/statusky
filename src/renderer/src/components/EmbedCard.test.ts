@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fireEvent } from '@testing-library/svelte'
 import type { PostEmbed } from '@shared/types'
 import { makeEmbed } from '../../../test/factories'
@@ -51,15 +51,19 @@ describe('an external embed', () => {
   it('opens the link externally, without bubbling to the card behind it', async () => {
     const { bridge, getByRole } = await renderWith(EmbedCard, { embed: makeEmbed('external') })
     const event = new MouseEvent('click', { bubbles: true, cancelable: true })
-    let bubbled = false
-    document.body.addEventListener('click', () => (bubbled = true), { once: true })
-
-    await fireEvent(getByRole('button'), event)
+    // Removed by hand: a listener that is never called would outlive the test.
+    const bubbled = vi.fn()
+    document.body.addEventListener('click', bubbled)
+    try {
+      await fireEvent(getByRole('button'), event)
+    } finally {
+      document.body.removeEventListener('click', bubbled)
+    }
 
     expect(bridge.api.Host.openExternal).toHaveBeenCalledWith(
       'https://status.bsky.app/incidents/42'
     )
-    expect(bubbled).toBe(false)
+    expect(bubbled).not.toHaveBeenCalled()
   })
 })
 

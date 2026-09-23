@@ -2,7 +2,15 @@ import { EventEmitter } from 'node:events'
 import type ElectronStore from 'electron-store'
 import { BskyError, fetchAuthorPosts, fetchProfiles, resolveActor } from '../shared/bsky'
 import { MAX_WEBHOOK_SOURCES } from '../shared/defaults'
-import { PROBE_SOURCE_DID, probeAccount, probePost, type ProbeEvent } from '../shared/network'
+import { applyFollowUps } from '../shared/notify'
+import {
+  PROBE_SOURCE_DID,
+  probeAccount,
+  probePost,
+  servicesFor,
+  type ProbeEvent
+} from '../shared/network'
+import { effectiveProbeTargets, sameProbeTargets } from '../shared/probe-targets'
 import {
   isWebhookSource,
   parseWebhookDelivery,
@@ -117,6 +125,7 @@ export class Model extends EventEmitter<ModelEvents> {
       transport: options.network?.transport ?? null,
       timings: options.network?.timings,
       now: options.network?.now,
+      targets: effectiveProbeTargets(this.settings.probeTargets),
       onSnapshot: (snapshot) => this.emit('network', snapshot),
       onSummaryChange: () => this.emitChange(),
       onEvents: (events) => this.ingestProbeEvents(events)
@@ -249,7 +258,7 @@ export class Model extends EventEmitter<ModelEvents> {
       displayName: profile.displayName,
       avatar: profile.avatar,
       description: profile.description,
-      notify: true,
+      notify: 'default',
       muted: false,
       addedAt: new Date().toISOString(),
       builtin: false,
@@ -293,10 +302,22 @@ export class Model extends EventEmitter<ModelEvents> {
 
   patchSettings(patch: Partial<Settings>): Settings {
     const previous = this.settings
-    const next = sanitizeSettings({ ...previous, ...patch })
+    let next = sanitizeSettings({ ...previous, ...patch })
+    const retargeted = !sameProbeTargets(next.probeTargets, previous.probeTargets)
+    if (retargeted) {
+      // A feed taken out of the targets takes its pin with it. Left behind, the pin could
+      // never fire, and Settings no longer lists the feed to unpin it from.
+      const measured = new Set(
+        servicesFor(effectiveProbeTargets(next.probeTargets)).map((s) => s.id)
+      )
+      next = { ...next, pinnedServices: next.pinnedServices.filter((id) => measured.has(id)) }
+    }
     this.store.set('settings', next)
 
     if (next.pollIntervalSec !== previous.pollIntervalSec) this.restartTimer()
+    // Before the schedule is touched: turning the checks on in the same patch should
+    // start one sweep, of the new targets, rather than start one and then replace it.
+    if (retargeted) this.monitor.retarget(effectiveProbeTargets(next.probeTargets))
     if (
       next.networkChecks !== previous.networkChecks ||
       next.networkIntervalSec !== previous.networkIntervalSec
@@ -379,7 +400,7 @@ export class Model extends EventEmitter<ModelEvents> {
     })
 
     const cursors: Cursors = this.store.get('cursors')
-    const notifiable = selectNotifiable(incoming, cursors, accounts, settings)
+    const notifiable = this.settleFollowUps(selectNotifiable(incoming, cursors, accounts, settings))
     // Seed against the cursors as they were: a source seen for the first time has its
     // read cursor placed exactly where its notification cursor is, so its backlog
     // arrives read and only what comes after it is news.
@@ -524,7 +545,9 @@ export class Model extends EventEmitter<ModelEvents> {
   private fileEntries(entries: StatusPost[]): void {
     const accounts = this.accounts
     const cursors: Cursors = this.store.get('cursors')
-    const notifiable = selectNotifiable(entries, cursors, accounts, this.settings)
+    const notifiable = this.settleFollowUps(
+      selectNotifiable(entries, cursors, accounts, this.settings)
+    )
     const read = seedReadCursors(this.read, cursors)
 
     const tracked = new Set(accounts.map((a) => a.did))
@@ -536,6 +559,24 @@ export class Model extends EventEmitter<ModelEvents> {
     this.emitChange()
 
     if (notifiable.length) this.emit('notify', notifiable)
+  }
+
+  /**
+   * Of the updates worth a banner on their own merits, drop the follow-ups to incidents
+   * nobody was told about, and remember which incidents are now open. See
+   * `applyFollowUps`. Recorded at selection rather than at display, so an incident whose
+   * banner waits out quiet hours still has its all-clear announced after it.
+   */
+  private settleFollowUps(posts: StatusPost[]): StatusPost[] {
+    if (!posts.length) return posts
+    const settled = applyFollowUps(
+      posts,
+      this.accounts,
+      this.settings,
+      this.store.get('openIncidents') ?? []
+    )
+    this.store.set('openIncidents', settled.open)
+    return settled.posts
   }
 
   /**

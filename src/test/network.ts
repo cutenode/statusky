@@ -7,9 +7,17 @@
  * and every relay's firehose delivers a fresh commit. A test then breaks exactly the
  * piece it cares about — one host's HTTP, one relay's stream, the whole connection —
  * and every request and socket is recorded so it can assert on what was asked.
+ *
+ * Which accounts, feeds and documents it knows about follows the probe targets it is
+ * given (`useTargets`), because those are configuration. What it *says* about them does
+ * not follow `expectedResponses.json`: every greeting, status and marker below is written
+ * out the way the real service writes it, so a typo in that file fails the tests rather
+ * than being agreed with.
  */
 import type { ProbeSocket, ProbeTransport } from '../main/probes'
 import { CATALOGUE } from '../shared/network'
+import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
+import type { ProbeTargets } from '../shared/types'
 import { commitFrame, errorFrame, frame } from './cbor'
 
 /** An atproto TID stamped at `ms`, which is how two of the streams date their events. */
@@ -163,6 +171,14 @@ export class FakeNetwork implements ProbeTransport {
   private readonly newest = new Map<string, string>()
   private readonly ticks = new Map<string, number>()
   private offline = false
+  /** The accounts, feeds and documents this Internet has in it. */
+  private targets: ProbeTargets = DEFAULT_PROBE_TARGETS
+
+  /** Answer for these targets instead of the checked-in ones, until `reset`. */
+  useTargets(targets: ProbeTargets): this {
+    this.targets = targets
+    return this
+  }
 
   /** Break `host`, or one path on it (e.g. `/xrpc/_health`). The latest rule wins. */
   fail(host: string, failure: HttpFailure, path: string | null = null): this {
@@ -214,6 +230,7 @@ export class FakeNetwork implements ProbeTransport {
     this.newest.clear()
     this.ticks.clear()
     this.offline = false
+    this.targets = DEFAULT_PROBE_TARGETS
   }
 
   // ------------------------------------------------------------ transport
@@ -393,10 +410,21 @@ export class FakeNetwork implements ProbeTransport {
         })
       case 'app.bsky.actor.getProfile':
         return json({ did: params.get('actor') })
-      case 'com.atproto.identity.resolveHandle':
-        // The anchor identity, which the Slingshot check matches exactly and the
-        // AppView check only needs to be a DID at all.
-        return json({ did: CATALOGUE.anchor.did })
+      case 'com.atproto.identity.resolveHandle': {
+        // Every handle to its own DID, as a real resolver would: the anchor Slingshot is
+        // asked about, and each account the AppViews are.
+        const handle = params.get('handle')
+        const did =
+          handle === CATALOGUE.anchor.handle
+            ? CATALOGUE.anchor.did
+            : this.targets.accounts.find((account) => account.handle === handle)?.did
+        return did
+          ? json({ did })
+          : new Response(
+              JSON.stringify({ error: 'InvalidRequest', message: 'Unable to resolve handle' }),
+              { status: 400, headers: { 'content-type': 'application/json' } }
+            )
+      }
       case 'blue.microcosm.identity.resolveMiniDoc':
         return json({
           did: params.get('identifier'),
@@ -424,7 +452,7 @@ export class FakeNetwork implements ProbeTransport {
           : json({ feed: [] })
       case 'app.bsky.feed.getFeedGenerator':
         return json({
-          view: { uri: params.get('feed'), did: CATALOGUE.forYou.did, displayName: 'For You' },
+          view: { uri: params.get('feed'), did: this.targets.forYou.did, displayName: 'For You' },
           isOnline: true,
           isValid: true
         })
@@ -438,13 +466,13 @@ export class FakeNetwork implements ProbeTransport {
         })
       case 'sh.tangled.repo.getRepoByRepoDid':
         return json({
-          uri: `at://${CATALOGUE.tangled.ownerDid}/sh.tangled.repo/core`,
+          uri: `at://${this.targets.tangled.ownerDid}/sh.tangled.repo/core`,
           value: { $type: 'sh.tangled.repo', knot: CATALOGUE.tangled.knots[0] }
         })
       case 'sh.tangled.knot.version':
         return json({ version: 'v1.15.0', capabilities: ['knot-acl', 'repo-did-input'] })
       case 'sh.tangled.owner':
-        return json({ owner: CATALOGUE.tangled.ownerDid })
+        return json({ owner: this.targets.tangled.ownerDid })
       case 'sh.tangled.sync.listRepos':
         return json({
           repos: [{ repo: 'did:plc:knotrepo', status: 'active', defaultBranch: { ref: 'main' } }]
@@ -462,6 +490,7 @@ export class FakeNetwork implements ProbeTransport {
     const host = url.hostname
     const path = url.pathname
     const { microcosm, tangled, apps, forYou } = CATALOGUE
+    const targets = this.targets
 
     if (CATALOGUE.jetstreams.includes(host as never) && path === '/') {
       return text('Welcome to Jetstream')
@@ -488,7 +517,7 @@ export class FakeNetwork implements ProbeTransport {
       if (path === '/.well-known/did.json') {
         return json({
           '@context': ['https://www.w3.org/ns/did/v1'],
-          id: forYou.did,
+          id: targets.forYou.did,
           service: [
             {
               id: '#bsky_fg',
@@ -500,7 +529,8 @@ export class FakeNetwork implements ProbeTransport {
       }
       if (path === '/') {
         return text(
-          `<html><head>${forYou.siteMarker}</head><body>💖 For You</body></html>`,
+          '<html><head><link rel="canonical" href="https://foryou.club/"></head>' +
+            '<body>💖 For You</body></html>',
           'text/html'
         )
       }
@@ -510,16 +540,18 @@ export class FakeNetwork implements ProbeTransport {
       return json({ stats: { linking_records: this.tick('links'), dids: this.tick('dids') } })
     }
     if (host === tangled.appview) {
-      if (path === '/core') {
+      const { goGetPath, repoPath } = targets.tangled
+      const name = repoPath.slice(1)
+      if (url.searchParams.get('go-get') === '1' && path === new URL(goGetPath, url).pathname) {
         return text(
-          `<meta name="go-import" content="${tangled.repoPath.slice(1)} git">`,
+          `<meta name="go-import" content="tangled.org${path} git https://tangled.org/@${name}">`,
           'text/html'
         )
       }
-      if (path === tangled.repoPath) {
+      if (path === repoPath) {
         // Served with the separator as an entity, exactly as the real page does.
         return text(
-          `<html><head><title>${tangled.repoTitle} &middot; Tangled</title></head></html>`,
+          `<html><head><title>${name} at master &middot; Tangled</title></head></html>`,
           'text/html'
         )
       }
@@ -544,7 +576,7 @@ export class FakeNetwork implements ProbeTransport {
       })
     }
     if (host === apps.leaflet.host) {
-      const { publication, feed } = apps.leaflet
+      const { publication, feed } = targets.apps.leaflet
       if (
         path ===
         `/lish/${publication.did}/${publication.rkey}/.well-known/site.standard.publication`
@@ -576,7 +608,7 @@ export class FakeNetwork implements ProbeTransport {
       host === apps.offprint.publicationHost &&
       path === '/.well-known/site.standard.publication'
     ) {
-      return text(apps.offprint.publication)
+      return text(targets.apps.offprint.publication)
     }
     return null
   }

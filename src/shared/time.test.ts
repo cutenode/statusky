@@ -3,6 +3,9 @@ import { absoluteTime, compactRelativeTime, dayLabel, relativeTime, sinceTime } 
 
 const NOW = Date.parse('2026-09-09T12:00:00Z')
 
+/** An ISO stamp this many seconds before NOW. */
+const ago = (seconds: number): string => new Date(NOW - seconds * 1000).toISOString()
+
 describe('compactRelativeTime', () => {
   it.each([
     ['2026-09-09T11:59:40Z', 'now'],
@@ -16,6 +19,17 @@ describe('compactRelativeTime', () => {
     expect(compactRelativeTime(iso, NOW)).toBe(expected)
   })
 
+  // Just short of a unit, the count rounds up to the size of that unit: that is the next
+  // unit's 1, not "60m".
+  it.each([
+    [3_599, '1h'],
+    [86_399, '1d'],
+    [604_799, '1w'],
+    [31_557_599, '1y']
+  ])('carries %i seconds up into the next unit', (seconds, expected) => {
+    expect(compactRelativeTime(ago(seconds), NOW)).toBe(expected)
+  })
+
   it('clamps future timestamps to "now" rather than showing a negative age', () => {
     expect(compactRelativeTime('2026-09-09T12:05:00Z', NOW)).toBe('now')
   })
@@ -27,7 +41,19 @@ describe('compactRelativeTime', () => {
 
 describe('relativeTime', () => {
   it('describes the past', () => {
-    expect(relativeTime('2026-09-09T11:57:00Z', NOW)).toContain('3 minutes')
+    expect(relativeTime('2026-09-09T11:57:00Z', NOW)).toContain('3 minutes ago')
+  })
+
+  it('describes the future', () => {
+    expect(relativeTime('2026-09-09T14:00:00Z', NOW)).toContain('in 2 hours')
+  })
+
+  it.each([
+    [59.6, '1 minute ago'],
+    [3_590, '1 hour ago'],
+    [86_390, 'yesterday']
+  ])('carries %i seconds up into the next unit', (seconds, expected) => {
+    expect(relativeTime(ago(seconds), NOW)).toBe(expected)
   })
 
   it('falls through to years once every smaller unit is exhausted', () => {
@@ -81,6 +107,16 @@ describe('dayLabel', () => {
     expect(dayLabel(atLocal(30), localNow)).toMatch(/\d/)
   })
 
+  it('switches from weekday to date exactly a week back, where a weekday would be ambiguous', () => {
+    expect(dayLabel(atLocal(6), localNow)).toMatch(/day$/)
+    expect(dayLabel(atLocal(7), localNow)).toMatch(/\d/)
+  })
+
+  // Clock skew can date a post ahead of this machine; it is still the newest news.
+  it('files anything dated ahead of the local clock under today', () => {
+    expect(dayLabel(atLocal(-1), localNow)).toBe('Today')
+  })
+
   it('handles unparseable input', () => {
     expect(dayLabel('nope', localNow)).toBe('Unknown')
   })
@@ -88,7 +124,7 @@ describe('dayLabel', () => {
 
 describe('absoluteTime', () => {
   it('formats a real timestamp', () => {
-    expect(absoluteTime('2026-09-09T12:00:00Z')).not.toBe('')
+    expect(absoluteTime('2026-09-09T12:00:00Z')).toContain('2026')
   })
 
   it('returns an empty string for unparseable input', () => {

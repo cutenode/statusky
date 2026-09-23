@@ -1,0 +1,50 @@
+{
+  "accounts": [
+    { "did": "did:plc:ragtjsm2j2vknwkz3zp4oxrd", "handle": "pfrazee.com" },
+    { "did": "did:plc:f4z2nftgrn75h7h3wucdyzaf", "handle": "nepalidigits.bsky.social" },
+    { "did": "did:plc:mrozf7u6e7kjpo7itbrudpc6", "handle": "besnavel.bsky.social" },
+    { "did": "did:plc:65r3dy2t6xfuwidxmzvctvsh", "handle": "countingsheep.bsky.social" },
+    { "did": "did:plc:rnpkyqnmsw4ipey6eotbdnnf", "handle": "pds.dad" },
+    { "did": "did:plc:hdhoaan3xa3jiuq4fg4mefid", "handle": "bad-example.com" }
+  ],
+  "feeds": [
+    {
+      "label": "Discover feed",
+      "host": "discover.bsky.app",
+      "uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot"
+    }
+  ],
+  "forYou": {
+    "did": "did:web:foryou.club",
+    "feed": "at://did:plc:3guzzweuqraryl3rdkimjamk/app.bsky.feed.generator/for-you"
+  },
+  "cdnImages": [
+    {
+      "did": "did:plc:ewvi7nxzyoun6zhxrhs64oiz",
+      "cid": "bafkreiebtvblnu4jwu66y57kakido7uhiigenznxdlh6r6wiswblv5m4py"
+    },
+    {
+      "did": "did:plc:z72i7hdynmk6r22z27h6tvur",
+      "cid": "bafkreicnrpnkalwhwp2td7sxgpbxbt6ii3tjth2n5hdcdok5mxfro6np3u"
+    },
+    {
+      "did": "did:plc:ragtjsm2j2vknwkz3zp4oxrd",
+      "cid": "bafkreihydtvo6guxfd7sxp5lm3ainn2iib5lghudm4vb7kg36ri2pu3rrq"
+    }
+  ],
+  "tangled": {
+    "goGetPath": "/core?go-get=1",
+    "repoPath": "/tangled.org/core",
+    "repoDid": "did:plc:j5hmlfdrwkvtxm7cjmu7j2is",
+    "ownerDid": "did:plc:wshs7t2adsemcrrd4snkeqli"
+  },
+  "apps": {
+    "leaflet": {
+      "publication": { "did": "did:plc:btxrwcaeyodrap5mnjw2fvmz", "rkey": "3lppk75kw7k26" },
+      "feed": { "did": "did:plc:jbeaa5kdaladzwq3r7f5xgwe", "rkey": "3gtfwwbnks225" }
+    },
+    "offprint": {
+      "publication": "at://did:plc:pgjkomf37an4czloay5zeth6/site.standard.publication/3mcqqd47cw22j"
+    }
+  }
+}

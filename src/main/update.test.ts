@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { app, autoUpdater, net } from '../test/electron'
 import { lastSelfUpdater, selfUpdateFailure, selfUpdaters } from '../test/update-electron-app'
 import { LATEST_RELEASE_API } from '../shared/defaults'
@@ -52,7 +52,41 @@ function watch(on: UpdateDeps, options: Parameters<typeof watchUpdates>[1] = {})
 
 afterEach(() => {
   for (const watcher of watchers.splice(0)) watcher.stop()
+  // The `console.warn` spies, put back even when an assertion ahead of them failed.
+  vi.restoreAllMocks()
 })
+
+/** Silence the one line each failed check logs, and keep it to assert on. */
+function quietly(): ReturnType<typeof vi.spyOn> {
+  return vi.spyOn(console, 'warn').mockImplementation(() => {})
+}
+
+/**
+ * `net.fetch` as Chromium behaves with a request that never gets an answer: pending until
+ * its signal is aborted, and then rejecting with the reason.
+ */
+function neverAnswer(): void {
+  net.fetch.mockImplementation(
+    (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal
+        signal?.addEventListener('abort', () => reject(signal.reason))
+      })
+  )
+}
+
+/**
+ * How often GitHub is asked over five more one-second intervals, once `watcher` has been
+ * stopped. Fake timers only, and only after a fallback has taken over.
+ */
+async function askedAfterStopping(watcher: UpdateWatcher): Promise<number> {
+  await vi.advanceTimersByTimeAsync(0)
+  // The fallback has to be running for its stopping to mean anything.
+  expect(net.fetch).toHaveBeenCalledTimes(1)
+  watcher.stop()
+  await vi.advanceTimersByTimeAsync(5000)
+  return net.fetch.mock.calls.length - 1
+}
 
 describe('isNewerRelease', () => {
   it('compares the numbers as numbers', () => {
@@ -134,12 +168,11 @@ describe('latestReleaseTag', () => {
 
   /** The ordinary answer for this repository today: nothing has been released yet. */
   it('stays quiet when the repository has no releases', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const warn = quietly()
     serveRelease({ message: 'Not Found' }, 404)
 
     await expect(latestReleaseTag()).resolves.toBeNull()
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('404'))
-    warn.mockRestore()
   })
 
   /**
@@ -148,23 +181,22 @@ describe('latestReleaseTag', () => {
    * rather than a wrong one.
    */
   it('stays quiet when GitHub is rate limiting the whole address', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const warn = quietly()
     serveRelease({ message: 'API rate limit exceeded' }, 403)
 
     await expect(latestReleaseTag()).resolves.toBeNull()
-    warn.mockRestore()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('403'))
   })
 
   it('stays quiet when the body is not JSON at all', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    quietly()
     net.fetch.mockImplementation(async () => new Response('<html>nope</html>', { status: 200 }))
 
     await expect(latestReleaseTag()).resolves.toBeNull()
-    warn.mockRestore()
   })
 
   it('stays quiet when the release carries no usable tag', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    quietly()
 
     serveRelease({ name: 'Statusky 0.2.0' })
     await expect(latestReleaseTag()).resolves.toBeNull()
@@ -174,12 +206,10 @@ describe('latestReleaseTag', () => {
 
     serveRelease({ tag_name: '' })
     await expect(latestReleaseTag()).resolves.toBeNull()
-
-    warn.mockRestore()
   })
 
   it('stays quiet when the request never completes', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const warn = quietly()
     net.fetch.mockImplementation(async () => {
       throw new Error('net::ERR_NAME_NOT_RESOLVED')
     })
@@ -189,18 +219,82 @@ describe('latestReleaseTag', () => {
       expect.stringContaining('Could not ask GitHub'),
       expect.stringContaining('ERR_NAME_NOT_RESOLVED')
     )
-    warn.mockRestore()
   })
 
   /** A throw on its way out of Chromium is not obliged to be an `Error`. */
   it('survives a failure that is not an Error', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const warn = quietly()
     net.fetch.mockImplementation(async () => {
       throw 'offline'
     })
 
     await expect(latestReleaseTag()).resolves.toBeNull()
-    warn.mockRestore()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Could not ask GitHub'), 'offline')
+  })
+})
+
+/**
+ * A request with no ceiling is not slow, it is outstanding, and a new check starts every
+ * interval whether or not the last one came back. Fifteen seconds is far longer than
+ * GitHub ever takes, so reaching it means something has gone wrong — and the answer is
+ * the same as for every other failure: say nothing.
+ */
+describe('latestReleaseTag against a connection that stalls', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('gives up on a request that never answers, after fifteen seconds', async () => {
+    vi.useFakeTimers()
+    const warn = quietly()
+    neverAnswer()
+
+    let answer: string | null | undefined
+    void latestReleaseTag().then((tag) => (answer = tag))
+
+    await vi.advanceTimersByTimeAsync(14_999)
+    expect(answer).toBeUndefined()
+
+    await vi.advanceTimersByTimeAsync(1)
+    expect(answer).toBeNull()
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not ask GitHub'),
+      expect.any(String)
+    )
+  })
+
+  // The body comes over the same connection as the headers, so a response that starts
+  // and never finishes is the same stall and gets the same ceiling.
+  it('gives up on a body that never finishes arriving', async () => {
+    vi.useFakeTimers()
+    quietly()
+    net.fetch.mockImplementation(async (_input, init) => {
+      const signal = init?.signal
+      const body = new ReadableStream<Uint8Array>({
+        start(stream) {
+          stream.enqueue(new TextEncoder().encode('{"tag_name":"v0.'))
+          signal?.addEventListener('abort', () => stream.error(signal.reason))
+        }
+      })
+      return new Response(body, { status: 200 })
+    })
+
+    let answer: string | null | undefined
+    void latestReleaseTag().then((tag) => (answer = tag))
+
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(answer).toBeNull()
+  })
+
+  // Not `unref`'d, so one left behind per check would hold the process open for fifteen
+  // seconds after every answer.
+  it('lets go of the timer once GitHub has answered', async () => {
+    vi.useFakeTimers()
+    serveRelease({ tag_name: 'v0.4.0' })
+
+    await expect(latestReleaseTag()).resolves.toBe('v0.4.0')
+
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 
@@ -382,10 +476,10 @@ describe('watchUpdates when Squirrel turns out not to be able to', () => {
     app.isPackaged = true
     selfUpdateFailure.error = new Error('repo not found')
     serveRelease({ tag_name: 'v0.9.0' })
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const warn = quietly()
     const on = deps()
 
-    const watcher = watch(on, { platform: 'darwin' })
+    watch(on, { platform: 'darwin' })
     await settle()
 
     expect(on.onAvailable).toHaveBeenCalledWith('0.9.0')
@@ -393,8 +487,39 @@ describe('watchUpdates when Squirrel turns out not to be able to', () => {
       expect.stringContaining('Could not start the self-updater'),
       'repo not found'
     )
-    expect(() => watcher.stop()).not.toThrow()
-    warn.mockRestore()
+    // No self-updater, so nothing for Squirrel's errors to be about.
+    expect(autoUpdater.listenerCount('error')).toBe(0)
+  })
+
+  /**
+   * `stop()` runs on the way out of the app. A release check it did not reach would go on
+   * asking GitHub every interval from a process that is meant to be quitting.
+   */
+  describe('and then being told to stop', () => {
+    beforeEach(() => {
+      vi.useFakeTimers()
+      app.isPackaged = true
+      serveRelease({ tag_name: 'v0.9.0' })
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('stops the release check that took over from Squirrel', async () => {
+      const watcher = watch(deps(), { platform: 'darwin', intervalMs: 1000 })
+      autoUpdater.fail('Could not get code signature for running application')
+
+      expect(await askedAfterStopping(watcher)).toBe(0)
+    })
+
+    it('stops the release check that took over from a self-updater that never started', async () => {
+      quietly()
+      selfUpdateFailure.error = new Error('repo not found')
+      const watcher = watch(deps(), { platform: 'darwin', intervalMs: 1000 })
+
+      expect(await askedAfterStopping(watcher)).toBe(0)
+    })
   })
 })
 
@@ -430,14 +555,14 @@ describe('watchUpdates where nothing can install anything', () => {
 
   it('says nothing when GitHub will not answer', async () => {
     app.isPackaged = true
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const warn = quietly()
     const on = deps()
 
     watch(on, { platform: 'linux' })
     await settle()
 
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('404'))
     expect(on.onAvailable).not.toHaveBeenCalled()
-    warn.mockRestore()
   })
 
   /**
@@ -481,14 +606,16 @@ describe('watchUpdates where nothing can install anything', () => {
   })
 
   /** Checking for an update must never be the thing keeping the process alive. */
-  it('does not hold the event loop open', () => {
+  it('does not hold the event loop open', async () => {
     app.isPackaged = true
-    const unref = vi.spyOn(globalThis, 'setInterval')
+    serveRelease({ tag_name: 'v0.1.0' })
+    const interval = vi.spyOn(globalThis, 'setInterval')
     watch(deps(), { platform: 'linux' })
 
-    const timer = unref.mock.results[0]?.value as { hasRef?: () => boolean }
+    const timer = interval.mock.results[0]?.value as { hasRef?: () => boolean }
     expect(timer.hasRef?.()).toBe(false)
-    unref.mockRestore()
+    // Let the first check, which went out alongside the timer, finish inside this test.
+    await settle()
   })
 })
 

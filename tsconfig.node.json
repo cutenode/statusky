@@ -29,6 +29,7 @@
     "src/preload/**/*.ts",
     "src/ipc/**/*.ts",
     "src/shared/**/*.ts",
+    "src/shared/**/*.json",
     "src/test/**/*.ts",
     "forge.config.ts",
     "electron.vite.config.ts",

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CATALOGUE, SERVICES, type ServiceDefinition } from '../shared/network'
-import type { ProbeCheck } from '../shared/types'
+import { CATALOGUE, SERVICES, servicesFor, type ServiceDefinition } from '../shared/network'
+import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
+import type { ProbeCheck, ProbeTargets } from '../shared/types'
 import { commitFrame, errorFrame, frame } from '../test/cbor'
-import { FakeNetwork, FakeSocket, tid } from '../test/network'
+import { FakeNetwork, FakeSocket, jetstreamEvent, spacedustLink, tid } from '../test/network'
 import {
   DEFAULT_PROBE_TIMINGS,
   FreshnessPeers,
@@ -65,9 +66,15 @@ function context(overrides: Partial<ProbeContext> = {}): ProbeContext & { change
     },
     peers: new FreshnessPeers(1, null),
     counters: memoryCounters(),
+    targets: DEFAULT_PROBE_TARGETS,
     changes: () => changes,
     ...overrides
   }
+}
+
+/** The checked-in targets with some part replaced, as a user's override would be. */
+function targets(changes: Partial<ProbeTargets>): ProbeTargets {
+  return { ...structuredClone(DEFAULT_PROBE_TARGETS), ...changes }
 }
 
 async function probe(id: string, overrides: Partial<ProbeContext> = {}): Promise<Probe> {
@@ -81,6 +88,24 @@ function check(checks: ProbeCheck[], label: string, index = 0): ProbeCheck {
   const found = checks.filter((c) => c.label === label)[index]
   if (!found) throw new Error(`No ${label} check among ${checks.map((c) => c.label).join(', ')}`)
   return found
+}
+
+/** Have one path on `host` answer with exactly this JSON. */
+function answer(host: string, path: string, body: unknown): void {
+  network.fail(
+    host,
+    { kind: 'respond', body: JSON.stringify(body), contentType: 'application/json' },
+    path
+  )
+}
+
+/** A fresh Spacedust link frame with some of it replaced. */
+function link(changes: Record<string, unknown>): string {
+  return JSON.stringify({ ...JSON.parse(spacedustLink()), ...changes })
+}
+
+function daysAgo(days: number): Date {
+  return new Date(Date.now() - days * 86_400_000)
 }
 
 describe('a relay', () => {
@@ -105,7 +130,12 @@ describe('a relay', () => {
 
   it('asks for uncached answers and sends no cookies', async () => {
     await probe(id)
-    for (const request of network.requestsTo('bsky.network')) {
+    const requests = network.requestsTo('bsky.network')
+    expect(requests.map((r) => r.path)).toEqual([
+      '/xrpc/_health',
+      '/xrpc/com.atproto.sync.listHosts'
+    ])
+    for (const request of requests) {
       expect(request.cache).toBe('no-store')
       expect(request.credentials).toBe('omit')
     }
@@ -416,30 +446,98 @@ describe('an AppView', () => {
   const id = 'appview:api.bsky.app'
   const host = 'api.bsky.app'
 
-  it('passes all eleven of status.feeds.blue’s checks', async () => {
+  it('asks status.feeds.blue’s questions of every account, filed kind by kind', async () => {
     const { checks } = await probe(id)
+    const { accounts } = DEFAULT_PROBE_TARGETS
+    const each = (label: string): string[] => accounts.map(() => label)
     expect(checks.map((c) => c.label)).toEqual([
       '_health',
-      'getProfile',
-      'getProfile',
-      'resolveHandle',
-      'resolveHandle',
-      'resolveHandle',
-      'getAuthorFeed',
-      'getAuthorFeed',
-      'getAuthorFeed',
-      'getAuthorFeed',
+      ...each('getProfile'),
+      ...each('resolveHandle'),
+      ...each('getAuthorFeed'),
       'newest post'
     ])
     expect(checks.every((c) => c.ok)).toBe(true)
     expect(check(checks, 'newest post')).toMatchObject({ kind: 'derived', target: null })
   })
 
+  /**
+   * Three lists became one, so every account is now asked about all three ways. Which
+   * accounts the defaults hold is src/shared/probe-targets.test.ts's business.
+   */
+  it('makes three requests per account, plus its health check', async () => {
+    await probe(id)
+    expect(network.requestsTo(host)).toHaveLength(1 + 3 * DEFAULT_PROBE_TARGETS.accounts.length)
+  })
+
+  it('looks each account up by DID and by handle, and reads its feed by DID', async () => {
+    const accounts = [
+      { did: 'did:plc:alice', handle: 'alice.test' },
+      { did: 'did:plc:bob', handle: 'bob.test' }
+    ]
+    network.useTargets(targets({ accounts }))
+    const { checks } = await probe(id, { targets: targets({ accounts }) })
+
+    const asked = (label: string, param: string): (string | null)[] =>
+      checks.filter((c) => c.label === label).map((c) => new URL(c.target!).searchParams.get(param))
+    expect(asked('getProfile', 'actor')).toEqual(['did:plc:alice', 'did:plc:bob'])
+    expect(asked('resolveHandle', 'handle')).toEqual(['alice.test', 'bob.test'])
+    expect(asked('getAuthorFeed', 'actor')).toEqual(['did:plc:alice', 'did:plc:bob'])
+    expect(checks.every((c) => c.ok)).toBe(true)
+  })
+
   it('asks for a handful of posts, not a hundred', async () => {
     await probe(id)
     const feeds = network.requestsTo(host).filter((r) => r.path.endsWith('getAuthorFeed'))
-    expect(feeds).toHaveLength(4)
+    expect(feeds).toHaveLength(DEFAULT_PROBE_TARGETS.accounts.length)
     for (const request of feeds) expect(new URL(request.url).searchParams.get('limit')).toBe('5')
+  })
+
+  it('fails a handle that resolves to somebody else’s DID', async () => {
+    network.fail(
+      host,
+      {
+        kind: 'respond',
+        body: JSON.stringify({ did: 'did:plc:somebodyelse' }),
+        contentType: 'application/json'
+      },
+      '/xrpc/com.atproto.identity.resolveHandle'
+    )
+    const { checks } = await probe(id)
+    const handles = checks.filter((c) => c.label === 'resolveHandle')
+    expect(handles).toHaveLength(DEFAULT_PROBE_TARGETS.accounts.length)
+    for (const handle of handles) {
+      expect(handle).toMatchObject({ ok: false, error: 'Resolved to the wrong DID' })
+    }
+    // Only the resolution is wrong; the profiles and feeds were read by DID.
+    expect(checks.filter((c) => c.label === 'getProfile').every((c) => c.ok)).toBe(true)
+  })
+
+  it('holds each handle to its own DID, not just to any DID', async () => {
+    // Two accounts whose DIDs are swapped: every answer is a DID, and each is wrong.
+    const listed = [
+      { did: 'did:plc:alice', handle: 'bob.test' },
+      { did: 'did:plc:bob', handle: 'alice.test' }
+    ]
+    network.useTargets(
+      targets({
+        accounts: [
+          { did: 'did:plc:alice', handle: 'alice.test' },
+          { did: 'did:plc:bob', handle: 'bob.test' }
+        ]
+      })
+    )
+    const { checks } = await probe(id, { targets: targets({ accounts: listed }) })
+    expect(checks.filter((c) => c.label === 'resolveHandle').map((c) => c.error)).toEqual([
+      'Resolved to the wrong DID',
+      'Resolved to the wrong DID'
+    ])
+  })
+
+  it('fails a handle the AppView cannot resolve at all', async () => {
+    const accounts = [{ did: 'did:plc:gone', handle: 'deleted.test' }]
+    const { checks } = await probe(id, { targets: targets({ accounts }) })
+    expect(check(checks, 'resolveHandle')).toMatchObject({ ok: false, error: 'HTTP 400' })
   })
 
   it('expects a version from the health check', async () => {
@@ -466,17 +564,24 @@ describe('an AppView', () => {
   )
 
   it('fails a profile or handle lookup that returns no DID', async () => {
-    network.fail(
-      host,
-      { kind: 'respond', body: '{"handle":"x"}', contentType: 'application/json' },
+    for (const path of [
+      '/xrpc/app.bsky.actor.getProfile',
       '/xrpc/com.atproto.identity.resolveHandle'
-    )
+    ]) {
+      network.fail(
+        host,
+        { kind: 'respond', body: '{"handle":"x"}', contentType: 'application/json' },
+        path
+      )
+    }
     const { checks } = await probe(id)
-    expect(checks.filter((c) => c.label === 'resolveHandle').map((c) => c.ok)).toEqual([
-      false,
-      false,
-      false
-    ])
+    const lookups = checks.filter((c) => c.label === 'getProfile' || c.label === 'resolveHandle')
+    expect(lookups).toHaveLength(2 * DEFAULT_PROBE_TARGETS.accounts.length)
+    // No DID at all is a malformed answer, not a wrong one.
+    for (const lookup of lookups) {
+      expect(lookup).toMatchObject({ ok: false, error: 'Invalid response' })
+    }
+    expect(check(checks, 'getAuthorFeed').ok).toBe(true)
   })
 
   it('fails freshness when no feed returns a timestamp', async () => {
@@ -553,7 +658,8 @@ describe('the other infrastructure', () => {
 
   describe('the For You feed', () => {
     const id = 'foryou:foryou.club'
-    const { host, did, feed, siteMarker, busy, appView } = CATALOGUE.forYou
+    const { host, appView } = CATALOGUE.forYou
+    const { did, feed } = DEFAULT_PROBE_TARGETS.forYou
 
     it("checks the identity, the front door, the proxy and Bluesky's verdict", async () => {
       const { checks } = await probe(id)
@@ -576,27 +682,23 @@ describe('the other infrastructure', () => {
       expect(paths).not.toContain('/also-liked')
     })
 
-    it('fails a skeleton that arrives empty', async () => {
+    it.each([
+      [{ feed: [] }, 'Skeleton was empty'],
+      [{ cursor: '' }, 'No feed in the skeleton']
+    ])('fails a skeleton that reads %o', async (skeleton, error) => {
       network.fail(
         host,
-        {
-          kind: 'respond',
-          body: JSON.stringify({ feed: [] }),
-          contentType: 'application/json'
-        },
+        { kind: 'respond', body: JSON.stringify(skeleton), contentType: 'application/json' },
         '/xrpc/app.bsky.feed.getFeedSkeleton'
       )
       const { checks } = await probe(id)
-      expect(check(checks, 'getFeedSkeleton')).toMatchObject({
-        ok: false,
-        error: 'Skeleton was empty'
-      })
+      expect(check(checks, 'getFeedSkeleton')).toMatchObject({ ok: false, error })
     })
 
     it('says a busy feed is busy rather than repeating its status', async () => {
       network.fail(
         host,
-        { kind: 'respond', status: 503, body: busy, contentType: 'text/plain' },
+        { kind: 'respond', status: 503, body: 'server busy\n', contentType: 'text/plain' },
         '/'
       )
       const { checks } = await probe(id)
@@ -606,8 +708,25 @@ describe('the other infrastructure', () => {
       })
     })
 
+    // A 503 is allowed through only so its body can say why; it is never forgiven.
+    it('fails a 503 even when the page under it is the site', async () => {
+      network.fail(
+        host,
+        {
+          kind: 'respond',
+          status: 503,
+          body: '<html><head><link rel="canonical" href="https://foryou.club/"></head></html>',
+          contentType: 'text/html'
+        },
+        '/'
+      )
+      const { checks } = await probe(id)
+      expect(check(checks, 'site')).toMatchObject({ ok: false, error: 'HTTP 503' })
+    })
+
     it.each([
       [{ id: 'did:web:somewhere.else' }, 'DID document names a different DID'],
+      [{ id: did }, 'DID document declares no feed generator here'],
       [{ id: did, service: [] }, 'DID document declares no feed generator here'],
       [
         { id: did, service: [{ type: 'BskyFeedGenerator', serviceEndpoint: 'https://elsewhere' }] },
@@ -648,7 +767,6 @@ describe('the other infrastructure', () => {
       )
       const { checks } = await probe(id)
       expect(check(checks, 'site')).toMatchObject({ ok: false, error: 'Page was not the site' })
-      expect(siteMarker.startsWith('<link rel="canonical"')).toBe(true)
     })
 
     it('reports a skeleton that never arrived', async () => {
@@ -689,6 +807,32 @@ describe('the other infrastructure', () => {
       ok: false,
       error: 'Link count has not moved for 3 sweeps'
     })
+  })
+
+  it('starts the tally over when the link count climbs again', async () => {
+    const counters = memoryCounters()
+    const growth: (boolean | null)[] = []
+    for (const count of [7, 7, 7, 8, 8, 8]) {
+      answer('constellation.microcosm.blue', '/', { stats: { linking_records: count } })
+      // Sequential on purpose: each sweep is judged against the one before it.
+      // oxlint-disable-next-line no-await-in-loop
+      const { checks } = await probe('constellation:constellation.microcosm.blue', { counters })
+      growth.push(check(checks, 'index growth').ok)
+    }
+    // Two flat sweeps, a move, two flat sweeps: never three in a row.
+    expect(growth).toEqual([true, true, true, true, true, true])
+  })
+
+  it('skips the growth check when Constellation publishes no count', async () => {
+    answer('constellation.microcosm.blue', '/', { stats: {} })
+    const { checks } = await probe('constellation:constellation.microcosm.blue')
+    expect(check(checks, 'index stats')).toMatchObject({ ok: false, error: 'No index stats' })
+    expect(check(checks, 'index growth')).toMatchObject({
+      ok: false,
+      error: 'Skipped because index stats failed',
+      durationMs: null
+    })
+    expect(check(checks, 'getBacklinks').ok).toBe(true)
   })
 
   describe('the CDN', () => {
@@ -817,6 +961,57 @@ describe('the streams', () => {
       error: 'Newest link is 2 hours old'
     })
   })
+
+  /** Probe a stream that stays quiet on its own, putting exactly `data` on it once open. */
+  async function streamSaying(id: string, data: unknown): Promise<ProbeCheck> {
+    const definition = service(id)
+    network.setFirehose(definition.host, 'silent')
+    const checks: ProbeCheck[] = []
+    const done = probeService(definition, checks, context())
+    await vi.waitFor(() => expect(network.sockets).toHaveLength(1))
+    network.sockets[0]!.emit(data)
+    await done
+    return check(checks, 'subscribe')
+  }
+
+  it.each([
+    // A server is free to send its JSON in binary frames rather than text ones.
+    ['an event as bytes', new TextEncoder().encode(jetstreamEvent()), true, null],
+    ['text that is not JSON', 'not json', false, 'Failed to decode a Jetstream event'],
+    ['JSON that is not an event', '[1]', false, 'Failed to decode a Jetstream event'],
+    ['neither text nor bytes', 42, false, 'Failed to decode a Jetstream event'],
+    ['a commit with no time', '{"kind":"commit"}', false, 'Received invalid timestamp'],
+    // Only commits carry the time the check reads; anything else is passed over.
+    ['only an identity event', '{"kind":"identity"}', false, 'No events received']
+  ])('reads a Jetstream that sends %s', async (_name, data, ok, error) => {
+    expect(await streamSaying('jetstream:jetstream2.fr.hose.cam', data)).toMatchObject({
+      ok,
+      error
+    })
+  })
+
+  it.each([
+    ['text that is not JSON', 'not json', 'Failed to decode a Spacedust frame'],
+    ['JSON that is not a frame', 'null', 'Failed to decode a Spacedust frame'],
+    // A replayed link dates from whenever it was first seen, so it proves nothing.
+    ['only a replayed link', link({ origin: 'replay' }), 'No links received'],
+    ['a link with no record behind it', link({ link: null }), 'Received invalid timestamp'],
+    [
+      'a link whose revision is not a string',
+      link({ link: { source_rev: 5 } }),
+      'Received invalid timestamp'
+    ],
+    [
+      'a link whose revision is not a TID',
+      link({ link: { source_rev: 'yesterday' } }),
+      'Received invalid timestamp'
+    ]
+  ])('fails a Spacedust that sends %s', async (_name, data, error) => {
+    expect(await streamSaying('spacedust:spacedust.microcosm.blue', data)).toMatchObject({
+      ok: false,
+      error
+    })
+  })
 })
 
 describe('the indexes that report their own cursor', () => {
@@ -860,47 +1055,88 @@ describe('the indexes that report their own cursor', () => {
     expect(check(checks, 'up').target).toBe('https://pckt.blog/up')
   })
 
-  it('names which of pckt’s dependencies is unreachable', async () => {
-    network.fail(
-      'pckt.blog',
-      {
-        kind: 'respond',
-        body: JSON.stringify({ status: 'ok', checks: { database: true, cache: false } }),
-        contentType: 'application/json'
-      },
-      '/up'
-    )
-    const { checks } = await probe('pckt:pckt.blog')
-    expect(check(checks, 'up')).toMatchObject({ ok: false, error: 'Cache is unreachable' })
-    expect(check(checks, 'index lag')).toMatchObject({
-      ok: false,
-      error: 'Skipped because up failed'
+  /** pckt's `/up` with everything well, and then whatever `changes` says. */
+  const pcktSays = (changes: Record<string, unknown>): void =>
+    answer('pckt.blog', '/up', {
+      status: 'ok',
+      checks: { database: true, cache: true },
+      typesense: true,
+      horizon: { running: true },
+      jetstream: { cursor: 1, stale_seconds: 1 },
+      failed_jobs_last_hour: 0,
+      queues: { default: 0, media: 0, search: 0 },
+      ...changes
     })
+
+  it.each([
+    [{ status: 'maintenance' }, 'Application reports it is not ok'],
+    [{ checks: { database: false, cache: true } }, 'Database is unreachable'],
+    [{ checks: { database: true, cache: false } }, 'Cache is unreachable'],
+    [{ typesense: false }, 'Search index is unreachable'],
+    [{ horizon: { running: false } }, 'Queue worker is not running']
+  ])('names which of pckt’s dependencies is unwell when /up reads %o', async (changes, error) => {
+    pcktSays(changes)
+    const { checks } = await probe('pckt:pckt.blog')
+    expect(check(checks, 'up')).toMatchObject({ ok: false, error })
+    // An application that has said it is not well is not read any further.
+    for (const label of ['index lag', 'queues']) {
+      expect(check(checks, label)).toMatchObject({ ok: false, error: 'Skipped because up failed' })
+    }
   })
 
-  it('reports a pckt queue that has backed up', async () => {
-    network.fail(
-      'pckt.blog',
-      {
-        kind: 'respond',
-        body: JSON.stringify({
-          status: 'ok',
-          checks: { database: true, cache: true },
-          typesense: true,
-          horizon: { running: true },
-          jetstream: { stale_seconds: 1 },
-          failed_jobs_last_hour: 0,
-          queues: { search: 0, media: 4000 }
-        }),
-        contentType: 'application/json'
-      },
-      '/up'
-    )
+  it.each([
+    [{ jetstream: { cursor: 1 } }, 'Consumer reported no staleness'],
+    [{ jetstream: { cursor: 1, stale_seconds: 20 * 60 } }, 'Index trails by 20 minutes']
+  ])('judges pckt’s index lag from %o', async (changes, error) => {
+    pcktSays(changes)
+    const { checks } = await probe('pckt:pckt.blog')
+    expect(check(checks, 'up').ok).toBe(true)
+    expect(check(checks, 'index lag')).toMatchObject({ ok: false, error, durationMs: null })
+    expect(check(checks, 'queues').ok).toBe(true)
+  })
+
+  it.each([
+    [{ failed_jobs_last_hour: 1 }, '1 job failed in the last hour'],
+    // Failed jobs are the worse news, and say so even with a queue backed up beside them.
+    [{ failed_jobs_last_hour: 3, queues: { media: 4000 } }, '3 jobs failed in the last hour'],
+    [{ queues: { search: 0, media: 4000 } }, '1 queue backed up: media (4000)'],
+    [
+      { queues: { default: 501, media: 4000, search: 500 } },
+      '2 queues backed up: default (501), media (4000)'
+    ]
+  ])('reports pckt’s queues from %o', async (changes, error) => {
+    pcktSays(changes)
     const { checks } = await probe('pckt:pckt.blog')
     expect(check(checks, 'index lag').ok).toBe(true)
-    expect(check(checks, 'queues')).toMatchObject({
+    expect(check(checks, 'queues')).toMatchObject({ ok: false, error, durationMs: null })
+  })
+
+  it('holds nothing against pckt that its /up leaves out', async () => {
+    pcktSays({ failed_jobs_last_hour: undefined, queues: undefined })
+    const { checks } = await probe('pckt:pckt.blog')
+    expect(check(checks, 'queues').ok).toBe(true)
+  })
+
+  it('skips UFOs’ index lag when there is no cursor to read it from', async () => {
+    answer('ufos-api.microcosm.blue', '/meta', { consumer: {} })
+    const { checks } = await probe('ufos:ufos-api.microcosm.blue')
+    expect(check(checks, 'meta')).toMatchObject({ ok: false, error: 'Invalid response' })
+    expect(check(checks, 'index lag')).toMatchObject({
       ok: false,
-      error: '1 queue backed up: media (4000)'
+      error: 'Skipped because meta failed',
+      durationMs: null
+    })
+    expect(check(checks, 'collections/stats').ok).toBe(true)
+  })
+
+  it('fails UFOs’ query path when the collection it asked about is missing', async () => {
+    answer('ufos-api.microcosm.blue', '/collections/stats', {
+      'app.bsky.feed.like': { creates: 1 }
+    })
+    const { checks } = await probe('ufos:ufos-api.microcosm.blue')
+    expect(check(checks, 'collections/stats')).toMatchObject({
+      ok: false,
+      error: 'No collection stats'
     })
   })
 })
@@ -931,6 +1167,33 @@ describe('the identity services', () => {
       error: 'Resolved to the wrong DID'
     })
   })
+
+  // Identity and records are cached separately, and either can break on its own.
+  it.each([
+    [
+      '/xrpc/com.atproto.repo.getRecord',
+      { cid: 'bafyreiprobe', value: { $type: 'app.bsky.feed.post' } },
+      'getRecord',
+      'Record was not a profile'
+    ],
+    [
+      '/xrpc/com.atproto.repo.getRecord',
+      { value: { $type: 'app.bsky.actor.profile' } },
+      'getRecord',
+      'Record was not a profile'
+    ],
+    [
+      '/xrpc/blue.microcosm.identity.resolveMiniDoc',
+      { did: CATALOGUE.anchor.did, handle: CATALOGUE.anchor.handle },
+      'resolveMiniDoc',
+      'Mini doc was incomplete'
+    ]
+  ])('fails a Slingshot whose %s reads %o', async (path, body, label, error) => {
+    answer('slingshot.microcosm.blue', path, body)
+    const { checks } = await probe('slingshot:slingshot.microcosm.blue')
+    expect(check(checks, label)).toMatchObject({ ok: false, error })
+    expect(checks.filter((c) => c.ok)).toHaveLength(2)
+  })
 })
 
 describe('Tangled', () => {
@@ -960,7 +1223,7 @@ describe('Tangled', () => {
         body: '<html><head><title>404 · Tangled</title></head></html>',
         contentType: 'text/html'
       },
-      CATALOGUE.tangled.repoPath
+      DEFAULT_PROBE_TARGETS.tangled.repoPath
     )
     const { checks } = await probe('tangled-appview:tangled.org')
     expect(check(checks, 'repo page')).toMatchObject({
@@ -1041,6 +1304,93 @@ describe('Tangled', () => {
     // A knot's is under /xrpc; a spindle's is not. They do not share a constant.
     expect(check(checks, '_health').target).toBe('https://spindle.tangled.sh/_health')
   })
+
+  it('fails a repository page with no title to read', async () => {
+    network.fail(
+      'tangled.org',
+      { kind: 'respond', body: '<html><body>Tangled</body></html>', contentType: 'text/html' },
+      DEFAULT_PROBE_TARGETS.tangled.repoPath
+    )
+    const { checks } = await probe('tangled-appview:tangled.org')
+    expect(check(checks, 'repo page')).toMatchObject({ ok: false, error: 'Page carried no title' })
+    expect(check(checks, 'go-get').ok).toBe(true)
+  })
+
+  it('fails a go-get route that names some other repository', async () => {
+    network.fail(
+      'tangled.org',
+      {
+        kind: 'respond',
+        body: '<meta name="go-import" content="tangled.org/else git https://tangled.org/@else">',
+        contentType: 'text/html'
+      },
+      new URL(DEFAULT_PROBE_TARGETS.tangled.goGetPath, 'https://tangled.org').pathname
+    )
+    const { checks } = await probe('tangled-appview:tangled.org')
+    expect(check(checks, 'go-get')).toMatchObject({ ok: false, error: 'Unexpected go-import meta' })
+  })
+
+  it('skips Bobbin’s cursor when its coverage reports none', async () => {
+    answer('api.tangled.org', '/xrpc/sh.tangled.bobbin.getCoverage', { ready: true })
+    const { checks } = await probe('bobbin:api.tangled.org')
+    expect(check(checks, 'getCoverage')).toMatchObject({ ok: false, error: 'No coverage reported' })
+    expect(check(checks, 'event cursor')).toMatchObject({
+      ok: false,
+      error: 'Skipped because getCoverage failed',
+      durationMs: null
+    })
+  })
+
+  it.each([
+    [
+      'bobbin:api.tangled.org',
+      '/xrpc/sh.tangled.repo.getRepoByRepoDid',
+      { value: { knot: 'knot.elsewhere.test' } },
+      'getRepoByRepoDid',
+      'Repo resolved to the wrong knot'
+    ],
+    [
+      'hydrant:api.tangled.org',
+      '/health',
+      { name: 'hydrant', mode: 'backfill' },
+      'health',
+      'Upstream did not identify itself'
+    ],
+    [
+      'knot:knot1.tangled.sh',
+      '/xrpc/sh.tangled.knot.version',
+      { version: '' },
+      'knot.version',
+      'No version reported'
+    ],
+    [
+      'knot:knot1.tangled.sh',
+      '/xrpc/sh.tangled.owner',
+      { owner: 'tangled.sh' },
+      'owner',
+      'No owner DID'
+    ],
+    // Only a knot 2 is asked these two, and it names the capability that says so.
+    ['knot:knot1.tangled.sh', '/xrpc/_health', {}, '_health', 'Unexpected health response'],
+    [
+      'knot:knot1.tangled.sh',
+      '/xrpc/sh.tangled.sync.listRepos',
+      { cursor: '' },
+      'sync.listRepos',
+      'No repositories listed'
+    ],
+    [
+      'spindle:spindle.tangled.sh',
+      '/_health',
+      { status: 'starting' },
+      '_health',
+      'Unexpected health response'
+    ]
+  ])('fails %s when %s reads %o', async (id, path, body, label, error) => {
+    answer(service(id).host, path, body)
+    const { checks } = await probe(id)
+    expect(check(checks, label)).toMatchObject({ ok: false, error })
+  })
 })
 
 describe('the publishing apps', () => {
@@ -1054,19 +1404,111 @@ describe('the publishing apps', () => {
   })
 
   it('posts the Leaflet search rather than asking for it', async () => {
-    await probe('leaflet:leaflet.pub')
-    const search = network
-      .requestsTo('leaflet.pub')
-      .find((r) => r.path === '/api/rpc/search_publication_names')
-    expect(search).toBeDefined()
+    const sent: RequestInit[] = []
+    const transport: ProbeTransport = {
+      fetch: (url, init) => {
+        if (new URL(url).pathname === '/api/rpc/search_publication_names') sent.push(init)
+        return network.fetch(url, init)
+      },
+      openSocket: network.openSocket
+    }
+    await probe('leaflet:leaflet.pub', { transport })
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ query: CATALOGUE.apps.leaflet.query }),
+      headers: { 'content-type': 'application/json' }
+    })
   })
 
-  it('runs the expensive feed check hourly, not every sweep', async () => {
+  it.each([
+    ['leaflet:leaflet.pub', 'newest document'],
+    ['offprint:offprint.app', 'newest article']
+  ])('runs %s’s expensive feed check hourly, not every sweep', async (id, label) => {
     const counters = memoryCounters()
-    const first = await probe('leaflet:leaflet.pub', { counters })
-    expect(first.checks.map((c) => c.label)).toContain('newest document')
-    const second = await probe('leaflet:leaflet.pub', { counters })
-    expect(second.checks.map((c) => c.label)).not.toContain('newest document')
+    let clock = Date.now()
+    const now = (): number => clock
+    const labels = async (): Promise<string[]> =>
+      (await probe(id, { counters, now })).checks.map((c) => c.label)
+
+    expect(await labels()).toContain(label)
+    clock += 59 * 60_000
+    expect(await labels()).not.toContain(label)
+    clock += 60_000
+    expect(await labels()).toContain(label)
+  })
+
+  const { publication, feed } = DEFAULT_PROBE_TARGETS.apps.leaflet
+
+  it.each([
+    [
+      `/lish/${publication.did}/${publication.rkey}/.well-known/site.standard.publication`,
+      'text/plain',
+      `at://did:plc:someoneelse/site.standard.publication/${publication.rkey}`,
+      'publication',
+      'Publication did not resolve'
+    ],
+    [
+      '/api/rpc/search_publication_names',
+      'application/json',
+      '{"result":{"publications":[]}}',
+      'search',
+      'Search returned nothing'
+    ]
+  ])('fails Leaflet when %s answers %s %s', async (path, contentType, body, label, error) => {
+    network.fail('leaflet.pub', { kind: 'respond', body, contentType }, path)
+    const { checks } = await probe('leaflet:leaflet.pub')
+    expect(check(checks, label)).toMatchObject({ ok: false, error })
+  })
+
+  it('takes Leaflet’s search results without the envelope as well', async () => {
+    answer('leaflet.pub', '/api/rpc/search_publication_names', {
+      publications: [{ uri: 'at://did:plc:pub/x/y', name: 'Leaflet' }]
+    })
+    const { checks } = await probe('leaflet:leaflet.pub')
+    expect(check(checks, 'search').ok).toBe(true)
+  })
+
+  it.each([
+    [
+      'leaflet:leaflet.pub',
+      `/lish/${feed.did}/${feed.rkey}/atom`,
+      `<feed><updated>${daysAgo(40).toISOString()}</updated></feed>`,
+      'newest document',
+      'Newest document is 40 days old'
+    ],
+    [
+      'leaflet:leaflet.pub',
+      `/lish/${feed.did}/${feed.rkey}/atom`,
+      '<feed><title>No dates here</title></feed>',
+      'newest document',
+      'Feed carried no date'
+    ],
+    [
+      'leaflet:leaflet.pub',
+      `/lish/${feed.did}/${feed.rkey}/atom`,
+      '<feed><updated>last Tuesday</updated></feed>',
+      'newest document',
+      'Feed carried no date'
+    ],
+    [
+      'offprint:offprint.app',
+      '/feed',
+      `<rss><channel><lastBuildDate>${daysAgo(40).toUTCString()}</lastBuildDate></channel></rss>`,
+      'newest article',
+      'Newest article is 40 days old'
+    ],
+    [
+      'offprint:offprint.app',
+      '/feed',
+      '<rss><channel></channel></rss>',
+      'newest article',
+      'Feed carried no date'
+    ]
+  ])('fails %s when its feed at %s reads %s', async (id, path, body, label, error) => {
+    network.fail(service(id).host, { kind: 'respond', body, contentType: 'application/xml' }, path)
+    const { checks } = await probe(id)
+    expect(check(checks, label)).toMatchObject({ ok: false, error })
   })
 
   it('checks Offprint’s health and its custom-domain lookup', async () => {
@@ -1076,6 +1518,16 @@ describe('the publishing apps', () => {
       ['publication', true],
       ['newest article', true]
     ])
+  })
+
+  it('fails an Offprint that is not up', async () => {
+    network.fail(
+      'offprint.app',
+      { kind: 'respond', body: '<html>Down for maintenance</html>', contentType: 'text/html' },
+      '/up'
+    )
+    const { checks } = await probe('offprint:offprint.app')
+    expect(check(checks, 'up')).toMatchObject({ ok: false, error: 'Application is not up' })
   })
 
   it('fails Offprint when its publication does not resolve', async () => {
@@ -1088,6 +1540,149 @@ describe('the publishing apps', () => {
       ok: false,
       error: 'Publication did not resolve'
     })
+  })
+})
+
+describe('what a sweep is asked to read', () => {
+  it('asks each listed feed’s own host for its own feed', async () => {
+    const cats = 'at://did:plc:cats/app.bsky.feed.generator/cats'
+    const feeds = [
+      ...DEFAULT_PROBE_TARGETS.feeds,
+      { label: 'Cats', host: 'feeds.example.test', uri: cats }
+    ]
+    const row = servicesFor(targets({ feeds })).find((s) => s.id === 'feed:feeds.example.test')!
+    expect(row).toMatchObject({ kind: 'feed', label: 'Cats', group: 'infrastructure' })
+
+    const checks: ProbeCheck[] = []
+    await probeService(row, checks, context({ targets: targets({ feeds }) }))
+    expect(checks).toEqual([expect.objectContaining({ label: 'getFeedSkeleton', ok: true })])
+    const url = new URL(checks[0]!.target!)
+    expect(url.hostname).toBe('feeds.example.test')
+    expect(url.searchParams.get('feed')).toBe(cats)
+  })
+
+  it('says so, without asking, when a feed row has outlived its feed', async () => {
+    const { checks } = await probe('feed:discover.bsky.app', { targets: targets({ feeds: [] }) })
+    expect(checks).toEqual([
+      expect.objectContaining({
+        label: 'getFeedSkeleton',
+        target: null,
+        ok: false,
+        error: 'No feed is listed for this host',
+        durationMs: null
+      })
+    ])
+    expect(network.requests).toHaveLength(0)
+  })
+
+  it('fetches exactly the images it is given', async () => {
+    const image = { did: 'did:plc:someone', cid: 'bafkreiexampleexampleexampleexample' }
+    const { checks } = await probe('cdn:cdn.bsky.app', {
+      targets: targets({ cdnImages: [image] })
+    })
+    expect(checks.map((c) => c.target)).toEqual([
+      `https://cdn.bsky.app/img/feed_fullsize/plain/${image.did}/${image.cid}`
+    ])
+  })
+
+  it('holds For You to the DID and feed it is given', async () => {
+    const forYou = {
+      did: 'did:web:elsewhere.test',
+      feed: 'at://did:plc:someone/app.bsky.feed.generator/other'
+    }
+    const { checks } = await probe('foryou:foryou.club', { targets: targets({ forYou }) })
+    expect(new URL(check(checks, 'getFeedSkeleton').target!).searchParams.get('feed')).toBe(
+      forYou.feed
+    )
+    // The real site still names its own DID, which is not the one listed.
+    expect(check(checks, 'did.json').error).toBe('DID document names a different DID')
+    expect(check(checks, 'getFeedGenerator').error).toBe('Generator record points elsewhere')
+  })
+
+  describe('a Tangled repository of the user’s choosing', () => {
+    const tangled = {
+      goGetPath: '/someone.test/tool?go-get=1',
+      repoPath: '/someone.test/tool',
+      repoDid: 'did:plc:toolrepo',
+      ownerDid: 'did:plc:someone'
+    }
+
+    it('finds the page’s title from its path', async () => {
+      network.useTargets(targets({ tangled }))
+      const { checks } = await probe('tangled-appview:tangled.org', {
+        targets: targets({ tangled })
+      })
+      expect(checks.map((c) => [c.label, c.target, c.ok])).toEqual([
+        ['go-get', 'https://tangled.org/someone.test/tool?go-get=1', true],
+        ['repo page', 'https://tangled.org/someone.test/tool', true]
+      ])
+    })
+
+    it('fails a page that titles itself as some other repository', async () => {
+      network.fail(
+        'tangled.org',
+        {
+          kind: 'respond',
+          body: '<html><head><title>tangled.org/core at master · Tangled</title></head></html>',
+          contentType: 'text/html'
+        },
+        tangled.repoPath
+      )
+      const { checks } = await probe('tangled-appview:tangled.org', {
+        targets: targets({ tangled })
+      })
+      expect(check(checks, 'repo page')).toMatchObject({ ok: false, error: 'Unexpected page' })
+    })
+
+    it('asks Bobbin for the listed repository, and the spindle for the listed owner', async () => {
+      const { checks: bobbin } = await probe('bobbin:api.tangled.org', {
+        targets: targets({ tangled })
+      })
+      expect(new URL(check(bobbin, 'getRepoByRepoDid').target!).searchParams.get('repoDid')).toBe(
+        tangled.repoDid
+      )
+
+      // The real spindle is still owned by Tangled's own account, not the one listed.
+      const { checks: spindle } = await probe('spindle:spindle.tangled.sh', {
+        targets: targets({ tangled })
+      })
+      expect(check(spindle, 'owner')).toMatchObject({ ok: false, error: 'Unexpected owner DID' })
+    })
+  })
+
+  it('reads the Leaflet and Offprint documents it is given', async () => {
+    const apps = {
+      leaflet: {
+        publication: { did: 'did:plc:writer', rkey: '3aaaaaaaaaaaa' },
+        feed: { did: 'did:plc:busy', rkey: '3bbbbbbbbbbbb' }
+      },
+      offprint: {
+        publication: 'at://did:plc:writer/site.standard.publication/3cccccccccccc'
+      }
+    }
+    network.useTargets(targets({ apps }))
+    const { checks: leaflet } = await probe('leaflet:leaflet.pub', { targets: targets({ apps }) })
+    expect(leaflet.every((c) => c.ok)).toBe(true)
+    expect(check(leaflet, 'publication').target).toBe(
+      'https://leaflet.pub/lish/did:plc:writer/3aaaaaaaaaaaa/.well-known/site.standard.publication'
+    )
+    expect(check(leaflet, 'newest document').target).toBe(
+      'https://leaflet.pub/lish/did:plc:busy/3bbbbbbbbbbbb/atom'
+    )
+
+    const { checks: offprint } = await probe('offprint:offprint.app', {
+      targets: targets({ apps })
+    })
+    expect(check(offprint, 'publication').ok).toBe(true)
+  })
+
+  it('fails Offprint when the publication listed is not the one the host serves', async () => {
+    const apps = {
+      ...structuredClone(DEFAULT_PROBE_TARGETS.apps),
+      offprint: { publication: 'at://did:plc:writer/site.standard.publication/3cccccccccccc' }
+    }
+    const { checks } = await probe('offprint:offprint.app', { targets: targets({ apps }) })
+    expect(check(checks, 'publication').error).toBe('Publication did not resolve')
   })
 })
 

@@ -21,21 +21,32 @@
  * down for a suspend and `resume` picks it back up; `restrain` widens it on battery and
  * stops it altogether under thermal pressure. All three leave everything measured so far
  * alone — they are about when to ask again, never about what the answers meant.
+ *
+ * What the services are asked about — the probe targets — can change under a running
+ * monitor too, when the user edits them. `retarget` takes the new ones, rebuilds the rows
+ * that depend on them, and measures again at once.
  */
+import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
 import {
   HISTORY_LENGTH,
-  SERVICES,
   blankService,
   isControl,
   isReachable,
   medianLatency,
   observedCondition,
   probeState,
+  servicesFor,
   summarizeNetwork,
   type ProbeEvent,
   type ServiceDefinition
 } from '../shared/network'
-import type { NetworkSnapshot, NetworkSummary, ServiceProbe, SweepRestraint } from '../shared/types'
+import type {
+  NetworkSnapshot,
+  NetworkSummary,
+  ProbeTargets,
+  ServiceProbe,
+  SweepRestraint
+} from '../shared/types'
 import {
   DEFAULT_PROBE_TIMINGS,
   FreshnessPeers,
@@ -122,7 +133,13 @@ async function pooled<T>(
 export interface NetworkMonitorOptions {
   /** Null means nothing is ever probed: the dashboard stays empty. */
   transport: ProbeTransport | null
+  /**
+   * A fixed set of rows, for a test that wants only a few. Without it the rows are the
+   * whole catalogue under the targets in force, and follow them through `retarget`.
+   */
   services?: readonly ServiceDefinition[]
+  /** What the services are asked about. Default: the checked-in `probeTargets.json`. */
+  targets?: ProbeTargets
   timings?: Partial<MonitorTimings>
   now?: () => number
   /** The dashboard changed. Throttled while a sweep is filling in. */
@@ -182,8 +199,9 @@ class ConnectionVerdict {
 
 export class NetworkMonitor {
   private readonly transport: ProbeTransport | null
-  private readonly catalogue: readonly ServiceDefinition[]
-  private readonly controls: readonly ServiceDefinition[]
+  private catalogue: readonly ServiceDefinition[]
+  private controls: readonly ServiceDefinition[]
+  private targets: ProbeTargets
   private readonly timings: MonitorTimings
   private readonly now: () => number
   private readonly services = new Map<string, ServiceProbe>()
@@ -226,7 +244,8 @@ export class NetworkMonitor {
 
   constructor(private readonly options: NetworkMonitorOptions) {
     this.transport = options.transport
-    this.catalogue = options.services ?? SERVICES
+    this.targets = options.targets ?? DEFAULT_PROBE_TARGETS
+    this.catalogue = options.services ?? servicesFor(this.targets)
     this.controls = this.catalogue.filter(isControl)
     this.timings = { ...DEFAULT_MONITOR_TIMINGS, ...options.timings }
     this.now = options.now ?? Date.now
@@ -352,6 +371,39 @@ export class NetworkMonitor {
     this.retryControls()
   }
 
+  /**
+   * Ask the services about something else from now on: the user changed the targets.
+   *
+   * Everything measured is kept — a row's history is about the service, not about which
+   * accounts it was asked about — except what was measured *of the old targets* and not
+   * yet settled. A sweep in flight, and a re-check waiting to confirm a failure, would
+   * both finish by judging the old accounts and documents under the new settings, so
+   * they are dropped and the new targets are measured at once instead, whenever the
+   * schedule would allow a sweep at all. The rows that follow the targets — one per feed
+   * — are rebuilt; a row that stays keeps its history, one that goes is forgotten.
+   *
+   * The freshest AppView post is forgotten too. It was the newest post among the *old*
+   * accounts, and quieter new ones measured against it would read as every AppView at
+   * once falling behind.
+   */
+  retarget(targets: ProbeTargets): void {
+    this.targets = targets
+    if (!this.options.services) this.recatalogue(servicesFor(targets))
+    this.freshest = null
+
+    this.clearFollowUp()
+    this.abandon()
+    this.running = false
+    for (const service of this.services.values()) service.rechecking = false
+    this.flushSnapshot()
+    this.options.onSummaryChange()
+
+    // Exactly the conditions under which the schedule itself would sweep.
+    if (this.enabled && this.transport && !this.paused && this.restraint !== 'thermal') {
+      void this.run()
+    }
+  }
+
   /** Sweep everything now. Calls made while a sweep is queued or running share it. */
   run(): Promise<void> {
     if (!this.enabled || !this.transport) return Promise.resolve()
@@ -386,10 +438,13 @@ export class NetworkMonitor {
     return this.queue
   }
 
-  private async sweep(definitions: readonly ServiceDefinition[], full: boolean): Promise<void> {
+  private async sweep(requested: readonly ServiceDefinition[], full: boolean): Promise<void> {
     if (!this.enabled || !this.transport) return
     const generation = this.generation
     const started = new Date(this.now()).toISOString()
+    // Only rows that still exist. `retarget` cancels any re-check that could name a feed
+    // since taken off the list, but a sweep is the wrong place to find out it missed one.
+    const definitions = requested.filter((definition) => this.services.has(definition.id))
 
     if (full) {
       this.running = true
@@ -424,7 +479,10 @@ export class NetworkMonitor {
         if (generation === this.generation) this.scheduleSnapshot()
       },
       peers,
-      counters: this.counters
+      counters: this.counters,
+      // Read here, once, rather than at import: a sweep measures whatever was in force
+      // when it started, and the next one picks up any change.
+      targets: this.targets
     }
     const recheck: ServiceDefinition[] = []
 
@@ -439,7 +497,10 @@ export class NetworkMonitor {
 
     const one = async (definition: ServiceDefinition): Promise<void> => {
       {
-        const service = this.services.get(definition.id)!
+        // A disowned sweep starts nothing new. The pool keeps handing out what was queued
+        // behind it, and after a `retarget` some of those rows no longer exist.
+        const service = this.services.get(definition.id)
+        if (!service || generation !== this.generation) return
         await probeService(definition, service.checks, context)
         // Checks were switched off, or the app is quitting: this result is moot.
         if (generation !== this.generation) return
@@ -668,6 +729,30 @@ export class NetworkMonitor {
     for (const definition of this.catalogue) {
       this.services.set(definition.id, blankService(definition))
     }
+  }
+
+  /**
+   * Swap in a new set of rows, keeping everything known about the ones that stay.
+   *
+   * A row that stays may still have changed how it is described — a feed relabelled, on
+   * the same host — so it takes the new definition over its old measurements. A row that
+   * is gone takes its unconfirmed failure with it.
+   */
+  private recatalogue(catalogue: readonly ServiceDefinition[]): void {
+    const ids = new Set(catalogue.map((definition) => definition.id))
+    // Deleting from a Map while iterating it is well defined: nothing is skipped.
+    for (const id of this.services.keys()) {
+      if (ids.has(id)) continue
+      this.services.delete(id)
+      this.pending.delete(id)
+    }
+    for (const definition of catalogue) {
+      const service = this.services.get(definition.id)
+      if (service) Object.assign(service, definition)
+      else this.services.set(definition.id, blankService(definition))
+    }
+    this.catalogue = catalogue
+    this.controls = catalogue.filter(isControl)
   }
 
   /** Disown and cancel the sweep in flight, so its sockets and requests close now. */

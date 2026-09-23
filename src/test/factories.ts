@@ -42,7 +42,7 @@ export function makeAccount(overrides: Partial<Account> = {}): Account {
     displayName: handle,
     avatar: null,
     description: null,
-    notify: true,
+    notify: 'default',
     muted: false,
     addedAt: '2026-01-01T00:00:00.000Z',
     builtin: false,

@@ -16,9 +16,9 @@ describe('SeverityBadge', () => {
     expect(container.firstElementChild?.className).toContain(SEVERITY_STYLE[severity].bg)
   })
 
-  it('renders the severity icon alongside the label', async () => {
+  it('renders the severity’s own icon alongside the label', async () => {
     const { container } = await renderWith(SeverityBadge, { severity: 'outage' })
-    expect(container.querySelector('svg')).not.toBeNull()
+    expect(container.querySelector('svg.lucide-cloud-off')).not.toBeNull()
   })
 
   it('accepts an extra class', async () => {

@@ -21,14 +21,7 @@ import { PopoverWindow } from '../main/window'
 import type { StatuskyBridge } from '../shared/bridge'
 import type { Account, AppState, NetworkSnapshot, Settings, StatusPost } from '../shared/types'
 import { BUILTIN_ACCOUNTS, DEFAULT_SETTINGS } from '../shared/defaults'
-import {
-  app as electronApp,
-  exposed,
-  nativeTheme,
-  published,
-  resetElectron,
-  trays
-} from './electron'
+import { app as electronApp, exposed, nativeTheme, published, trays } from './electron'
 import type { BrowserWindow, Tray } from './electron'
 import FakeElectronStore, { seedStore } from './electron-store'
 import { FakeAppView, rawPost, type PostSpec, type RawProfile } from './appview'
@@ -236,6 +229,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
           dropped.push(text)
           void model.addAccount(text).catch(() => undefined)
         },
+        onSnooze: () => undefined,
         onQuit: quit
       })
     : null
@@ -293,6 +287,7 @@ export function createModel(
       posts: [],
       read: { cursors: {}, above: [] },
       cursors: {},
+      openIncidents: [],
       // A secret already in the clear, the way schema 4 left it: reading it is what
       // moves it into the OS credential store. See `readWebhookSecret`.
       webhookSecret: 'test-webhook-secret',
@@ -303,7 +298,7 @@ export function createModel(
   return { model: new Model(store as never, version, options), store }
 }
 
-/** Register `count` posts for an actor on the fake AppView, newest last. */
+/** Register an actor's author feed on the fake AppView, one post per spec, newest last. */
 export function seedFeed(
   appview: FakeAppView,
   profile: RawProfile,
@@ -352,10 +347,4 @@ export async function waitFor(
     // oxlint-disable-next-line no-await-in-loop
     await flush()
   }
-}
-
-/** Reset every double. Called from the global setup between tests. */
-export function resetHarness(): void {
-  resetElectron()
-  delete (globalThis as Record<string, unknown>).statusky
 }

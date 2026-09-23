@@ -71,8 +71,10 @@ describe('the development origin validator', () => {
     'https://status.example.test/',
     // The loopback allowance is for the dev server, which speaks plain http...
     'https://localhost:5173/',
-    // ...and plain http is allowed on loopback only.
-    'http://status.example.test:5173/'
+    // ...and plain http is allowed on loopback only...
+    'http://status.example.test:5173/',
+    // ...meaning the host is loopback, not a name that merely starts like one.
+    'http://localhost.status.example.test:5173/'
   ])('refuses %s', async (url) => {
     const h = await boot()
     frame(h).url = url
