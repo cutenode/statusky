@@ -354,6 +354,39 @@ interface RequestOptions {
   allow?: readonly number[]
 }
 
+/** Longest reason a server gets to add to a status, so one cannot flood a row. */
+const REASON_LIMIT = 120
+
+/**
+ * `HTTP 400`, followed by the server's own reason when it gave one. XRPC errors carry a
+ * `message` — "Profile not found", "Unable to resolve handle" — and that is the
+ * difference between a service that is broken and one that has not indexed what it was
+ * asked about, which a bare status cannot tell apart. `describeFailure` splits the two
+ * halves back up for the dashboard.
+ */
+function statusFailure(status: number, body: unknown): string {
+  const message = field(body, 'message')
+  const reason = typeof message === 'string' ? message.replace(/\s+/g, ' ').trim() : ''
+  if (!reason) return `HTTP ${status}`
+  return `HTTP ${status} · ${
+    reason.length > REASON_LIMIT ? `${reason.slice(0, REASON_LIMIT - 1)}…` : reason
+  }`
+}
+
+/**
+ * A refused request's JSON body, for the reason inside it, or null. Only JSON is read —
+ * an error page's HTML has nothing to quote — and never past the deadline: the status is
+ * already the verdict, so a body that stalls or does not parse just goes unquoted.
+ */
+async function errorBody(response: Response, signal: AbortSignal): Promise<unknown> {
+  if (!response.headers.get('content-type')?.toLowerCase().includes('json')) return null
+  try {
+    return await beforeDeadline(response.json(), signal)
+  } catch {
+    return null
+  }
+}
+
 /**
  * Make one request and judge it, with status.feeds.blue's rules and wording: a non-2xx
  * status, a missing or non-JSON content type, a body that does not parse, and a body the
@@ -390,7 +423,7 @@ async function request(
       body: payload
     })
     if (!response.ok && !allow?.includes(response.status)) {
-      check.fail(`HTTP ${response.status}`)
+      check.fail(statusFailure(response.status, await errorBody(response, controller.signal)))
       return null
     }
 
@@ -427,7 +460,7 @@ async function request(
     const verdict = validate(body)
     if (verdict === true && response.ok) check.pass()
     else if (typeof verdict === 'string') check.fail(verdict)
-    else check.fail(response.ok ? 'Invalid response' : `HTTP ${response.status}`)
+    else check.fail(response.ok ? 'Invalid response' : statusFailure(response.status, body))
     return body
   } catch (error) {
     if (timedOut) {
@@ -738,29 +771,35 @@ export function tidToMillis(tid: string): number | null {
  * AppView at once whenever those accounts go quiet. What actually signals a stuck
  * indexer is one AppView trailing the others, so each is judged against the freshest
  * post any of them returned — in this sweep or the one before — instead of the clock.
+ *
+ * Kept account by account, because not every AppView has every account. One that has
+ * not indexed the busiest of them can only be fairly compared on the ones it has; held
+ * to posts it was never going to see, it would read as hours behind when it is current.
  */
 export class FreshnessPeers {
   private remaining: number
-  private freshest: number | null
+  private readonly freshest: Map<string, number>
   private readonly waiting: (() => void)[] = []
 
-  constructor(expected: number, previous: number | null) {
+  constructor(expected: number, previous: NewestPosts = new Map()) {
     this.remaining = expected
-    this.freshest = previous
+    this.freshest = new Map(previous)
   }
 
-  /** The freshest newest-post time seen so far. */
-  get best(): number | null {
+  /** The freshest newest-post time seen so far, for each account. */
+  get best(): NewestPosts {
     return this.freshest
   }
 
   /**
-   * Report one AppView's newest post (or null if it returned none) and wait for every
-   * other AppView in the sweep to do the same. Resolves with the freshest of them all.
+   * Report one AppView's newest post for each account it returned any for, and wait for
+   * every other AppView in the sweep to do the same. Resolves with the freshest of them
+   * all, account by account.
    */
-  report(newest: number | null): Promise<number | null> {
-    if (newest !== null && (this.freshest === null || newest > this.freshest)) {
-      this.freshest = newest
+  report(newest: NewestPosts): Promise<NewestPosts> {
+    for (const [did, time] of newest) {
+      const seen = this.freshest.get(did)
+      if (seen === undefined || time > seen) this.freshest.set(did, time)
     }
     this.remaining--
     return new Promise((resolve) => {
@@ -769,6 +808,9 @@ export class FreshnessPeers {
     })
   }
 }
+
+/** Newest post time for each account, by DID. */
+export type NewestPosts = ReadonlyMap<string, number>
 
 /** Newest `createdAt` across a set of `getAuthorFeed` responses, or null if none parse. */
 export function newestPostTime(bodies: unknown[]): number | null {
@@ -893,31 +935,46 @@ function probeAppView(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
       xrpc(host, 'com.atproto.identity.resolveHandle', { handle: account.handle })
     )
   }))
-  const feeds = accounts.map(({ did }) =>
-    addCheck(
+  const feeds = accounts.map(({ did }) => ({
+    did,
+    check: addCheck(
       checks,
       ctx,
       'getAuthorFeed',
       xrpc(host, 'app.bsky.feed.getAuthorFeed', { actor: did, limit: AUTHOR_FEED_LIMIT })
     )
-  )
+  }))
   const freshness = addCheck(checks, ctx, 'newest post', null, 'derived')
 
   const hasDid = (body: unknown): boolean => isObject(body) && typeof body.did === 'string'
 
   const judgeFreshness = async (): Promise<void> => {
-    const bodies = await Promise.all(
-      feeds.map((check) => request(ctx, check, (b) => isObject(b) && Array.isArray(b.feed)))
+    // An account this AppView has not indexed answers "Profile not found", which its
+    // getAuthorFeed check already reports, and leaves nothing here to compare.
+    const mine = new Map<string, number>()
+    await Promise.all(
+      feeds.map(async ({ did, check }) => {
+        const body = await request(ctx, check, (b) => isObject(b) && Array.isArray(b.feed))
+        const newest = newestPostTime([body])
+        if (newest !== null) mine.set(did, newest)
+      })
     )
-    const newest = newestPostTime(bodies)
-    if (newest === null) {
+    if (mine.size === 0) {
       // Every AppView reports, even one with nothing to say, or its peers would wait forever.
-      void ctx.peers.report(null)
+      void ctx.peers.report(mine)
       return freshness.fail('No valid post timestamps returned')
     }
 
-    // Having reported a time, the freshest that comes back can be no older than it.
-    const lag = (await ctx.peers.report(newest))! - newest
+    // Judged only on the accounts it returned posts for, against the others' newest from
+    // those same accounts. Having reported its own, the freshest can be no older.
+    const best = await ctx.peers.report(mine)
+    let newest = -Infinity
+    let freshest = -Infinity
+    for (const [did, time] of mine) {
+      newest = Math.max(newest, time)
+      freshest = Math.max(freshest, best.get(did) ?? time)
+    }
+    const lag = freshest - newest
     if (lag > ctx.timings.indexLagMs) {
       freshness.fail(`Newest post trails other AppViews by ${humanDuration(lag)}`)
     } else {

@@ -67,7 +67,7 @@ export type HttpFailure =
   /** Answer healthily, but only after this long. */
   | { kind: 'delay'; ms: number }
   /** Send the headers promptly, then never finish the body. */
-  | { kind: 'stall'; contentType: string }
+  | { kind: 'stall'; contentType: string; status?: number }
 
 export type FirehoseBehaviour =
   | 'fresh'
@@ -155,6 +155,14 @@ function json(body: unknown, contentType = 'application/json; charset=utf-8'): R
   })
 }
 
+/** An XRPC error, as an AppView answers for something it does not have. */
+function xrpcError(message: string, status = 400): Response {
+  return new Response(JSON.stringify({ error: 'InvalidRequest', message }), {
+    status,
+    headers: { 'content-type': 'application/json' }
+  })
+}
+
 function text(body: string, contentType = 'text/plain; charset=utf-8'): Response {
   return new Response(body, { status: 200, headers: { 'content-type': contentType } })
 }
@@ -178,6 +186,8 @@ export class FakeNetwork implements ProbeTransport {
   private rules: Rule[] = []
   private readonly firehose = new Map<string, FirehoseBehaviour>()
   private readonly newest = new Map<string, string>()
+  /** Accounts an AppView has not indexed, by host. */
+  private readonly unindexed = new Map<string, Set<string>>()
   private readonly ticks = new Map<string, number>()
   private offline = false
   /** The accounts, feeds and documents this Internet has in it. */
@@ -208,10 +218,20 @@ export class FakeNetwork implements ProbeTransport {
     return this
   }
 
-  /** The newest post an AppView's author feeds contain. Default: now. */
-  setNewestPost(host: string, iso: string | null): this {
-    if (iso === null) this.newest.set(host, '')
-    else this.newest.set(host, iso)
+  /**
+   * The newest post an AppView's author feeds contain — every account's, or with `actor`
+   * one account's alone. Default: now.
+   */
+  setNewestPost(host: string, iso: string | null, actor?: string): this {
+    this.newest.set(actor ? `${host} ${actor}` : host, iso ?? '')
+    return this
+  }
+
+  /** Have an AppView answer for these accounts as one that never indexed them does. */
+  unindex(host: string, ...dids: string[]): this {
+    const known = this.unindexed.get(host) ?? new Set()
+    for (const did of dids) known.add(did)
+    this.unindexed.set(host, known)
     return this
   }
 
@@ -237,6 +257,7 @@ export class FakeNetwork implements ProbeTransport {
     this.rules = []
     this.firehose.clear()
     this.newest.clear()
+    this.unindexed.clear()
     this.ticks.clear()
     this.offline = false
     this.targets = DEFAULT_PROBE_TARGETS
@@ -286,7 +307,7 @@ export class FakeNetwork implements ProbeTransport {
       }
       case 'stall':
         return new Response(new ReadableStream({ start() {} }), {
-          status: 200,
+          status: rule.failure.status ?? 200,
           headers: { 'content-type': rule.failure.contentType }
         })
       case 'delay': {
@@ -395,6 +416,8 @@ export class FakeNetwork implements ProbeTransport {
 
     const nsid = url.pathname.replace(/^\/xrpc\//, '')
     const params = url.searchParams
+    const indexed = (did: string | null | undefined): boolean =>
+      !did || !this.unindexed.get(host)?.has(did)
     switch (nsid) {
       case '_health':
         return json({ status: 'ok', version: '0.4.0' })
@@ -418,7 +441,9 @@ export class FakeNetwork implements ProbeTransport {
           value: { $type: params.get('collection') }
         })
       case 'app.bsky.actor.getProfile':
-        return json({ did: params.get('actor') })
+        return indexed(params.get('actor'))
+          ? json({ did: params.get('actor') })
+          : xrpcError('Profile not found')
       case 'com.atproto.identity.resolveHandle': {
         // Every handle to its own DID, as a real resolver would: the anchor Slingshot is
         // asked about, and each account the AppViews are.
@@ -427,12 +452,7 @@ export class FakeNetwork implements ProbeTransport {
           handle === CATALOGUE.anchor.handle
             ? CATALOGUE.anchor.did
             : this.targets.accounts.find((account) => account.handle === handle)?.did
-        return did
-          ? json({ did })
-          : new Response(
-              JSON.stringify({ error: 'InvalidRequest', message: 'Unable to resolve handle' }),
-              { status: 400, headers: { 'content-type': 'application/json' } }
-            )
+        return did && indexed(did) ? json({ did }) : xrpcError('Unable to resolve handle')
       }
       case 'blue.microcosm.identity.resolveMiniDoc':
         return json({
@@ -442,7 +462,10 @@ export class FakeNetwork implements ProbeTransport {
           signing_key: 'did:key:zProbe'
         })
       case 'app.bsky.feed.getAuthorFeed': {
-        const newest = this.newest.get(host) ?? new Date().toISOString()
+        const actor = params.get('actor')
+        if (!indexed(actor)) return xrpcError('Profile not found')
+        const newest =
+          this.newest.get(`${host} ${actor}`) ?? this.newest.get(host) ?? new Date().toISOString()
         return json({ feed: newest ? [{ post: { record: { createdAt: newest } } }] : [] })
       }
       case 'app.bsky.feed.getFeedSkeleton':

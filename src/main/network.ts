@@ -51,6 +51,7 @@ import {
   DEFAULT_PROBE_TIMINGS,
   FreshnessPeers,
   probeService,
+  type NewestPosts,
   type ProbeCounters,
   type ProbeTimings,
   type ProbeTransport
@@ -217,8 +218,8 @@ export class NetworkMonitor {
   private restraint: SweepRestraint | null = null
   private startedAt: string | null = null
   private finishedAt: string | null = null
-  /** Freshest newest-post time any AppView has returned, for judging the laggards. */
-  private freshest: number | null = null
+  /** Freshest newest-post time any AppView has returned per account, for the laggards. */
+  private freshest: NewestPosts = new Map()
   /** What one sweep leaves for the next: counters to compare, and slow checks' clocks. */
   private readonly tallies = new Map<string, number>()
   private readonly counters: ProbeCounters = {
@@ -382,14 +383,13 @@ export class NetworkMonitor {
    * schedule would allow a sweep at all. The rows that follow the targets — one per feed
    * — are rebuilt; a row that stays keeps its history, one that goes is forgotten.
    *
-   * The freshest AppView post is forgotten too. It was the newest post among the *old*
-   * accounts, and quieter new ones measured against it would read as every AppView at
-   * once falling behind.
+   * The freshest AppView posts are forgotten too, so the new accounts are judged on what
+   * the AppViews say about them now rather than on anything remembered of the old ones.
    */
   retarget(targets: ProbeTargets): void {
     this.targets = targets
     if (!this.options.services) this.recatalogue(servicesFor(targets))
-    this.freshest = null
+    this.freshest = new Map()
 
     this.clearFollowUp()
     this.abandon()
@@ -550,7 +550,8 @@ export class NetworkMonitor {
     ])
     if (generation !== this.generation) return
 
-    if (peers.best !== null) this.freshest = Math.max(this.freshest ?? 0, peers.best)
+    // The peers started from what was remembered and only ever moved forward.
+    this.freshest = peers.best
     if (full) {
       this.running = false
       this.finishedAt = new Date(this.now()).toISOString()
@@ -719,7 +720,7 @@ export class NetworkMonitor {
     this.offline = false
     this.startedAt = null
     this.finishedAt = null
-    this.freshest = null
+    this.freshest = new Map()
     this.flushSnapshot()
     this.options.onSummaryChange()
   }

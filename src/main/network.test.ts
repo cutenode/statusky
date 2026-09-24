@@ -1048,8 +1048,7 @@ describe('new targets', () => {
 
   /**
    * Every AppView is judged against the freshest post any of them returned, this sweep
-   * or last. After new accounts, "last" was about somebody else: a quieter set would read
-   * as every AppView falling behind at once.
+   * or last. After new accounts, the new ones are judged on what is said of them now.
    */
   it('forget the freshest post of the old accounts', async () => {
     network.setNewestPost('api.bsky.app', new Date().toISOString())

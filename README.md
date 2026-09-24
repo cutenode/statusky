@@ -328,7 +328,18 @@ dropped request never reaches the tray or a notification. A recovery is believed
 **An AppView is judged against its peers, not the clock.** The page fails an AppView
 whose newest post from a few busy accounts is over fifteen minutes old; overnight, that
 fails all of them at once. Statusky compares each AppView with the freshest post any of
-them returned, which is what actually shows an indexer falling behind.
+them returned, which is what actually shows an indexer falling behind. The comparison is
+made on the accounts that AppView has: one that has not indexed an account says so on its
+lookups, and is not also marked hours behind for missing posts it was never going to have.
+
+The accounts are the page's, bar three. It reads three prolific bot accounts that
+between them post every minute; W Social's AppView will not index them, because it takes
+accounts from elsewhere only once `bsky.app` has verified them. Statusky reads Reuters,
+The Guardian and Al Jazeera instead: verified, on every AppView, and spread across time
+zones. With the page's other three, a day measured in September 2026 never went twenty
+minutes without a post from one of them, and 95% of the time went less than ten. That is
+coarser than the bots: in a quiet stretch, a lag just past the fifteen minutes the check
+allows can go unseen for a sweep, where before it could not.
 
 **Where a service will tell you how far behind it is, that is the check.** A stalled
 index answers every request correctly from what it has already indexed, so a health
@@ -344,8 +355,9 @@ uptime promise at all; `pds.rip` says "uptime: no guarantee, backups: none" on i
 homepage. Those services are probed, shown and filed in the feed like any other, marked
 **community** on the dashboard — and left out of the header and the tray, because one
 abandoned sandbox should not speak for the network. W Social's AppView is graded the same
-way for now: it is in public beta, missing most of the authors the freshness check reads,
-and hours behind its peers, which is worth seeing but not worth an amber tray.
+way for now: it is in public beta and indexes only its own users and accounts verified by
+`bsky.app`, so an account you add to the checks may simply not be there — worth seeing,
+but not worth an amber tray.
 
 **The dashboard shows the same rows every sweep.** Bluesky's PDS fleet is eighty-nine
 hosts and growing. Rather than rank that list and probe whoever is on top, the catalogue

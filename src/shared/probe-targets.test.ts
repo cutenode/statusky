@@ -48,24 +48,30 @@ describe('the checked-in targets', () => {
   })
 
   /**
-   * Three lists became one. The defaults are every account those lists named and
-   * nothing more, each with the half it was missing looked up rather than guessed.
+   * Three lists became one. The defaults are every account those lists named, each with
+   * the half it was missing looked up rather than guessed — bar the three bots, which
+   * W Social's AppView will not index because `bsky.app` has not verified them. Busy
+   * verified news accounts stand in for them.
    */
-  it('list every account the three old lists named, once each', () => {
-    const authorFeedDids = [
+  it('list the old lists’ accounts once each, with the bots swapped out', () => {
+    const kept = [
       'did:plc:ragtjsm2j2vknwkz3zp4oxrd',
+      'did:plc:rnpkyqnmsw4ipey6eotbdnnf',
+      'did:plc:hdhoaan3xa3jiuq4fg4mefid'
+    ]
+    const bots = [
       'did:plc:f4z2nftgrn75h7h3wucdyzaf',
       'did:plc:mrozf7u6e7kjpo7itbrudpc6',
       'did:plc:65r3dy2t6xfuwidxmzvctvsh'
     ]
-    const profileDids = ['did:plc:ragtjsm2j2vknwkz3zp4oxrd', 'did:plc:rnpkyqnmsw4ipey6eotbdnnf']
-    const handles = ['pfrazee.com', 'bad-example.com', 'pds.dad']
+    const standIns = ['reuters.com', 'theguardian.com', 'aljazeera.com']
 
     const { accounts } = DEFAULT_PROBE_TARGETS
     const dids = accounts.map((a) => a.did)
-    for (const did of [...authorFeedDids, ...profileDids]) expect(dids).toContain(did)
-    for (const handle of handles) expect(accounts.map((a) => a.handle)).toContain(handle)
-    expect(accounts).toHaveLength(new Set([...authorFeedDids, ...profileDids]).size + 1)
+    for (const did of kept) expect(dids).toContain(did)
+    for (const did of bots) expect(dids).not.toContain(did)
+    expect(accounts.map((a) => a.handle)).toEqual(expect.arrayContaining(standIns))
+    expect(accounts).toHaveLength(kept.length + standIns.length)
   })
 
   it('keep a feed per host, so every feed row has an id of its own', () => {

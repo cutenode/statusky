@@ -852,6 +852,13 @@ describe('describeFailure', () => {
     expect(describeFailure(error)).toEqual({ code, text })
   })
 
+  it('lets the server’s own reason stand in for what the status means', () => {
+    expect(describeFailure('HTTP 400 · Profile not found')).toEqual({
+      code: '400',
+      text: 'Profile not found'
+    })
+  })
+
   it('leaves a message that is already prose alone', () => {
     for (const error of ['Timed out after 10s', 'Image was empty', 'HTTP error', 'HTTP 5022']) {
       expect(describeFailure(error)).toEqual({ code: null, text: error })

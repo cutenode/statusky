@@ -72,10 +72,12 @@ export const CATALOGUE = {
     'api.eurosky.network'
   ],
   /**
-   * AppViews that are real but not yet whole. W Social's is in public beta and says so:
-   * it is missing most of the authors the freshness check reads, and trails the others by
-   * hours. Measured and shown, but graded at the `community` tier so a known gap does not
-   * hold the tray amber. See `ProbeTier`.
+   * AppViews that are real but not yet whole. W Social's is in public beta and indexes
+   * only part of the network by design: its own PDS's users, and accounts verified by
+   * `bsky.app` itself. Anyone else — including accounts verified only by another trusted
+   * verifier — gets "Profile not found". The default accounts are all ones it has, but a
+   * user's own may not be, so it is measured and shown yet graded at the `community` tier,
+   * where a gap it chose does not hold the tray amber. See `ProbeTier`.
    */
   communityAppViews: ['appview.wsocial.eu'],
   /**
@@ -828,13 +830,16 @@ const HTTP_MEANING: Record<number, string> = {
 /**
  * A failure split into the two things it says: a short code, if it has one, and what
  * that code or message means in words. `HTTP 429` becomes `429` · `Rate limited`, so the
- * dashboard can set the code in figures and leave the sentence readable. Messages that
- * are already prose come back whole, with no code.
+ * dashboard can set the code in figures and leave the sentence readable. When the server
+ * gave its own reason — `HTTP 400 · Profile not found` — that is the sentence, being more
+ * specific than any status can be. Messages that are already prose come back whole, with
+ * no code.
  */
 export function describeFailure(error: string): { code: string | null; text: string } {
-  const http = /^HTTP (\d{3})$/.exec(error)
+  const http = /^HTTP (\d{3})(?: · (.+))?$/.exec(error)
   if (!http) return { code: null, text: error }
   const status = Number(http[1])
+  if (http[2]) return { code: String(status), text: http[2] }
   const meaning =
     HTTP_MEANING[status] ??
     (status >= 500

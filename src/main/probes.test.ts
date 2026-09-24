@@ -12,6 +12,7 @@ import {
   probeService,
   readFrame,
   tidToMillis,
+  type NewestPosts,
   type ProbeContext,
   type ProbeCounters,
   type ProbeSocket,
@@ -65,7 +66,7 @@ function context(overrides: Partial<ProbeContext> = {}): ProbeContext & { change
     changed: () => {
       changes++
     },
-    peers: new FreshnessPeers(1, null),
+    peers: new FreshnessPeers(1),
     counters: memoryCounters(),
     targets: DEFAULT_PROBE_TARGETS,
     changes: () => changes,
@@ -351,6 +352,59 @@ describe('any HTTP check', () => {
     expect(checks[0]).toMatchObject({ ok: false, error, durationMs: expect.any(Number) })
   })
 
+  it.each([
+    [
+      'quotes the reason an XRPC error gives',
+      { error: 'InvalidRequest', message: 'Profile not found' },
+      'application/json; charset=utf-8',
+      'HTTP 400 · Profile not found'
+    ],
+    [
+      'folds a reason onto one line',
+      { message: '  Upstream\n  timed out  ' },
+      'application/json',
+      'HTTP 400 · Upstream timed out'
+    ],
+    [
+      'cuts a reason that runs on',
+      { message: 'x'.repeat(500) },
+      'application/json',
+      `HTTP 400 · ${'x'.repeat(119)}…`
+    ],
+    [
+      'says nothing more when there is no message',
+      { error: 'InvalidRequest' },
+      'application/json',
+      'HTTP 400'
+    ],
+    ['does not quote an error page', { message: 'nope' }, 'text/html', 'HTTP 400']
+  ])('%s', async (_name, body, contentType, error) => {
+    network.fail(host, { kind: 'respond', status: 400, body: JSON.stringify(body), contentType })
+    const { checks } = await probe(id)
+    expect(checks[0]).toMatchObject({ ok: false, error })
+  })
+
+  it('keeps the status when an error body will not parse', async () => {
+    network.fail(host, {
+      kind: 'respond',
+      status: 502,
+      body: '{nope',
+      contentType: 'application/json'
+    })
+    const { checks } = await probe(id)
+    expect(checks[0]).toMatchObject({ ok: false, error: 'HTTP 502' })
+  })
+
+  it('keeps the status when an error body never finishes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    network.fail(host, { kind: 'stall', contentType: 'application/json', status: 503 })
+    const checks: ProbeCheck[] = []
+    const done = probeService(service(id), checks, context({ timings: DEFAULT_PROBE_TIMINGS }))
+    await vi.advanceTimersByTimeAsync(30_000)
+    await done
+    expect(checks[0]).toMatchObject({ ok: false, error: 'HTTP 503' })
+  })
+
   it('gives up after the request timeout', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     network.fail(host, { kind: 'hang' })
@@ -590,7 +644,10 @@ describe('an AppView', () => {
   it('fails a handle the AppView cannot resolve at all', async () => {
     const accounts = [{ did: 'did:plc:gone', handle: 'deleted.test' }]
     const { checks } = await probe(id, { targets: targets({ accounts }) })
-    expect(check(checks, 'resolveHandle')).toMatchObject({ ok: false, error: 'HTTP 400' })
+    expect(check(checks, 'resolveHandle')).toMatchObject({
+      ok: false,
+      error: 'HTTP 400 · Unable to resolve handle'
+    })
   })
 
   it('expects a version from the health check', async () => {
@@ -655,7 +712,7 @@ describe('an AppView', () => {
     const behind = new Date(Date.now() - 4 * 3_600_000).toISOString()
     network.setNewestPost('api.bsky.app', quiet)
     network.setNewestPost('public.api.bsky.app', behind)
-    const peers = new FreshnessPeers(2, null)
+    const peers = new FreshnessPeers(2)
     const ctx = context({ peers })
 
     const fresh: ProbeCheck[] = []
@@ -673,18 +730,72 @@ describe('an AppView', () => {
       // A judgement, not a request: there is nothing to time.
       durationMs: null
     })
-    expect(peers.best).toBe(Date.parse(quiet))
+    for (const { did } of DEFAULT_PROBE_TARGETS.accounts) {
+      expect(peers.best.get(did)).toBe(Date.parse(quiet))
+    }
   })
 
   it('remembers the freshest post from an earlier sweep', async () => {
     network.setNewestPost(host, new Date(Date.now() - 3_600_000).toISOString())
-    const { checks } = await probe(id, { peers: new FreshnessPeers(1, Date.now()) })
+    const earlier = new Map(DEFAULT_PROBE_TARGETS.accounts.map(({ did }) => [did, Date.now()]))
+    const { checks } = await probe(id, { peers: new FreshnessPeers(1, earlier) })
     expect(check(checks, 'newest post').error).toBe('Newest post trails other AppViews by 1 hour')
+  })
+
+  /**
+   * W Social's AppView indexes only accounts `bsky.app` has verified, so a user's own
+   * accounts may not be there. Held to their posts it read as hours behind; on the
+   * accounts it has, it is current.
+   */
+  describe('missing some accounts', () => {
+    const [busy, quiet] = [
+      DEFAULT_PROBE_TARGETS.accounts.slice(0, 3),
+      DEFAULT_PROBE_TARGETS.accounts.slice(3)
+    ]
+    const partial = 'appview.wsocial.eu'
+
+    async function compare(lastPost: string): Promise<ProbeCheck[]> {
+      const hoursAgo = new Date(Date.now() - 3 * 3_600_000).toISOString()
+      for (const { did } of quiet) {
+        network.setNewestPost(host, hoursAgo, did)
+        network.setNewestPost(partial, lastPost, did)
+      }
+      network.unindex(partial, ...busy.map(({ did }) => did))
+      const ctx = context({ peers: new FreshnessPeers(2) })
+      const whole: ProbeCheck[] = []
+      const part: ProbeCheck[] = []
+      await Promise.all([
+        probeService(service(id), whole, ctx),
+        probeService(service(`appview:${partial}`), part, ctx)
+      ])
+      expect(check(whole, 'newest post').ok).toBe(true)
+      return part
+    }
+
+    it('says which accounts it lacks, and why', async () => {
+      const checks = await compare(new Date(Date.now() - 3 * 3_600_000).toISOString())
+      const failed = checks.filter((c) => c.ok === false)
+      expect(failed.map((c) => [c.label, c.error])).toEqual([
+        ...busy.map(() => ['getProfile', 'HTTP 400 · Profile not found']),
+        ...busy.map(() => ['resolveHandle', 'HTTP 400 · Unable to resolve handle']),
+        ...busy.map(() => ['getAuthorFeed', 'HTTP 400 · Profile not found'])
+      ])
+    })
+
+    it('is judged fresh on the accounts it has', async () => {
+      const checks = await compare(new Date(Date.now() - 3 * 3_600_000).toISOString())
+      expect(check(checks, 'newest post').ok).toBe(true)
+    })
+
+    it('is still caught falling behind on them', async () => {
+      const checks = await compare(new Date(Date.now() - 4 * 3_600_000).toISOString())
+      expect(check(checks, 'newest post').error).toBe('Newest post trails other AppViews by 1 hour')
+    })
   })
 
   it('still reports to its peers when it has nothing to say, so none wait forever', async () => {
     network.setNewestPost('api.bsky.app', null)
-    const peers = new FreshnessPeers(2, null)
+    const peers = new FreshnessPeers(2)
     const ctx = context({ peers })
     const a: ProbeCheck[] = []
     const b: ProbeCheck[] = []
@@ -1823,20 +1934,37 @@ describe('newestPostTime', () => {
 
 describe('FreshnessPeers', () => {
   it('waits for every AppView before answering any', async () => {
-    const peers = new FreshnessPeers(2, null)
-    let first: number | null | undefined
-    const pending = peers.report(100).then((best) => (first = best))
+    const peers = new FreshnessPeers(2)
+    let first: NewestPosts | undefined
+    const pending = peers.report(new Map([['a', 100]])).then((best) => (first = best))
     await Promise.resolve()
     expect(first).toBeUndefined()
 
-    await expect(peers.report(300)).resolves.toBe(300)
+    await expect(peers.report(new Map([['a', 300]]))).resolves.toEqual(new Map([['a', 300]]))
     await pending
-    expect(first).toBe(300)
+    expect(first).toEqual(new Map([['a', 300]]))
+  })
+
+  it('keeps the freshest of each account apart', async () => {
+    const peers = new FreshnessPeers(2)
+    void peers.report(
+      new Map([
+        ['a', 300],
+        ['b', 100]
+      ])
+    )
+    await expect(peers.report(new Map([['b', 200]]))).resolves.toEqual(
+      new Map([
+        ['a', 300],
+        ['b', 200]
+      ])
+    )
   })
 
   it('keeps an earlier best that nobody beats', async () => {
-    const peers = new FreshnessPeers(1, 500)
-    await expect(peers.report(null)).resolves.toBe(500)
-    expect(peers.best).toBe(500)
+    const earlier = new Map([['a', 500]])
+    const peers = new FreshnessPeers(1, earlier)
+    await expect(peers.report(new Map([['a', 400]]))).resolves.toEqual(earlier)
+    expect(peers.best).toEqual(earlier)
   })
 })

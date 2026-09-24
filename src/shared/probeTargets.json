@@ -1,9 +1,9 @@
 {
   "accounts": [
     { "did": "did:plc:ragtjsm2j2vknwkz3zp4oxrd", "handle": "pfrazee.com" },
-    { "did": "did:plc:f4z2nftgrn75h7h3wucdyzaf", "handle": "nepalidigits.bsky.social" },
-    { "did": "did:plc:mrozf7u6e7kjpo7itbrudpc6", "handle": "besnavel.bsky.social" },
-    { "did": "did:plc:65r3dy2t6xfuwidxmzvctvsh", "handle": "countingsheep.bsky.social" },
+    { "did": "did:plc:jbvnehrrdqoulco4rf5gxg5r", "handle": "reuters.com" },
+    { "did": "did:plc:vovinwhtulbsx4mwfw26r5ni", "handle": "theguardian.com" },
+    { "did": "did:plc:2lofqead276vtc5647ye7sl2", "handle": "aljazeera.com" },
     { "did": "did:plc:rnpkyqnmsw4ipey6eotbdnnf", "handle": "pds.dad" },
     { "did": "did:plc:hdhoaan3xa3jiuq4fg4mefid", "handle": "bad-example.com" }
   ],
