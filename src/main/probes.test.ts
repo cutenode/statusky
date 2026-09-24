@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CATALOGUE, SERVICES, servicesFor, type ServiceDefinition } from '../shared/network'
+import {
+  CATALOGUE,
+  SERVICES,
+  probeState,
+  servicesFor,
+  type ServiceDefinition
+} from '../shared/network'
 import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
 import type { ProbeCheck, ProbeTargets } from '../shared/types'
 import { commitFrame, errorFrame, frame } from '../test/cbor'
@@ -1209,10 +1215,11 @@ describe('the indexes that report their own cursor', () => {
     })
   })
 
-  it('reads pckt’s health, its index lag and its queues from one response', async () => {
+  it('reads pckt’s health, search, index lag and queues from one response', async () => {
     const { checks } = await probe('pckt:pckt.blog')
     expect(checks.map((c) => [c.label, c.kind, c.ok])).toEqual([
       ['up', 'http', true],
+      ['search', 'derived', true],
       ['index lag', 'derived', true],
       ['queues', 'derived', true]
     ])
@@ -1235,17 +1242,29 @@ describe('the indexes that report their own cursor', () => {
   it.each([
     [{ status: 'maintenance' }, 'Application reports it is not ok'],
     [{ checks: { database: false, cache: true } }, 'Database is unreachable'],
-    [{ checks: { database: true, cache: false } }, 'Cache is unreachable'],
-    [{ typesense: false }, 'Search index is unreachable'],
-    [{ horizon: { running: false } }, 'Queue worker is not running']
+    [{ checks: { database: true, cache: false } }, 'Cache is unreachable']
   ])('names which of pckt’s dependencies is unwell when /up reads %o', async (changes, error) => {
     pcktSays(changes)
     const { checks } = await probe('pckt:pckt.blog')
     expect(check(checks, 'up')).toMatchObject({ ok: false, error })
     // An application that has said it is not well is not read any further.
-    for (const label of ['index lag', 'queues']) {
+    for (const label of ['search', 'index lag', 'queues']) {
       expect(check(checks, label)).toMatchObject({ ok: false, error: 'Skipped because up failed' })
     }
+  })
+
+  it('reads pckt as partial, not down, when only its search index is unreachable', async () => {
+    pcktSays({ typesense: false })
+    const { checks } = await probe('pckt:pckt.blog')
+    expect(check(checks, 'up').ok).toBe(true)
+    expect(check(checks, 'search')).toMatchObject({
+      ok: false,
+      error: 'Search index is unreachable',
+      durationMs: null
+    })
+    expect(check(checks, 'index lag').ok).toBe(true)
+    expect(check(checks, 'queues').ok).toBe(true)
+    expect(probeState(checks)).toBe('partial')
   })
 
   it.each([
@@ -1260,6 +1279,8 @@ describe('the indexes that report their own cursor', () => {
   })
 
   it.each([
+    // A stopped worker is why jobs pile up, so it is named ahead of what it left behind.
+    [{ horizon: { running: false }, failed_jobs_last_hour: 3 }, 'Queue worker is not running'],
     [{ failed_jobs_last_hour: 1 }, '1 job failed in the last hour'],
     // Failed jobs are the worse news, and say so even with a queue backed up beside them.
     [{ failed_jobs_last_hour: 3, queues: { media: 4000 } }, '3 jobs failed in the last hour'],

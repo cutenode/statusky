@@ -1473,6 +1473,7 @@ const QUEUE_BACKLOG = 500
 
 function probePckt(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<void> {
   const up = addCheck(checks, ctx, 'up', http(host, '/up'))
+  const search = addCheck(checks, ctx, 'search', null, 'derived')
   const lag = addCheck(checks, ctx, 'index lag', null, 'derived')
   const work = addCheck(checks, ctx, 'queues', null, 'derived')
 
@@ -1480,23 +1481,29 @@ function probePckt(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promi
   // anywhere: database, cache, search index, queue worker, scheduler heartbeat, failed
   // jobs, nine queue depths and the jetstream cursor. Everything below reads that one
   // response. Note `uptime.seconds` resets on every deploy, so nothing judges it.
+  //
+  // `up` judges only what serving pages needs. pckt still reports `ok` with its search
+  // index or queue worker gone, so those are checks of their own: either failing reads
+  // as partial rather than failing `up` and, through the skips below, every check.
   return request(ctx, up, (body) => {
     if (field(body, 'status') !== EXPECTED_RESPONSES.pckt.status) {
       return 'Application reports it is not ok'
     }
     if (field(body, 'checks', 'database') !== true) return 'Database is unreachable'
     if (field(body, 'checks', 'cache') !== true) return 'Cache is unreachable'
-    if (field(body, 'typesense') !== true) return 'Search index is unreachable'
-    if (field(body, 'horizon', 'running') !== true) return 'Queue worker is not running'
     return true
   }).then((body) => {
     // A body that failed the health check is not worth reading further: the numbers in
     // it describe an application that has already said it is not well.
     if (!up.passed) {
-      lag.fail('Skipped because up failed', { timed: false })
-      work.fail('Skipped because up failed', { timed: false })
+      for (const derived of [search, lag, work]) {
+        derived.fail('Skipped because up failed', { timed: false })
+      }
       return
     }
+
+    if (field(body, 'typesense') === true) search.pass()
+    else search.fail('Search index is unreachable', { timed: false })
 
     // `jetstream.cursor` is relative to the stream, not the epoch, so it is only good
     // for movement; `stale_seconds` is the one that can be read against the clock.
@@ -1507,6 +1514,10 @@ function probePckt(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promi
       judgeCursor(ctx, lag, ctx.now() - stale * 1000, 'Index')
     }
 
+    if (field(body, 'horizon', 'running') !== true) {
+      work.fail('Queue worker is not running', { timed: false })
+      return
+    }
     const failed = numberField(body, 'failed_jobs_last_hour') ?? 0
     if (failed > 0) {
       work.fail(`${failed} job${failed === 1 ? '' : 's'} failed in the last hour`, { timed: false })
