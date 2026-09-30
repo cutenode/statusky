@@ -8855,22 +8855,6 @@
           "ok": true,
           "error": null,
           "durationMs": 718
-        },
-        {
-          "label": "index lag",
-          "target": null,
-          "kind": "derived",
-          "ok": true,
-          "error": null,
-          "durationMs": null
-        },
-        {
-          "label": "queues",
-          "target": null,
-          "kind": "derived",
-          "ok": true,
-          "error": null,
-          "durationMs": null
         }
       ],
       "startedAt": "2026-09-20T19:32:37.337Z",
@@ -9349,19 +9333,11 @@
           "ok": true,
           "error": null,
           "durationMs": 1211
-        },
-        {
-          "label": "newest article",
-          "target": "https://offprint.app/feed",
-          "kind": "http",
-          "ok": true,
-          "error": null,
-          "durationMs": 1277
         }
       ],
       "startedAt": "2026-09-20T19:32:37.337Z",
       "checkedAt": "2026-09-20T19:32:39.574Z",
-      "latencyMs": 1211,
+      "latencyMs": 960,
       "history": [
         {
           "at": "2026-09-20T13:02:40.808Z",

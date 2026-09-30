@@ -68,12 +68,11 @@ interface BannerAction {
  * which is what clicking the banner opens. Only the entries this app's own checks filed
  * are about a service the dashboard has a row for, and `probeServiceId` is what says so.
  *
- * On macOS these buttons need the same thing notifications themselves need, and fail
- * the same way without it: a properly signed build. An unsigned development build is
- * never granted notification authorisation at all — see `explainFailure` — so there is
- * no banner for the buttons to be missing from. `NSUserNotificationAlertStyle: 'alert'`
- * in forge.config.ts is the other half: a banner-style notification on macOS shows its
- * actions only under the hover-revealed chevron, while an alert shows them outright.
+ * On macOS the buttons are only as visible as the alert style lets them be:
+ * `NSUserNotificationAlertStyle: 'alert'` in forge.config.ts is what shows them outright,
+ * where a banner-style notification hides them under the hover-revealed chevron. A
+ * development run takes Electron.app's Info.plist, which does not set it, so there they
+ * are behind the chevron.
  */
 function bannerActions(post: StatusPost, deps: NotificationDeps): BannerAction[] {
   const actions: BannerAction[] = [{ text: 'Mark as read', run: () => deps.onMarkRead(post) }]
@@ -128,9 +127,12 @@ export function notifySupported(): boolean {
  * Turn the OS's own wording into something a user can act on.
  *
  * macOS reports a missing authorisation as the opaque `UNErrorDomain error 1`
- * (`UNErrorCodeNotificationsNotAllowed`), which tells the user nothing about the
- * two things that actually cause it: permission denied in System Settings, or a
- * build macOS will not register at all because it is not properly code signed.
+ * (`UNErrorCodeNotificationsNotAllowed`), which tells the user nothing about what
+ * actually causes it: permission denied in System Settings — and, in development,
+ * that the entry there is Electron's rather than Statusky's. Enabling Statusky does
+ * nothing for `npm run dev`, which is `com.github.Electron` as far as macOS knows.
+ * (A bundle with no seal of its own is refused the same way whatever the setting says;
+ * `scripts/seal-dev-electron.mjs` is why a development run is not one.)
  */
 export function explainFailure(raw: string): string {
   const notAllowed = /UNErrorDomain error 1\b/.test(raw) || /not allowed/i.test(raw)
@@ -138,8 +140,8 @@ export function explainFailure(raw: string): string {
 
   return (
     'macOS is blocking notifications from this app. ' +
-    'Allow them under System Settings › Notifications — and note that ' +
-    'unsigned development builds are never offered that permission.'
+    'Allow them under System Settings › Notifications — a development run is ' +
+    'listed there as Electron, not Statusky.'
   )
 }
 

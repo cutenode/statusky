@@ -205,9 +205,11 @@ function developerIdSigningOptions(): MacSignOptions {
  * does not verify, so `safeStorage.isEncryptionAvailable()` came back false in every
  * locally packaged build and `src/main/store.ts` silently took its documented fallback
  * of writing the webhook endpoint secret to `statusky.json` in the clear. An ad-hoc
- * signature is still not a certificate — Gatekeeper on another machine refuses it, and
- * macOS will not grant it notification permission — but it is a valid seal, and the
- * secret stays sealed with it.
+ * signature is still not a certificate — Gatekeeper on another machine refuses it — but
+ * it is a valid seal, and the secret stays sealed with it. The same seal is what lets a
+ * local build ask for notifications at all: an unsealed bundle is refused by
+ * `usernotificationsd` before any permission prompt, which is the problem
+ * `scripts/seal-dev-electron.mjs` solves for `npm run dev`.
  */
 function adHocSigningOptions(): MacSignOptions {
   return {

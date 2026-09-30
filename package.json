@@ -10,9 +10,9 @@
   "type": "module",
   "main": "./out/main/index.js",
   "scripts": {
-    "predev": "node scripts/generate-ipc.mjs development",
+    "predev": "node scripts/generate-ipc.mjs development && node scripts/seal-dev-electron.mjs",
     "dev": "electron-vite dev",
-    "prestart": "node scripts/generate-ipc.mjs development",
+    "prestart": "node scripts/generate-ipc.mjs development && node scripts/seal-dev-electron.mjs",
     "start": "electron-vite preview",
     "prebuild": "node scripts/generate-ipc.mjs production",
     "build": "npm run check && electron-vite build",

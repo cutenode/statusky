@@ -1468,23 +1468,12 @@ function probeSpindle(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
 
 // ------------------------------------------------------------------ apps
 
-/** Jobs queued on one of pckt's nine workers before the backlog is worth reporting. */
-const QUEUE_BACKLOG = 500
-
-function probePckt(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<void> {
+function probePckt(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
   const up = addCheck(checks, ctx, 'up', http(host, '/up'))
-  const search = addCheck(checks, ctx, 'search', null, 'derived')
-  const lag = addCheck(checks, ctx, 'index lag', null, 'derived')
-  const work = addCheck(checks, ctx, 'queues', null, 'derived')
 
   // Four hundred and seventy-nine bytes, and the most generous health endpoint found
-  // anywhere: database, cache, search index, queue worker, scheduler heartbeat, failed
-  // jobs, nine queue depths and the jetstream cursor. Everything below reads that one
-  // response. Note `uptime.seconds` resets on every deploy, so nothing judges it.
-  //
-  // `up` judges only what serving pages needs. pckt still reports `ok` with its search
-  // index or queue worker gone, so those are checks of their own: either failing reads
-  // as partial rather than failing `up` and, through the skips below, every check.
+  // anywhere: it also reports the search index, queue worker, failed jobs, queue depths
+  // and the consumer's lag. Only what serving pages needs is judged here.
   return request(ctx, up, (body) => {
     if (field(body, 'status') !== EXPECTED_RESPONSES.pckt.status) {
       return 'Application reports it is not ok'
@@ -1492,66 +1481,23 @@ function probePckt(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promi
     if (field(body, 'checks', 'database') !== true) return 'Database is unreachable'
     if (field(body, 'checks', 'cache') !== true) return 'Cache is unreachable'
     return true
-  }).then((body) => {
-    // A body that failed the health check is not worth reading further: the numbers in
-    // it describe an application that has already said it is not well.
-    if (!up.passed) {
-      for (const derived of [search, lag, work]) {
-        derived.fail('Skipped because up failed', { timed: false })
-      }
-      return
-    }
-
-    if (field(body, 'typesense') === true) search.pass()
-    else search.fail('Search index is unreachable', { timed: false })
-
-    // `jetstream.cursor` is relative to the stream, not the epoch, so it is only good
-    // for movement; `stale_seconds` is the one that can be read against the clock.
-    const stale = numberField(body, 'jetstream', 'stale_seconds')
-    if (stale === null) {
-      lag.fail('Consumer reported no staleness', { timed: false })
-    } else {
-      judgeCursor(ctx, lag, ctx.now() - stale * 1000, 'Index')
-    }
-
-    if (field(body, 'horizon', 'running') !== true) {
-      work.fail('Queue worker is not running', { timed: false })
-      return
-    }
-    const failed = numberField(body, 'failed_jobs_last_hour') ?? 0
-    if (failed > 0) {
-      work.fail(`${failed} job${failed === 1 ? '' : 's'} failed in the last hour`, { timed: false })
-      return
-    }
-    const queues = field(body, 'queues')
-    const backed = isObject(queues)
-      ? Object.entries(queues).filter(
-          ([, depth]) => typeof depth === 'number' && depth > QUEUE_BACKLOG
-        )
-      : []
-    if (!backed.length) return work.pass()
-    work.fail(
-      `${backed.length} queue${backed.length === 1 ? '' : 's'} backed up: ` +
-        backed.map(([name, depth]) => `${name} (${String(depth)})`).join(', '),
-      { timed: false }
-    )
   })
 }
 
 /**
  * How stale a published document may be before it says something about the index.
  *
- * Neither Leaflet nor Offprint publishes a cursor — Leaflet's consumer has no HTTP
- * server at all and keeps its cursor in a file — so the only thing observable from
- * outside is the newest document each of them will show you. That moves in days, not
- * seconds, so this catches an index that has genuinely stopped and nothing finer.
+ * Leaflet publishes no cursor — its consumer has no HTTP server at all and keeps its
+ * cursor in a file — so the only thing observable from outside is the newest document it
+ * will show you. That moves in days, not seconds, so this catches an index that has
+ * genuinely stopped and nothing finer.
  */
 const PUBLISHED_STALE_MS = 30 * 86_400_000
 
-/** The first date inside an RSS or Atom feed's own header, in epoch milliseconds. */
+/** The first date inside an Atom feed's own header, in epoch milliseconds. */
 function feedUpdatedAt(body: unknown): number | null {
   if (typeof body !== 'string') return null
-  const match = /<(?:updated|lastBuildDate)>([^<]+)<\/(?:updated|lastBuildDate)>/.exec(body)
+  const match = /<updated>([^<]+)<\/updated>/.exec(body)
   if (!match) return null
   const time = Date.parse(match[1]!.trim())
   return Number.isNaN(time) ? null : time
@@ -1635,7 +1581,7 @@ function probeOffprint(host: string, checks: ProbeCheck[], ctx: ProbeContext): P
     http(publicationHost, `/.well-known/${collection}`)
   )
 
-  const work: Promise<unknown>[] = [
+  return Promise.all([
     // Laravel's own health route, which does not touch the database — process liveness
     // only. Its body also carries the origin's own render time, if that is ever wanted.
     request(
@@ -1653,28 +1599,7 @@ function probeOffprint(host: string, checks: ProbeCheck[], ctx: ProbeContext): P
         (typeof body === 'string' && body.trim() === publication) || 'Publication did not resolve',
       { as: 'text' }
     )
-  ]
-
-  // The newest article across every publication on the platform, which is the most
-  // direct staleness signal either publishing app offers — and sixty-one kilobytes
-  // gzipped, with no limit parameter that works. So it runs hourly, not every sweep.
-  if (due(ctx, `offprint:${host}`)) {
-    const fresh = addCheck(checks, ctx, 'newest article', http(host, '/feed'))
-    work.push(
-      request(
-        ctx,
-        fresh,
-        (body) => {
-          const updated = feedUpdatedAt(body)
-          if (updated === null) return 'Feed carried no date'
-          const lag = ctx.now() - updated
-          return lag > PUBLISHED_STALE_MS ? `Newest article is ${humanDuration(lag)} old` : true
-        },
-        { as: 'text' }
-      )
-    )
-  }
-  return Promise.all(work)
+  ])
 }
 
 /**

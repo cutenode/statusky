@@ -139,10 +139,8 @@ describe('notifyPosts', () => {
  * The buttons on a banner, which are what turn it from an interruption into somewhere
  * the update can be finished with.
  *
- * On macOS these need a properly signed build, exactly as notifications themselves do —
- * an unsigned development build is never granted notification authorisation, so there is
- * no banner for the buttons to be missing from. That makes this the only place any of it
- * can be exercised on a development machine.
+ * Pressing one needs a real banner and a person to press it, so this is the only place
+ * the wiring from a button's index back to what it does can be exercised automatically.
  */
 describe('the buttons on a banner', () => {
   it('offers to deal with any update without opening anything', () => {
@@ -562,7 +560,7 @@ describe('explainFailure', () => {
   it('translates the opaque macOS authorisation error', () => {
     const message = explainFailure("The operation couldn't be completed. (UNErrorDomain error 1.)")
     expect(message).toContain('System Settings')
-    expect(message).toContain('unsigned development builds')
+    expect(message).toContain('listed there as Electron')
     expect(message).not.toContain('UNErrorDomain')
   })
 

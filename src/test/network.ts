@@ -627,14 +627,8 @@ export class FakeNetwork implements ProbeTransport {
         )
       }
     }
-    if (host === apps.offprint.host) {
-      if (path === '/up') return text('<html><body>Application up</body></html>', 'text/html')
-      if (path === '/feed') {
-        return text(
-          `<rss><channel><lastBuildDate>${new Date().toUTCString()}</lastBuildDate></channel></rss>`,
-          'application/rss+xml'
-        )
-      }
+    if (host === apps.offprint.host && path === '/up') {
+      return text('<html><body>Application up</body></html>', 'text/html')
     }
     if (
       host === apps.offprint.publicationHost &&

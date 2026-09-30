@@ -287,9 +287,9 @@ page, which this is a port of, down to the checks and their wording:
 | PDS           | `_health`, `describeServer`, `listRepos`, and a real `listRecords` read of the first active repository it names                                                                                   |
 | AppView       | `_health`; for each of six accounts a `getProfile`, a `resolveHandle` that must return that account's own DID, and a `getAuthorFeed`; and how far its index lags                                  |
 | Tangled       | The appview's static route and a real repository page; Bobbin's coverage, its event cursor and a record lookup; Hydrant; `tngl.sh` as a PDS; each knot's version and owner; each spindle's health |
-| pckt          | `/up`: database, cache, search index, queue worker, failed jobs, nine queue depths, and how far its consumer has fallen behind                                                                    |
+| pckt          | `/up`: the application, its database and its cache                                                                                                                                                |
 | Leaflet       | A published document's well-known route, a full-text search, and hourly, the newest document in a busy publication                                                                                |
-| Offprint      | `/up`, a custom-domain publication lookup, and hourly, the newest article published anywhere on the platform                                                                                      |
+| Offprint      | `/up`, and a custom-domain publication lookup                                                                                                                                                     |
 | UFOs          | `/meta`, which is its own consumer cursor against the clock, and one collection's statistics                                                                                                      |
 | Constellation | `blue.microcosm.links.getBacklinks`, and whether the number of links it holds is still climbing                                                                                                   |
 | Slingshot     | `resolveHandle`, `getRecord` and `resolveMiniDoc`                                                                                                                                                 |
@@ -345,8 +345,7 @@ allows can go unseen for a sweep, where before it could not.
 index answers every request correctly from what it has already indexed, so a health
 endpoint cannot see it. A few services publish their own consumer cursor, and those are
 worth more than everything else on the row: UFOs' `/meta` names the microsecond it has
-reached, pckt's `/up` names the seconds it is behind, and Bobbin says whether it has
-finished backfilling. Where there is no cursor but there is a counter — Constellation's
+reached, and Bobbin says whether it has finished backfilling. Where there is no cursor but there is a counter — Constellation's
 link count — Statusky watches it move instead, and only calls it stopped after three
 sweeps standing still, because one quiet ten minutes proves nothing.
 
@@ -415,11 +414,10 @@ ignore: **Mark as read**, which deals with the update and opens nothing at all, 
 takes you to that service's row. Clicking the banner itself still opens the status page
 behind the update, as it always did.
 
-On macOS the buttons need the same thing notifications themselves need and fail the same
-way without it — a properly signed build. An unsigned development build is never offered
-notification authorisation at all, so there is no banner for the buttons to be missing
-from; `NSUserNotificationAlertStyle: 'alert'` in `forge.config.ts` is what makes them
-visible outright rather than hidden under a hover-revealed chevron.
+On macOS, `NSUserNotificationAlertStyle: 'alert'` in `forge.config.ts` is what makes the
+buttons visible outright rather than hidden under a hover-revealed chevron. A development
+run uses Electron.app's own Info.plist, which does not set it, so there they sit behind
+the chevron.
 
 The one summary banner raised for everything that happened while nobody was at the
 machine carries no buttons, deliberately: its body is a count and a list of sources, so
@@ -644,7 +642,7 @@ Everything above argues its own case. This is the index.
 | Thing                                    | Where it does not work                                                                                                                                                                                                                   |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Self-update                              | Never on Linux: Electron's `autoUpdater` is Squirrel, and there is no Linux Squirrel. Never on an ad-hoc signed macOS build either, since Squirrel.Mac needs the update's signature to match the running app. Both get a notice instead. |
-| Notification action buttons              | macOS needs a properly signed build. An unsigned one is never granted notification authorisation at all, so there is no banner for the buttons to be missing from.                                                                       |
+| Notifications in development             | Development runs on macOS, until allowed: they are listed under System Settings › Notifications as Electron, not Statusky.                                                                                                               |
 | A count beside the menu bar icon         | macOS only. `Tray.setTitle` does nothing elsewhere, so the setting badges the icon there instead.                                                                                                                                        |
 | The beating icon                         | Stands down to the badge wherever the OS has been asked for reduced motion.                                                                                                                                                              |
 | Dragging a handle onto the icon          | macOS only. Electron emits `drop-text` nowhere else.                                                                                                                                                                                     |
@@ -663,6 +661,14 @@ npm install && npm run dev
 
 Node 22.12+ (or 20.19+) is required. If Electron's binary did not download during
 install, run `node node_modules/electron/install.js`.
+
+On macOS the first notification asks for permission as **Electron**, not Statusky: a
+development run is `node_modules/electron/dist/Electron.app`, and allowing Statusky in
+System Settings allows only a packaged build. `npm run dev` also ad-hoc signs that
+Electron.app on the way in (`scripts/seal-dev-electron.mjs`). As npm installs it, the
+bundle is only linker-signed, with no seal binding its Info.plist, and
+`usernotificationsd` refuses every request from it — `UNErrorDomain error 1` — before
+any permission prompt, whatever System Settings says.
 
 ## Building a distributable
 

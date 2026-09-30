@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  CATALOGUE,
-  SERVICES,
-  probeState,
-  servicesFor,
-  type ServiceDefinition
-} from '../shared/network'
+import { CATALOGUE, SERVICES, servicesFor, type ServiceDefinition } from '../shared/network'
 import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
 import type { ProbeCheck, ProbeTargets } from '../shared/types'
 import { commitFrame, errorFrame, frame } from '../test/cbor'
@@ -1215,91 +1209,24 @@ describe('the indexes that report their own cursor', () => {
     })
   })
 
-  it('reads pckt’s health, search, index lag and queues from one response', async () => {
+  it('reads pckt’s health from /up', async () => {
     const { checks } = await probe('pckt:pckt.blog')
-    expect(checks.map((c) => [c.label, c.kind, c.ok])).toEqual([
-      ['up', 'http', true],
-      ['search', 'derived', true],
-      ['index lag', 'derived', true],
-      ['queues', 'derived', true]
-    ])
+    expect(checks.map((c) => [c.label, c.kind, c.ok])).toEqual([['up', 'http', true]])
     expect(check(checks, 'up').target).toBe('https://pckt.blog/up')
   })
-
-  /** pckt's `/up` with everything well, and then whatever `changes` says. */
-  const pcktSays = (changes: Record<string, unknown>): void =>
-    answer('pckt.blog', '/up', {
-      status: 'ok',
-      checks: { database: true, cache: true },
-      typesense: true,
-      horizon: { running: true },
-      jetstream: { cursor: 1, stale_seconds: 1 },
-      failed_jobs_last_hour: 0,
-      queues: { default: 0, media: 0, search: 0 },
-      ...changes
-    })
 
   it.each([
     [{ status: 'maintenance' }, 'Application reports it is not ok'],
     [{ checks: { database: false, cache: true } }, 'Database is unreachable'],
     [{ checks: { database: true, cache: false } }, 'Cache is unreachable']
   ])('names which of pckt’s dependencies is unwell when /up reads %o', async (changes, error) => {
-    pcktSays(changes)
+    answer('pckt.blog', '/up', {
+      status: 'ok',
+      checks: { database: true, cache: true },
+      ...changes
+    })
     const { checks } = await probe('pckt:pckt.blog')
     expect(check(checks, 'up')).toMatchObject({ ok: false, error })
-    // An application that has said it is not well is not read any further.
-    for (const label of ['search', 'index lag', 'queues']) {
-      expect(check(checks, label)).toMatchObject({ ok: false, error: 'Skipped because up failed' })
-    }
-  })
-
-  it('reads pckt as partial, not down, when only its search index is unreachable', async () => {
-    pcktSays({ typesense: false })
-    const { checks } = await probe('pckt:pckt.blog')
-    expect(check(checks, 'up').ok).toBe(true)
-    expect(check(checks, 'search')).toMatchObject({
-      ok: false,
-      error: 'Search index is unreachable',
-      durationMs: null
-    })
-    expect(check(checks, 'index lag').ok).toBe(true)
-    expect(check(checks, 'queues').ok).toBe(true)
-    expect(probeState(checks)).toBe('partial')
-  })
-
-  it.each([
-    [{ jetstream: { cursor: 1 } }, 'Consumer reported no staleness'],
-    [{ jetstream: { cursor: 1, stale_seconds: 20 * 60 } }, 'Index trails by 20 minutes']
-  ])('judges pckt’s index lag from %o', async (changes, error) => {
-    pcktSays(changes)
-    const { checks } = await probe('pckt:pckt.blog')
-    expect(check(checks, 'up').ok).toBe(true)
-    expect(check(checks, 'index lag')).toMatchObject({ ok: false, error, durationMs: null })
-    expect(check(checks, 'queues').ok).toBe(true)
-  })
-
-  it.each([
-    // A stopped worker is why jobs pile up, so it is named ahead of what it left behind.
-    [{ horizon: { running: false }, failed_jobs_last_hour: 3 }, 'Queue worker is not running'],
-    [{ failed_jobs_last_hour: 1 }, '1 job failed in the last hour'],
-    // Failed jobs are the worse news, and say so even with a queue backed up beside them.
-    [{ failed_jobs_last_hour: 3, queues: { media: 4000 } }, '3 jobs failed in the last hour'],
-    [{ queues: { search: 0, media: 4000 } }, '1 queue backed up: media (4000)'],
-    [
-      { queues: { default: 501, media: 4000, search: 500 } },
-      '2 queues backed up: default (501), media (4000)'
-    ]
-  ])('reports pckt’s queues from %o', async (changes, error) => {
-    pcktSays(changes)
-    const { checks } = await probe('pckt:pckt.blog')
-    expect(check(checks, 'index lag').ok).toBe(true)
-    expect(check(checks, 'queues')).toMatchObject({ ok: false, error, durationMs: null })
-  })
-
-  it('holds nothing against pckt that its /up leaves out', async () => {
-    pcktSays({ failed_jobs_last_hour: undefined, queues: undefined })
-    const { checks } = await probe('pckt:pckt.blog')
-    expect(check(checks, 'queues').ok).toBe(true)
   })
 
   it('skips UFOs’ index lag when there is no cursor to read it from', async () => {
@@ -1606,21 +1533,18 @@ describe('the publishing apps', () => {
     })
   })
 
-  it.each([
-    ['leaflet:leaflet.pub', 'newest document'],
-    ['offprint:offprint.app', 'newest article']
-  ])('runs %s’s expensive feed check hourly, not every sweep', async (id, label) => {
+  it('runs Leaflet’s expensive feed check hourly, not every sweep', async () => {
     const counters = memoryCounters()
     let clock = Date.now()
     const now = (): number => clock
     const labels = async (): Promise<string[]> =>
-      (await probe(id, { counters, now })).checks.map((c) => c.label)
+      (await probe('leaflet:leaflet.pub', { counters, now })).checks.map((c) => c.label)
 
-    expect(await labels()).toContain(label)
+    expect(await labels()).toContain('newest document')
     clock += 59 * 60_000
-    expect(await labels()).not.toContain(label)
+    expect(await labels()).not.toContain('newest document')
     clock += 60_000
-    expect(await labels()).toContain(label)
+    expect(await labels()).toContain('newest document')
   })
 
   const { publication, feed } = DEFAULT_PROBE_TARGETS.apps.leaflet
@@ -1675,20 +1599,6 @@ describe('the publishing apps', () => {
       '<feed><updated>last Tuesday</updated></feed>',
       'newest document',
       'Feed carried no date'
-    ],
-    [
-      'offprint:offprint.app',
-      '/feed',
-      `<rss><channel><lastBuildDate>${daysAgo(40).toUTCString()}</lastBuildDate></channel></rss>`,
-      'newest article',
-      'Newest article is 40 days old'
-    ],
-    [
-      'offprint:offprint.app',
-      '/feed',
-      '<rss><channel></channel></rss>',
-      'newest article',
-      'Feed carried no date'
     ]
   ])('fails %s when its feed at %s reads %s', async (id, path, body, label, error) => {
     network.fail(service(id).host, { kind: 'respond', body, contentType: 'application/xml' }, path)
@@ -1700,8 +1610,7 @@ describe('the publishing apps', () => {
     const { checks } = await probe('offprint:offprint.app')
     expect(checks.map((c) => [c.label, c.ok])).toEqual([
       ['up', true],
-      ['publication', true],
-      ['newest article', true]
+      ['publication', true]
     ])
   })
 

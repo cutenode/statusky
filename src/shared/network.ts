@@ -314,16 +314,16 @@ export const FIREHOSE_FRESH_MS = 60_000
 export const INDEX_LAG_MS = 15 * 60_000
 /**
  * How far a service's own consumer cursor may trail the clock before it counts as
- * stalled. UFOs runs a tenth of a second behind and pckt under a second, so this is
- * generous by two orders of magnitude on purpose: it has to survive a quiet minute, a
- * clock a little out of step with the server's — one sample read as 0.1s *ahead* — and
- * a sweep that only looks every ten minutes.
+ * stalled. UFOs runs a tenth of a second behind, so this is generous by three orders of
+ * magnitude on purpose: it has to survive a quiet minute, a clock a little out of step
+ * with the server's — one sample read as 0.1s *ahead* — and a sweep that only looks
+ * every ten minutes.
  */
 export const CURSOR_LAG_MS = 5 * 60_000
 /**
- * How long a check that is too expensive for every sweep waits between runs. Offprint's
- * platform feed is the case: it is the most direct staleness signal found anywhere, and
- * it is 61 KB gzipped with no working limit parameter, so it runs hourly instead.
+ * How long a check that is too expensive for every sweep waits between runs. Leaflet's
+ * publication feed is the case: twelve kilobytes for a date that moves in hours, so it
+ * runs hourly instead.
  */
 export const SLOW_CHECK_EVERY_MS = 60 * 60_000
 /**
