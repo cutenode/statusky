@@ -12,6 +12,7 @@
     expanded,
     highlighted,
     offline = false,
+    counted = true,
     ontoggle
   }: {
     /** Also the section's anchor, `#group-<id>`, which the dashboard's summary jumps to. */
@@ -24,6 +25,8 @@
     expanded: ReadonlySet<string>
     highlighted: string | null
     offline?: boolean
+    /** Whether this panel counts in the menu bar. See `Settings.countedProbeGroups`. */
+    counted?: boolean
     ontoggle(serviceId: string): void
   } = $props()
 
@@ -38,6 +41,13 @@
       class="text-[10.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase"
     >
       {title}
+      {#if !counted}
+        <span
+          class="ml-1 font-normal tracking-normal normal-case"
+          title="Measured and filed, but left out of the menu bar. Change it under Settings › Network checks."
+          >· not counted</span
+        >
+      {/if}
     </h2>
     {#if measured}
       <span class="text-[10.5px] text-muted-foreground tabular-nums">
@@ -59,6 +69,7 @@
         expanded={expanded.has(service.id)}
         highlighted={highlighted === service.id}
         {offline}
+        {counted}
         ontoggle={() => ontoggle(service.id)}
       />
     {/each}

@@ -54,6 +54,10 @@ export const DEFAULT_SETTINGS: Settings = {
   notificationsSnoozedUntil: null,
   notificationShowBody: true,
   pinnedServices: [],
+  // Tangled and the publishing apps are measured and filed like everything else, but
+  // they are niche enough that an outage there should not colour the menu bar of
+  // somebody who never uses them. One switch each under Settings › Network checks.
+  countedProbeGroups: ['relays', 'streams', 'appviews', 'pdses', 'infrastructure'],
   theme: 'system',
   launchAtLogin: false,
   trayUnreadStyle: 'beat',

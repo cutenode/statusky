@@ -75,6 +75,44 @@ describe('the list', () => {
     expect(getAllByText('Today')).toHaveLength(1)
   })
 
+  // The regression: the same calendar date a year apart was the same `{#each}` key,
+  // and a repeated key throws — in a production build too — taking the tab down.
+  it('draws the same date in two different years as two days', async () => {
+    const dated = (rkey: string, createdAt: string): ReturnType<typeof makePost> =>
+      makePost({
+        authorDid: accountA.did,
+        authorHandle: accountA.handle,
+        rkey,
+        text: rkey,
+        createdAt
+      })
+    const posts = [
+      dated('this-year', '2025-09-10T12:00:00Z'),
+      dated('in-between', '2025-03-01T12:00:00Z'),
+      dated('last-year', '2024-09-10T12:00:00Z')
+    ]
+
+    const { getByText } = await renderWith(PostList, props(posts), { ...populated, posts })
+
+    expect(getByText('last-year')).toBeTruthy()
+    expect(getByText(/September 10, 2025/)).toBeTruthy()
+    expect(getByText(/September 10, 2024/)).toBeTruthy()
+  })
+
+  it('gathers posts with no usable date into one group, wherever the sort left them', async () => {
+    const undated = (rkey: string): ReturnType<typeof makePost> =>
+      makePost({ authorDid: accountA.did, rkey, text: rkey, createdAt: 'not a date' })
+    const posts = [undated('first-undated'), today, undated('second-undated')]
+
+    const { getAllByText, getByText } = await renderWith(PostList, props(posts), {
+      ...populated,
+      posts
+    })
+
+    expect(getAllByText('Unknown')).toHaveLength(1)
+    expect(getByText('second-undated')).toBeTruthy()
+  })
+
   it('updates when new posts arrive', async () => {
     const fresh = makePost({
       authorDid: accountA.did,

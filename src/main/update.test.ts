@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { app, autoUpdater, net } from '../test/electron'
-import { lastSelfUpdater, selfUpdateFailure, selfUpdaters } from '../test/update-electron-app'
+import {
+  FakeSelfUpdater,
+  lastSelfUpdater,
+  selfUpdateFailure,
+  selfUpdaters,
+  updateElectronApp
+} from '../test/update-electron-app'
 import { LATEST_RELEASE_API } from '../shared/defaults'
 import {
   downloadedVersion,
@@ -449,6 +455,57 @@ describe('watchUpdates when Squirrel turns out not to be able to', () => {
     await settle()
 
     expect(on.onAvailable).toHaveBeenCalledWith('0.9.0')
+  })
+
+  // Exactly one of the two at a time: Squirrel's own six-hourly check goes as this comes.
+  it('stops Squirrel checking once the release check has taken over', async () => {
+    app.isPackaged = true
+    serveRelease({ tag_name: 'v0.9.0' })
+    watch(deps(), { platform: 'darwin' })
+    const updater = lastSelfUpdater()
+
+    autoUpdater.fail('The request timed out.')
+    await settle()
+
+    expect(updater.stopped).toBe(true)
+  })
+
+  it('stops a self-updater that Squirrel refused before it was even handed back', async () => {
+    app.isPackaged = true
+    serveRelease({ tag_name: 'v0.9.0' })
+    let refused: FakeSelfUpdater | null = null
+    updateElectronApp.mockImplementationOnce((options = {}) => {
+      autoUpdater.fail('Could not get code signature for running application')
+      refused = new FakeSelfUpdater(options)
+      return refused
+    })
+    const on = deps()
+
+    watch(on, { platform: 'darwin' })
+    await settle()
+
+    expect(refused!.stopped).toBe(true)
+    expect(on.onAvailable).toHaveBeenCalledWith('0.9.0')
+  })
+
+  /**
+   * A download that finished before Squirrel went on to fail — a later check timing out,
+   * say — is still on this machine and still installs on a restart. The release check
+   * that takes over finds the same build and has nothing better to offer than a link.
+   */
+  it('never trades a downloaded update for a link to one', async () => {
+    app.isPackaged = true
+    serveRelease({ tag_name: 'v0.9.0' })
+    const on = deps()
+    watch(on, { platform: 'darwin' })
+
+    lastSelfUpdater().finishDownload({ releaseName: '0.9.0' })
+    autoUpdater.fail('The request timed out.')
+    await settle()
+
+    expect(on.onReady).toHaveBeenCalledWith('0.9.0')
+    expect(net.fetch).toHaveBeenCalledTimes(1)
+    expect(on.onAvailable).not.toHaveBeenCalled()
   })
 
   it('takes over once, however many times Squirrel goes on failing', async () => {

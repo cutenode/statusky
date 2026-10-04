@@ -13,6 +13,7 @@
  * `src/ipc/common/*` re-exports our types rather than inventing parallel ones.
  */
 import { EXPECTED_RESPONSES } from './expected-responses'
+import DEFAULT_TARGETS from './probeTargets.json'
 import { z } from './zod'
 import type {
   Account,
@@ -46,6 +47,7 @@ import type {
   ResolvedProfile,
   RichSegment,
   ServiceProbe,
+  VanishedTarget,
   Settings,
   Severity,
   ShortcutStatus,
@@ -269,8 +271,9 @@ export const statusPostSchema = z.object({
  * other people's infrastructure: ten is already thirty requests apiece, where the
  * defaults make eighteen. Feeds and images are one request each, but each feed is its
  * own dashboard row and each image a full-size fetch, so they are held to a handful too.
+ * A PDS is five requests and a row of its own, and five is more than one person runs.
  */
-export const PROBE_TARGET_LIMITS = { accounts: 10, feeds: 10, cdnImages: 5 } as const
+export const PROBE_TARGET_LIMITS = { accounts: 10, feeds: 10, pdses: 5, cdnImages: 5 } as const
 
 /** `did:<method>:<identifier>`, as the atproto DID syntax allows it. */
 const DID_SOURCE = 'did:[a-z]+:[a-zA-Z0-9._:%-]*[a-zA-Z0-9._-]'
@@ -345,6 +348,19 @@ export const probeFeedSchema = z.object({
 
 export const probeRecordSchema = z.object({ did: didSchema, rkey: rkeySchema })
 
+/** Flag every host that repeats an earlier one, at the entry itself. */
+function uniqueHosts(list: string[], ctx: z.RefinementCtx<string[]>): void {
+  const first = new Map<string, number>()
+  list.forEach((host, index) => {
+    const earlier = first.get(host)
+    if (earlier === undefined) {
+      first.set(host, index)
+      return
+    }
+    ctx.addIssue({ code: 'custom', path: [index], message: `Same host as entry ${earlier + 1}` })
+  })
+}
+
 export const probeImageSchema = z.object({
   did: didSchema,
   // CIDv1 in base32, which is what the CDN's image paths carry.
@@ -368,6 +384,13 @@ export const probeTargetsSchema = z.object({
     // A feed is one dashboard row, and a row is `feed:<host>`: one feed per generator
     // host, which is also one service, so a second feed there would measure it twice.
     .superRefine(uniqueBy('host', 'host')),
+  // Optional in a document, so an override saved or exported before this list existed
+  // is still a valid one rather than being dropped for lacking it.
+  pdses: z
+    .array(domainSchema)
+    .max(PROBE_TARGET_LIMITS.pdses, `At most ${PROBE_TARGET_LIMITS.pdses} PDSes`)
+    .superRefine(uniqueHosts)
+    .default([]),
   forYou: z.object({ did: didSchema, feed: atUriSchema(FEED_GENERATOR) }),
   cdnImages: z
     .array(probeImageSchema)
@@ -375,11 +398,16 @@ export const probeTargetsSchema = z.object({
     .min(1, 'List at least one image')
     .max(PROBE_TARGET_LIMITS.cdnImages, `At most ${PROBE_TARGET_LIMITS.cdnImages} images`),
   tangled: z.object({
+    // A path on the Tangled AppView and nowhere else. `//host/…` is a URL to another
+    // host as far as the URL parser is concerned, and so is `/\host/…`, since it reads a
+    // backslash as a slash: either would send the check to whatever host it named, a
+    // service on this machine's own loopback included. So neither may start the path,
+    // and no backslash may appear in it at all.
     goGetPath: z
       .string()
       .trim()
       .regex(
-        /^\/[^\s?#]*\?(?:[^\s#]*&)?go-get=1(?:&[^\s#]*)?$/,
+        /^\/(?![/\\])[^\s?#\\]*\?(?:[^\s#\\]*&)?go-get=1(?:&[^\s#\\]*)?$/,
         'Must be a path ending in ?go-get=1, such as /core?go-get=1'
       ),
     repoPath: z
@@ -393,12 +421,28 @@ export const probeTargetsSchema = z.object({
     ownerDid: didSchema
   }),
   apps: z.object({
+    // Defaulted for the reason `pdses` is: an override saved before pckt had a target
+    // is still a valid one, rather than being dropped for lacking it.
+    pckt: z
+      .object({ publication: atUriSchema(EXPECTED_RESPONSES.standardSite.publicationCollection) })
+      .default({ publication: DEFAULT_TARGETS.apps.pckt.publication }),
     leaflet: z.object({ publication: probeRecordSchema, feed: probeRecordSchema }),
     offprint: z.object({
       publication: atUriSchema(EXPECTED_RESPONSES.standardSite.publicationCollection)
     })
   })
 })
+
+export const probeGroupSchema = z.enum([
+  'relays',
+  'streams',
+  'appviews',
+  'pdses',
+  'tangled',
+  'apps',
+  'infrastructure',
+  'internet'
+])
 
 export const settingsSchema = z.object({
   pollIntervalSec: z.number(),
@@ -421,6 +465,7 @@ export const settingsSchema = z.object({
   notificationsSnoozedUntil: z.string().nullable(),
   notificationShowBody: z.boolean(),
   pinnedServices: z.array(z.string()),
+  countedProbeGroups: z.array(probeGroupSchema),
   theme: themePreferenceSchema,
   launchAtLogin: z.boolean(),
   trayUnreadStyle: trayUnreadStyleSchema,
@@ -450,24 +495,15 @@ export const settingsPatchSchema = z
 /** Named so `schemas/statusky.eipc` can reference it; `Partial<Settings>` is not a name. */
 export type SettingsPatch = Partial<Settings>
 
-export const probeGroupSchema = z.enum([
-  'relays',
-  'streams',
-  'appviews',
-  'pdses',
-  'tangled',
-  'apps',
-  'infrastructure',
-  'internet'
-])
-
 export const probeKindSchema = z.enum([
   'relay',
   'pds',
+  'entryway',
   'appview',
   'feed',
   'constellation',
   'cdn',
+  'plc',
   'internet',
   'jetstream',
   'spacedust',
@@ -498,7 +534,8 @@ export const probeCheckSchema = z.object({
   kind: probeCheckKindSchema,
   ok: z.boolean().nullable(),
   error: z.string().nullable(),
-  durationMs: z.number().nullable()
+  durationMs: z.number().nullable(),
+  excused: z.string().optional()
 })
 
 export const probeSampleSchema = z.object({
@@ -527,12 +564,18 @@ export const serviceProbeSchema = z.object({
 
 export const sweepRestraintSchema = z.enum(['battery', 'thermal'])
 
+export const vanishedTargetSchema = z.object({
+  did: z.string(),
+  part: z.enum(['account', 'handle'])
+})
+
 export const networkSnapshotSchema = z.object({
   running: z.boolean(),
   startedAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
   offline: z.boolean(),
   restraint: sweepRestraintSchema.nullable(),
+  vanished: z.array(vanishedTargetSchema),
   services: z.array(serviceProbeSchema)
 })
 
@@ -551,7 +594,8 @@ export const networkSummarySchema = z.object({
   reachable: z.number(),
   down: z.array(z.string()),
   degraded: z.array(z.string()),
-  community: z.array(z.string()),
+  uncounted: z.array(z.string()),
+  vanished: z.array(vanishedTargetSchema),
   running: z.boolean(),
   lastSweepAt: z.string().nullable(),
   restraint: sweepRestraintSchema.nullable()
@@ -659,6 +703,9 @@ export type _ProbeConditionMatches = Assert<
 export type _ProbeCheckMatches = Assert<Exact<z.infer<typeof probeCheckSchema>, ProbeCheck>>
 export type _ProbeSampleMatches = Assert<Exact<z.infer<typeof probeSampleSchema>, ProbeSample>>
 export type _ServiceProbeMatches = Assert<Exact<z.infer<typeof serviceProbeSchema>, ServiceProbe>>
+export type _VanishedTargetMatches = Assert<
+  Exact<z.infer<typeof vanishedTargetSchema>, VanishedTarget>
+>
 export type _SweepRestraintMatches = Assert<
   Exact<z.infer<typeof sweepRestraintSchema>, SweepRestraint>
 >

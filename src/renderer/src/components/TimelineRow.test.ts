@@ -45,6 +45,33 @@ const node = (container: HTMLElement): Element =>
 const thread = (container: HTMLElement): Element | null =>
   container.querySelector('[aria-hidden="true"] > span.w-px')
 
+describe('what a screen reader hears', () => {
+  // The unread dot is inside the button, under a label that covered it.
+  it('says a row is unread, ahead of the rest', async () => {
+    const { getByRole } = await renderWith(
+      TimelineRow,
+      { post, now: NOW },
+      { accounts: [status], posts: [post], unread: [post.uri], settings: manual }
+    )
+
+    expect(getByRole('button').getAttribute('aria-label')).toBe(
+      'Unread. Investigating: We are investigating elevated error rates. — open the original'
+    )
+  })
+
+  it('says nothing of the sort once it is read', async () => {
+    const { getByRole } = await renderWith(
+      TimelineRow,
+      { post, now: NOW },
+      { accounts: [status], posts: [post], unread: [], settings: manual }
+    )
+
+    expect(getByRole('button').getAttribute('aria-label')).toBe(
+      'Investigating: We are investigating elevated error rates. — open the original'
+    )
+  })
+})
+
 describe('a timeline row', () => {
   it('leads with the severity, the source and when', async () => {
     const { container, getByText } = await renderWith(

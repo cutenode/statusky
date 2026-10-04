@@ -7,9 +7,10 @@ import { MakerDeb } from '@electron-forge/maker-deb'
 import { MakerDMG } from '@electron-forge/maker-dmg'
 import { MakerSquirrel, type MakerSquirrelConfig } from '@electron-forge/maker-squirrel'
 import { MakerZIP } from '@electron-forge/maker-zip'
-import { PublisherGithub } from '@electron-forge/publisher-github'
+import { PublisherGitHub } from '@electron-forge/publisher-github'
 import type { ForgeConfig } from '@electron-forge/shared-types'
-import type { MakerAppImageConfig } from '@reforged/maker-appimage'
+import { flipFuses, FuseV1Options, FuseVersion, type FuseV1Config } from '@electron/fuses'
+import { MakerAppImage } from '@reforged/maker-appimage'
 
 import { assertProductionWiring } from './src/main/packed-wiring'
 
@@ -74,7 +75,7 @@ type WindowsSignHash = NonNullable<WindowsSignOptions['hashes']>[number]
  * leave out. Writing that as a blocklist of the directories that happen to exist today
  * (`src/`, `schemas/`, `coverage/`, `release/`, `build/`, the config files) would ship
  * the next one somebody adds without anyone noticing — a scratch directory, a dotfile
- * with credentials in it, the 39k README. So it is turned back into an allowlist by a
+ * with credentials in it, the README. So it is turned back into an allowlist by a
  * negative lookahead: everything at the top level goes, except the three entries a
  * packaged app actually needs.
  *
@@ -101,18 +102,32 @@ const IGNORED_PATHS = [
 ]
 
 /**
- * Entitlements, by the file being signed.
+ * Entitlements, by how the build is signed rather than by the file being signed.
  *
- * electron-builder found `build/entitlements.mac.plist` and
- * `build/entitlements.mac.inherit.plist` in `buildResources` by name and applied this
- * rule itself. Forge auto-discovers neither, so it is spelled out: Electron's helper
- * bundles inherit the app's sandbox and need the looser set, and getting it wrong shows
- * up as helper processes that refuse to start under the hardened runtime — which, for a
- * menu bar app with no window, looks like nothing happening at all.
+ * Every entitlement here is an exception to the hardened runtime, so each one is a thing
+ * the runtime would otherwise have stopped. V8 compiles JavaScript as it runs, in the
+ * main process and in every helper, so `allow-jit` is the one a build cannot start
+ * without. It is also the only one Electron asks for: `@electron/osx-sign`'s own default
+ * entitlements for an app and its renderer and GPU helpers are `allow-jit` and nothing
+ * else of the hardened runtime's.
+ *
+ * The electron-builder-era files granted three more, everywhere: unsigned executable
+ * memory, which V8 stopped needing once `allow-jit` existed; `allow-dyld-environment-
+ * variables` on the helpers, which lets anything that can set this process's environment
+ * load its own code into them with `DYLD_INSERT_LIBRARIES`; and
+ * `disable-library-validation`, which lets the process map libraries nobody on our team
+ * signed. Statusky loads no native modules and no plugins, so none of them were buying
+ * anything a Developer ID build needs.
+ *
+ * Library validation is the one an ad-hoc build cannot do without. It admits a library
+ * signed by Apple or by the same Team ID as the process, and an ad-hoc signature has no
+ * Team ID at all — so under the hardened runtime dyld refuses Electron Framework itself
+ * ("mapped file has no Team ID and is not a platform binary"), and the app dies before it
+ * reaches the menu bar. A local build therefore keeps that one exception, in a file of
+ * its own, and a release never carries it.
  */
 const ENTITLEMENTS = join(root, 'build', 'entitlements.mac.plist')
-const INHERITED_ENTITLEMENTS = join(root, 'build', 'entitlements.mac.inherit.plist')
-const HELPER_BUNDLE = /\((?:Plugin|GPU|Renderer)\)\.app/
+const AD_HOC_ENTITLEMENTS = join(root, 'build', 'entitlements.mac.adhoc.plist')
 
 /**
  * Whether a Developer ID certificate is meant to be used for this build.
@@ -172,11 +187,12 @@ function developerIdSigningOptions(): MacSignOptions {
     // Left unset, @electron/osx-sign finds the Developer ID Application identity in the
     // keychain itself, which is what a developer machine wants.
     identity: process.env.CSC_NAME ?? process.env.CSC_IDENTITY,
-    // v1 of @electron/osx-sign — which Forge 7.11 pins, through @electron/packager 18 —
-    // passes one argument here, and takes the hardened runtime, the requirements and the
-    // timestamp per file rather than once for the whole bundle.
-    optionsForFile: (filePath: string): MacSignFileOptions => ({
-      entitlements: HELPER_BUNDLE.test(filePath) ? INHERITED_ENTITLEMENTS : ENTITLEMENTS,
+    // @electron/osx-sign — v2, through Forge 8's @electron/packager 20 — takes the
+    // hardened runtime, the requirements and the timestamp per file rather than once for
+    // the whole bundle. Every file gets the same answer: the helpers need the JIT as much
+    // as the app does, and nothing else.
+    optionsForFile: (): MacSignFileOptions => ({
+      entitlements: ENTITLEMENTS,
       hardenedRuntime: true,
       requirements,
       timestamp: 'http://timestamp.apple.com/ts01'
@@ -216,8 +232,10 @@ function adHocSigningOptions(): MacSignOptions {
     identity: '-',
     // `-` is not an identity that exists in any keychain, so validating it only fails.
     identityValidation: false,
-    optionsForFile: (filePath: string): MacSignFileOptions => ({
-      entitlements: HELPER_BUNDLE.test(filePath) ? INHERITED_ENTITLEMENTS : ENTITLEMENTS,
+    optionsForFile: (): MacSignFileOptions => ({
+      // A release build's entitlements plus library validation, which an ad-hoc
+      // signature has no Team ID to pass. See `AD_HOC_ENTITLEMENTS`.
+      entitlements: AD_HOC_ENTITLEMENTS,
       // The same hardened runtime a release build gets, so a local build runs under the
       // constraints the entitlements above are there to relax rather than under none.
       hardenedRuntime: true,
@@ -381,6 +399,127 @@ function windowsSignOptions(): WindowsSignOptions | undefined {
   }
 }
 
+/**
+ * The fuse wire every packaged build ships with.
+ *
+ * A fuse is a byte in the Electron binary that switches a feature off before any of our
+ * code runs, so it holds against things our code never gets the chance to refuse.
+ * Electron ships them set for compatibility rather than for an app like this one, and
+ * four of its defaults are open doors:
+ *
+ * - `RunAsNode` lets `ELECTRON_RUN_AS_NODE=1` turn the Statusky binary into a plain Node
+ *   interpreter: arbitrary code, running as an executable macOS has already identified
+ *   as Statusky — and so one it will let ask `safeStorage` for the webhook secret.
+ * - `EnableNodeOptionsEnvironmentVariable` and `EnableNodeCliInspectArguments` are the
+ *   same door by other routes: `NODE_OPTIONS=--require …`, or `--inspect` and a debugger
+ *   attached to the main process.
+ * - `GrantFileProtocolExtraPrivileges` gives `file://` pages powers no browser gives
+ *   them. The popover is served over `app://statusky` (src/main/protocol.ts), so no page
+ *   of ours is ever a `file://` page and the extra powers could only help somebody
+ *   else's.
+ *
+ * Nothing in the app leans on any of the four. It never forks a Node child process,
+ * which is what `RunAsNode` exists for; it never reads `NODE_OPTIONS`; and it reaches its
+ * own renderer bundle with `net.fetch(pathToFileURL(…))` from the main process inside a
+ * `protocol.handle`, which is Electron's own recipe for serving files once
+ * `GrantFileProtocolExtraPrivileges` is off. A development run is untouched by all of
+ * this: it runs the Electron in `node_modules`, and only the copy packager unzips is
+ * flipped.
+ *
+ * Two are switched on, and they work as a pair. `OnlyLoadAppFromAsar` stops Electron
+ * looking for an `app/` directory beside `app.asar`, so the asar is the only app it will
+ * run; `EnableEmbeddedAsarIntegrityValidation` checks that asar's header against the hash
+ * packager records — `ElectronAsarIntegrity` in `Info.plist` on macOS, a resource inside
+ * the executable on Windows — so an edited `app.asar` stops the app starting rather than
+ * running. On macOS the code signature already seals the asar; this is the second,
+ * Electron-level check, and it still holds after something has been let past
+ * Gatekeeper. Electron validates on macOS and Windows only, and packager records no hash
+ * for Linux, so there the fuse is left off rather than trusted to do nothing.
+ *
+ * `EnableCookieEncryption` stays off, and is written down so that it is a decision rather
+ * than an inherited default. With it on, Chromium will not open the cookie store until it
+ * has a Safe Storage key from the Keychain, an ad-hoc build gets that key through a prompt
+ * a windowless menu bar app has nowhere to show, and every WebSocket handshake waits on
+ * it forever. See "Electron fuses" in the README.
+ *
+ * `LoadBrowserProcessSpecificV8Snapshot` is for a feature this app does not use, and is
+ * off as shipped. `WasmTrapHandlers` lets V8 bounds-check WebAssembly memory with guard
+ * pages and a signal handler instead of a compare on every access; it is on as shipped,
+ * and stays on. Nothing here runs untrusted WebAssembly, and turning it off only makes
+ * whatever WebAssembly Chromium runs slower.
+ *
+ * `strictlyRequireAllFuses` makes `@electron/fuses` refuse to write a wire that has a fuse
+ * this list does not mention. The day an Electron upgrade adds a tenth, packaging stops
+ * and says so, rather than shipping whatever default Electron picked without anybody here
+ * having chosen it.
+ */
+export function packagedFuses(platform: string): FuseV1Config {
+  return {
+    version: FuseVersion.V1,
+    [FuseV1Options.RunAsNode]: false,
+    [FuseV1Options.EnableCookieEncryption]: false,
+    [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
+    [FuseV1Options.EnableNodeCliInspectArguments]: false,
+    [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: platform !== 'linux',
+    [FuseV1Options.OnlyLoadAppFromAsar]: true,
+    [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot]: false,
+    [FuseV1Options.GrantFileProtocolExtraPrivileges]: false,
+    [FuseV1Options.WasmTrapHandlers]: true,
+    strictlyRequireAllFuses: true
+  }
+}
+
+/** Packaging for macOS, whichever store it is for. */
+function isMac(platform: string): boolean {
+  return platform === 'darwin' || platform === 'mas'
+}
+
+/**
+ * Where an Electron packager has only just unzipped keeps its fuse wire. Nothing has been
+ * renamed yet, so the names are still Electron's own; on macOS `@electron/fuses` finds
+ * the framework binary inside the bundle by itself.
+ */
+function unzippedElectron(buildPath: string, platform: string): string {
+  if (isMac(platform)) return join(buildPath, 'Electron.app')
+  return join(buildPath, platform === 'win32' ? 'electron.exe' : 'electron')
+}
+
+/**
+ * Flip the fuses of the Electron packager has just unzipped into `buildPath`.
+ *
+ * This runs from `packageAfterExtract`, on the binary exactly as it came out of the zip:
+ * before packager has copied the app in, renamed the bundle or written `Info.plist`, so
+ * there is nothing of packager's for it to be sequenced against. The one thing it does
+ * break is the binary's own signature — rewriting bytes in a Mach-O invalidates the
+ * signature it shipped with, and on Apple silicon macOS kills a process whose signature
+ * does not verify. `osxSign` runs last of all and re-signs every binary in the bundle, so
+ * on a Mac that stale signature never leaves the build. That is why there is no
+ * `resetAdHocDarwinSignature` here, and why `@electron-forge/plugin-fuses` is not used: it
+ * re-signs ad hoc from `packageAfterCopy`, in the middle of packaging and before
+ * packager's own late writes to `Info.plist`, which is the ordering that once left local
+ * builds reporting `Info.plist=not bound`.
+ *
+ * `resigned` says whether that last signing pass will happen. Packaging for macOS where
+ * it will not — anywhere `codesign` does not exist — has nothing to put a valid
+ * signature back with, so it stops rather than producing a bundle that cannot start.
+ * Windows and Linux refuse nothing over a stale signature, and packager rewrites the
+ * Windows executable's resources after this anyway, before `windowsSign` signs it.
+ */
+export async function flipPackagedFuses(
+  buildPath: string,
+  platform: string,
+  resigned: boolean
+): Promise<void> {
+  if (isMac(platform) && !resigned) {
+    throw new Error(
+      'Refusing to package for macOS without signing the result: flipping the fuses ' +
+        "invalidates the Electron binary's own signature, and nothing but `codesign`, " +
+        'which only exists on a Mac, can replace it. Package the macOS build on macOS.'
+    )
+  }
+  await flipFuses(unzippedElectron(buildPath, platform), packagedFuses(platform))
+}
+
 const signWithDeveloperId = wantsDeveloperId()
 const osxSign = macSigningOptions(signWithDeveloperId)
 // Only a Developer ID build is notarizable; Apple will not take an ad-hoc one, and
@@ -413,9 +552,10 @@ const config: ForgeConfig = {
 
     // @electron/packager swaps this extension for the one the platform wants — .icns on
     // macOS, .ico on Windows — and does not convert anything, where electron-builder
-    // rendered both from build/icon.png. Neither file exists yet, so packager warns and
-    // ships Electron's own icon. Pointed at the stem regardless, so that generating
-    // build/icon.icns and build/icon.ico is all it takes to fix.
+    // rendered both from build/icon.png. So both containers are checked in beside it,
+    // written by `npm run icons` (scripts/gen-icons.mjs); without them packager warns and
+    // ships Electron's own icon. On macOS the bytes land in the bundle's existing
+    // `electron.icns`, which is the name `CFBundleIconFile` already gives.
     icon: join(root, 'build', 'icon'),
 
     asar: true,
@@ -446,6 +586,11 @@ const config: ForgeConfig = {
   },
 
   hooks: {
+    // The fuses, on the Electron packager has just unzipped and before anything else has
+    // touched it. It runs once per architecture. See `flipPackagedFuses`.
+    packageAfterExtract: async (_forgeConfig, buildPath, _electronVersion, platform) =>
+      flipPackagedFuses(buildPath, platform, osxSign !== undefined),
+
     // `out/` is packed exactly as it is, and nothing on the way here rebuilds it. A
     // build with development IPC wiring would refuse every IPC call once packaged, so
     // check the bundle itself, not `src/ipc`, which can be newer than `out/`.
@@ -501,15 +646,16 @@ const config: ForgeConfig = {
       ['linux']
     ),
 
-    // @reforged/maker-appimage is ESM-only, and this config is loaded by jiti into a
-    // CommonJS-shaped world. Forge resolves a maker named by string at the point it
-    // actually needs it, which is the one place an ESM-only package loads cleanly, so
-    // this one is never imported at the top of the file. Its config type is, because
-    // `import type` is erased before jiti sees it, and Forge types `config` as `any`.
-    {
-      name: '@reforged/maker-appimage',
-      platforms: ['linux'],
-      config: {
+    // Not one of Forge's own makers, and written against Forge 7: it declares
+    // `@electron-forge/maker-base` `^6 || ^7` as a dependency of its own, which would
+    // drag a second, older Forge tree in beside this one. The `overrides` entry in
+    // package.json hands it Forge 8's `maker-base` instead; all it takes from the base
+    // class is the config, `ensureFile` and the external-binary check, which Forge 8
+    // still has. Under Forge 7 it was named here by string, because it is ESM-only and
+    // Forge 7's world was CommonJS; Forge 8's makers are all ESM, so it is imported like
+    // the rest.
+    new MakerAppImage(
+      {
         options: {
           // As above: this maker takes its display name from Forge but still derives
           // the executable it looks for from `package.json`'s `name`.
@@ -518,12 +664,13 @@ const config: ForgeConfig = {
           mimeType: LINUX_MIME_TYPES,
           icon: join(root, 'build', 'icon.png')
         }
-      } satisfies MakerAppImageConfig
-    }
+      },
+      ['linux']
+    )
   ],
 
   publishers: [
-    new PublisherGithub({
+    new PublisherGitHub({
       // Must stay in step with `package.json`'s `repository` field: that is what
       // `update-electron-app` reads to find the feed, and update.electronjs.org only
       // serves public repositories.

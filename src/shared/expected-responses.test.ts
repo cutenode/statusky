@@ -15,11 +15,22 @@ describe('expectedResponses.json', () => {
    */
   it('holds each service to the words it actually uses', () => {
     expect(EXPECTED_RESPONSES).toMatchObject({
-      relay: { healthStatus: 'ok' },
+      relay: {
+        healthStatus: 'ok',
+        carriedHostStatuses: ['active', 'idle'],
+        hostNotFound: 'HostNotFound'
+      },
       firehose: { eventOp: 1, errorOp: -1, commitType: '#commit' },
-      jetstream: { greeting: 'Welcome to Jetstream', commitKind: 'commit' },
+      jetstream: {
+        greeting: 'Welcome to Jetstream',
+        commitKind: 'commit',
+        createOperation: 'create'
+      },
       spacedust: { source: 'app.bsky.feed.like:subject.uri', linkKind: 'link', liveOrigin: 'live' },
-      appView: { versionlessHealth: ['api.blacksky.community', 'appview.wsocial.eu'] },
+      appView: {
+        versionlessHealth: ['api.blacksky.community', 'appview.wsocial.eu'],
+        partialIndex: ['appview.wsocial.eu']
+      },
       dns: { noError: 0 },
       ufos: { statsCollection: 'app.bsky.feed.post' },
       slingshot: { profileType: 'app.bsky.actor.profile' },
@@ -39,7 +50,7 @@ describe('expectedResponses.json', () => {
   })
 
   it.each([
-    ['an empty string', { ...raw, relay: { healthStatus: '' } }],
+    ['an empty string', { ...raw, relay: { ...raw.relay, healthStatus: '' } }],
     ['a missing section', { ...raw, hydrant: undefined }],
     ['a string where a number belongs', { ...raw, dns: { noError: '0' } }],
     ['a fractional frame op', { ...raw, firehose: { ...raw.firehose, eventOp: 1.5 } }]

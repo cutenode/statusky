@@ -14,7 +14,8 @@ No account, no login, no API key: everything comes from the public AppView.
 ## What it does
 
 - **Lives in the menu bar.** No dock icon, no window management. Click the tray icon
-  for a popover; press `Esc` to dismiss it.
+  for a popover; press `Esc` to dismiss it — after closing whatever menu or edit it would
+  close first.
 - **Opens on what you have not read.** The popover has three tabs — **Timeline**,
   **Feed** and **Network** — and lands on Timeline: every source merged into
   one one-line-per-update chronology, with everything outstanding above the line and
@@ -158,6 +159,15 @@ which is wrong for a feed you dip into, so updates read on their own are remembe
 URI until the run below them is contiguous — at which point they fold into the cursor
 and are forgotten. The exceptions only ever cover the ragged edge above each cursor.
 
+**A cursor is a moment that has happened.** An update's date is whatever its author
+wrote, and an author's clock can be wrong or deliberately in the future; taken at its
+word, a post dated 2099 would sit at the top of the feed for good, silence every real
+post under it, and — read through — move the cursor somewhere nothing will ever reach
+again. So an AT Protocol post is dated no later than the moment the AppView indexed it,
+a pushed update no later than five minutes after it arrived (or by its arrival if it
+claims more), and no read cursor ever moves past the present. A cursor stored by an
+earlier version that already points into the future is brought back to now on launch.
+
 **Opening the Timeline catches you up.** That is what the icon is beating for: you click
 it because something is unread, and having looked, you have read it. It counts the
 popover being brought back to the front as well as the tab being opened, since for a menu
@@ -218,7 +228,8 @@ over IPC, and until some page has reported in the app assumes reduced motion. Be
 in that direction costs somebody a badge for the second before the page loads; being wrong
 in the other flashes an icon at ten hertz at somebody who asked the entire system not to.
 Neither degradation edits your setting, which starts working again the moment the machine
-can honour it.
+can honour it. The popover honours the preference too: lights that pulse or ping stay
+still, and panels change and scroll without animating.
 
 ## Pushed status updates
 
@@ -279,40 +290,54 @@ what your computer can actually reach. Statusky asks each service in the catalog
 same real questions [status.feeds.blue](https://status.feeds.blue) asks — Kuba Suder's
 page, which this is a port of, down to the checks and their wording:
 
-| Service       | What it is asked                                                                                                                                                                                  |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Relay         | `_health`, `com.atproto.sync.listHosts`, and a live `subscribeRepos` connection that must deliver a commit stamped within the last minute                                                         |
-| Jetstream     | Its greeting, and a live `subscribe` connection whose newest event must be stamped within the last minute                                                                                         |
-| Spacedust     | A live link stream, each link dated by the TID of the record that made it                                                                                                                         |
-| PDS           | `_health`, `describeServer`, `listRepos`, and a real `listRecords` read of the first active repository it names                                                                                   |
-| AppView       | `_health`; for each of six accounts a `getProfile`, a `resolveHandle` that must return that account's own DID, and a `getAuthorFeed`; and how far its index lags                                  |
-| Tangled       | The appview's static route and a real repository page; Bobbin's coverage, its event cursor and a record lookup; Hydrant; `tngl.sh` as a PDS; each knot's version and owner; each spindle's health |
-| pckt          | `/up`: the application, its database and its cache                                                                                                                                                |
-| Leaflet       | A published document's well-known route, a full-text search, and hourly, the newest document in a busy publication                                                                                |
-| Offprint      | `/up`, and a custom-domain publication lookup                                                                                                                                                     |
-| UFOs          | `/meta`, which is its own consumer cursor against the clock, and one collection's statistics                                                                                                      |
-| Constellation | `blue.microcosm.links.getBacklinks`, and whether the number of links it holds is still climbing                                                                                                   |
-| Slingshot     | `resolveHandle`, `getRecord` and `resolveMiniDoc`                                                                                                                                                 |
-| Discover feed | `getFeedSkeleton`                                                                                                                                                                                 |
-| For You       | Its `did:web` document, `getFeedSkeleton`, the site itself, and what Bluesky's AppView makes of the generator                                                                                     |
-| CDN           | Three real images, of which the first chunk is read                                                                                                                                               |
-| Internet      | GitHub's API, Cloudflare and Google DNS, and Amazon's echo endpoint                                                                                                                               |
+| Service       | What it is asked                                                                                                                                                                                                     |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Relay         | `_health`, `com.atproto.sync.listHosts`, and a live `subscribeRepos` connection that must deliver a commit stamped within the last minute                                                                            |
+| Jetstream     | Its greeting, and a live `subscribe` connection whose newest event must be stamped within the last minute; Bluesky's two and microcosm's two                                                                         |
+| Spacedust     | A live link stream, each link dated by the TID of the record that made it                                                                                                                                            |
+| PDS           | `_health`, `describeServer`, `listRepos`, a real `listRecords` read of the first active repository it names, and whether Bluesky's relay still carries it                                                            |
+| bsky.social   | `_health`, `describeServer`, and the OAuth metadata every app reads before sending someone there to sign in                                                                                                          |
+| AppView       | `_health`; for each of six accounts a `getProfile`, a `resolveHandle` that must return that account's own DID, and a `getAuthorFeed`; how far its index lags its peers; and whether it has indexed posts seconds old |
+| Tangled       | The appview's static route and a real repository page; Bobbin's coverage, its event cursor and a record lookup; Hydrant; `tngl.sh` as a PDS; each knot's version and owner; each spindle's health                    |
+| pckt          | `/up`: the application, its database and its cache, and how far its consumer has fallen behind; and a blog's publication lookup                                                                                      |
+| Leaflet       | A published document's well-known route, a full-text search, and hourly, the newest document in a busy publication                                                                                                   |
+| Offprint      | `/up`, and a custom-domain publication lookup                                                                                                                                                                        |
+| UFOs          | `/meta`, which is its own consumer cursor against the clock, and one collection's statistics                                                                                                                         |
+| Constellation | `blue.microcosm.links.getBacklinks`, and whether the number of links it holds is still climbing                                                                                                                      |
+| Slingshot     | `resolveHandle`, `getRecord` and `resolveMiniDoc`                                                                                                                                                                    |
+| PLC directory | `_health`, one DID document, and whether an operation has been written in the last five minutes                                                                                                                      |
+| Discover feed | `getFeedSkeleton`                                                                                                                                                                                                    |
+| For You       | Its `did:web` document, `getFeedSkeleton`, the site itself, and what Bluesky's AppView makes of the generator                                                                                                        |
+| CDN           | Three real images, of which the first chunk is read                                                                                                                                                                  |
+| Internet      | GitHub's API, Cloudflare and Google DNS, and Amazon's echo endpoint                                                                                                                                                  |
 
-Each service reads as **live**, **slow** (something took 15 seconds or more), **partial**
-or **down**, exactly as the page grades them, with the failing request's own words
-against it. Every request leaves from this machine and goes through Chromium's network
-stack, so it takes the same route a browser tab would — system proxy, certificate store
-and all — and measures your connection to each service rather than somebody else's.
+Each service reads as **live**, **slow**, **partial** or **down**, as the page grades them,
+with the failing request's own words against it; what counts as slow is the one place
+Statusky departs from it, below. Every request leaves from this machine and goes through
+Chromium's network stack, so it takes the same route a browser tab would — system proxy,
+certificate store and all — and measures your connection to each service rather than
+somebody else's.
 
 What each service is asked _about_ — the accounts, the feeds, the CDN's images, the Tangled
-repository, the Leaflet and Offprint documents — is other people's content, and any of it
-can be deleted out from under a check that then fails for reasons that have nothing to do
-with the service. So it is data rather than code: the defaults are
+repository, the pckt, Leaflet and Offprint documents — is other people's content, and any
+of it can be deleted out from under a check that then fails for reasons that have nothing
+to do with the service. So it is data rather than code: the defaults are
 `src/shared/probeTargets.json`, and a user can replace the whole document
 (`Settings.probeTargets`) without waiting for a release. The exact words each answer is held
-to live beside it, in `src/shared/expectedResponses.json`.
+to live beside it, in `src/shared/expectedResponses.json`. A replacement pckt or Offprint
+publication is looked up in its own record, through Slingshot, to find where it is served;
+only an `https` URL on a public hostname is followed, and if Slingshot cannot answer the
+check is left out rather than failed. A Tangled `goGetPath` is a path on `tangled.org` and
+nowhere else: one that would resolve to another host is refused.
 
-Seven things make that fit a program that runs all day rather than a page you open:
+The same document is where somebody running their own PDS adds it. **Your PDSes**, under
+Settings › Check targets, takes up to five hosts; each gets a row of its own at the top of
+the PDS panel, is asked everything the catalogue's PDSes are, and counts towards the tray
+like any core service, because it is the one the person who listed it cares about most.
+Edits in progress there are kept when you switch tabs or a notification opens the
+dashboard, until you save or discard them.
+
+Ten things make that fit a program that runs all day rather than a page you open:
 
 **The Internet group is a control.** When every one of those checks fails too, the
 problem is this machine's connection: Statusky says you are offline, judges nothing,
@@ -324,6 +349,7 @@ Then it measures everything again.
 **A failure has to be seen twice.** The first sighting books a re-check of that service
 alone twenty seconds later, so a real outage is confirmed in seconds while a single
 dropped request never reaches the tray or a notification. A recovery is believed at once.
+A sweep that starts while a re-check is waiting takes it along rather than cancelling it.
 
 **An AppView is judged against its peers, not the clock.** The page fails an AppView
 whose newest post from a few busy accounts is over fifteen minutes old; overnight, that
@@ -341,27 +367,91 @@ minutes without a post from one of them, and 95% of the time went less than ten.
 coarser than the bots: in a quiet stretch, a lag just past the fifteen minutes the check
 allows can go unseen for a sweep, where before it could not.
 
+So the finer measurement does not wait on anybody to post. Each sweep takes ten posts off
+Bluesky's Jetstream the moment they are created, gives every AppView ten seconds, and asks
+each for all ten in one `getPosts`. On 30 September 2026 Bluesky's, Blacksky's and
+Eurosky's AppViews had all but one or two of a sample within three seconds; the one or two
+never turned up, because some posts are deleted or taken down before anybody asks. So an
+AppView passes with half the sample, and one that finds fewer is behind by more than a
+hiccup. W Social's is left out of this one, since a sample of the whole network is mostly
+accounts it does not index by design. When no sample can be had — the Jetstream is down,
+or quiet — the AppViews go without the check rather than being blamed for a stream they
+do not own; the Jetstream's own row says what happened.
+
 **Where a service will tell you how far behind it is, that is the check.** A stalled
 index answers every request correctly from what it has already indexed, so a health
 endpoint cannot see it. A few services publish their own consumer cursor, and those are
 worth more than everything else on the row: UFOs' `/meta` names the microsecond it has
-reached, and Bobbin says whether it has finished backfilling. Where there is no cursor but there is a counter — Constellation's
-link count — Statusky watches it move instead, and only calls it stopped after three
-sweeps standing still, because one quiet ten minutes proves nothing.
+reached, pckt's `/up` names the seconds it is behind, and Bobbin says whether it has
+finished backfilling. pckt's `/up` reports its search index and failed jobs as well, and
+those are left alone: they read as unwell while pckt serves pages and keeps current. The
+PLC directory has no cursor, but its export will say whether anything has been written in
+the last five minutes, which is the difference between a directory that is resolving and
+one that is also still accepting new accounts and handle changes. Where there is no cursor
+but there is a counter — Constellation's link count — Statusky watches it move instead,
+and only calls it stopped after three sweeps standing still, because one quiet ten minutes
+proves nothing.
+
+**A PDS is asked about from the outside too.** A PDS can answer every request perfectly
+while nobody is listening to it: a relay that has throttled, banned or lost track of a host
+stops passing its commits on, and its users' posts stop appearing anywhere else. So each
+PDS row also asks Bluesky's relay, `bsky.network`, for `getHostStatus` on that host.
+`active` and `idle` pass; anything else, or never having heard of the host, fails the row
+as partial. It is the relay's opinion, though, and when the relay itself cannot answer, the
+check is left off the row entirely rather than failed — otherwise one relay outage would
+be filed as eighteen PDS outages, when the relay's own row already says what is wrong.
 
 **Hobby infrastructure does not get a vote.** Some of what is measured here publishes no
 uptime promise at all; `pds.rip` says "uptime: no guarantee, backups: none" on its own
 homepage. Those services are probed, shown and filed in the feed like any other, marked
 **community** on the dashboard — and left out of the header and the tray, because one
-abandoned sandbox should not speak for the network. W Social's AppView is graded the same
+abandoned sandbox should not speak for the network. The For You feed is one too: it is a
+single program on its author's PC at home behind a small rented VPS, which the author
+documents, and it promises no more than `pds.rip` does. W Social's AppView is graded the same
 way for now: it is in public beta and indexes only its own users and accounts verified by
 `bsky.app`, so an account you add to the checks may simply not be there — worth seeing,
 but not worth an amber tray.
 
+**You choose which panels speak for the network.** Everything is measured and filed in the
+feed, but only the panels ticked under Settings › Network checks › **Count in the menu
+bar** can turn the icon amber or red, or raise a banner when banners are set to core
+services. Relays, streams, AppViews, PDSes and the other infrastructure count by default;
+Tangled and the publishing apps do not, because an outage there says nothing to somebody
+who never uses them, and whoever does can tick them. A panel left out says **not counted**
+beside its title, and so does any row in it that is failing. The Network tab's summary
+names such a failure as not counted, rather than as something being re-checked.
+
+**A check target that has gone is not an outage.** The accounts the AppViews are asked
+about belong to other people, and when one is deleted, deactivated or suspended every
+AppView says so at once — which used to read as every AppView partly failing at once. Now
+the AppViews compare notes in each sweep. When at least two say plainly that an account
+is not there (a 4xx about it, never a timeout or a 5xx) and none says it is, its lookups
+are shown with their failure and a line saying why they are not held against anybody, and
+left out of each row's verdict. A handle the account no longer uses is caught the same
+way, and only that lookup excused. Settings marks the account as gone beside it, and the
+Network tab says so above the panels, with a link that opens the account list in
+Settings, until it is replaced. `api.bsky.app` and
+`public.api.bsky.app` are one index under two names, so they count as one witness, and W
+Social's AppView, which leaves most accounts out by design, has no say in what is missing.
+One AppView on its own — a re-check — never concludes anything new, and what an earlier
+comparison concluded stands until an AppView has the account again. When every listed
+account has gone, the newest-post comparison is excused too.
+
+**A service is slow for itself.** The page calls a service slow when something takes
+fifteen seconds, which against a thirty-second timeout almost never happens: a relay that
+answers in 300 ms and starts taking 4 s is something people feel, and fifteen seconds
+never sees it. So each service is also compared with its own recent history. Once it has
+answered six times, a sweep whose median latency is four times its usual one, and at least
+two seconds, reads as slow, and the row says on hover what it usually takes. Slow is still
+answering: it colours the dashboard and the uptime strip, and files nothing. When the
+whole machine's connection is slow, the Internet control rows turn slow along with
+everything else, which is the tell.
+
 **The dashboard shows the same rows every sweep.** Bluesky's PDS fleet is eighty-nine
 hosts and growing. Rather than rank that list and probe whoever is on top, the catalogue
 names a fixed sample, which is what lets an uptime strip mean something: it always
-measures the same service.
+measures the same service. The PDSes you add yourself are fixed in the same way, for as long
+as you list them.
 
 **The machine itself gets a say in the schedule.** A sweep is defensible every ten minutes
 on a desk and indefensible on a laptop at 9%, so the OS is asked rather than assumed. On
@@ -391,14 +481,16 @@ so a relay that answered in 200 ms is never shown as still being checked because
 is spending thirty seconds timing out — and a confirmed outage is filed as soon as the
 control checks vouch for the connection, rather than at the end.
 
-A sweep is about two hundred and twenty small requests and eleven brief stream
+A sweep is about two hundred and fifty small requests and fourteen brief stream
 connections, across fifty-odd services. No more than sixteen services are in flight at
 once — the cost of that ceiling is wall clock in the worst case, and what it buys is not
 opening a couple of hundred sockets in the same instant, which is hard on a laptop and
 rude to the small operators on the other end; one of the indexes here runs on a Raspberry
 Pi in its author's house. It runs every ten minutes by default (2 minutes to an hour,
-under Settings), when the machine wakes, and when the popover is opened on a dashboard
-older than two minutes.
+under Settings); when the machine wakes or the screen unlocks, if the last sweep is more
+than five minutes old (or older than the interval, if that is shorter) — on battery not
+until the battery's own interval has passed, and never under thermal pressure; and when
+the popover is opened on a dashboard older than two minutes.
 
 ## Ways in and out
 
@@ -442,7 +534,7 @@ script, `open` on macOS, `xdg-open` on Linux — brings the popover up on what i
 | `statusky://network`                     | The network dashboard                     |
 | `statusky://service/<id>`                | The dashboard, scrolled to one service    |
 
-`<id>` is a probe id — `relay:bsky.network`, `pds:bsky.social`, `appview:api.bsky.app` —
+`<id>` is a probe id — `relay:bsky.network`, `entryway:bsky.social`, `appview:api.bsky.app` —
 and is checked against the services this build actually measures before it reaches the
 popover; an unknown one opens the dashboard itself.
 
@@ -487,6 +579,16 @@ gesture rather than copy, switch app, paste.
 The page sends the update's URI and nothing else; every label is built from the state the
 main process already holds. The popover is pinned open for as long as the menu (or the
 share sheet opened from it) is up, because it otherwise hides the moment it loses focus.
+
+### Links go to the browser, and only web links go anywhere
+
+Whatever opens a link — a click or middle-click in a post, **Open in browser**, a clicked
+banner, or the popover itself trying to open a window or navigate — ends at one check in
+`src/main/external.ts`: `http` and `https` are handed to your browser, and nothing else is
+handed to the OS at all. `shell.openExternal` is the system's "open this with whatever
+handles it", and a `file:`, `smb:` or `search-ms:` link, or any installed app's own scheme,
+would otherwise be one click away in a post written by somebody you do not know. A link
+in a post that is not a web link is shown as plain text from the moment the post is read.
 
 ### A shortcut that summons the popover
 
@@ -659,8 +761,11 @@ Everything above argues its own case. This is the index.
 npm install && npm run dev
 ```
 
-Node 22.12+ (or 20.19+) is required. If Electron's binary did not download during
-install, run `node node_modules/electron/install.js`.
+Node 22.22.2+, 24.15+ or 26+ is required — the narrowest range any of the tooling
+declares, which is jsdom's, and the one `engines` in `package.json` repeats. Odd-numbered
+releases in between are outside it. `.tool-versions` pins 24.18.0, and CI runs that.
+If Electron's binary did not download during install, run
+`node node_modules/electron/install.js`.
 
 On macOS the first notification asks for permission as **Electron**, not Statusky: a
 development run is `node_modules/electron/dist/Electron.app`, and allowing Statusky in
@@ -679,11 +784,17 @@ npm run dist:mac
 `dist:win` and `dist:linux` are also available, and `npm run dist` builds for whatever
 platform you are on. Output lands in `release/`: the app bundle under
 `release/Statusky-<platform>-<arch>/`, the installers under `release/make/`. Each of
-these runs `npm run build` first, which typechecks, lints, and — the part that matters —
-regenerates production IPC wiring before rebuilding `out/`.
+these runs `npm run build` first, which regenerates production IPC wiring, type-checks,
+lints, checks formatting and runs the whole test suite before it rebuilds `out/`. A
+release is the one build that leaves your machine and nothing reviews it on the way out,
+so none of that is skippable from a script: `src/test/scripts.test.ts` fails any script
+that reaches `electron-forge package`, `make` or `release` without svelte-check, tsc,
+oxlint, `prettier --check` and an unfiltered `vitest run` all passing earlier in the same
+run. The same checks run in CI (`.github/workflows/ci.yml`) on every push to `main` and
+every pull request.
 
-`npm run package` stops at the app bundle and makes no installers. `npm run publish`
-makes them and uploads them to a **draft** GitHub release, so a mistaken publish is
+`npm run package` stops at the app bundle and makes no installers. `npm run release`
+makes them and uploads them to a **draft** GitHub release, so a mistaken release is
 retractable rather than already downloaded. A draft is also invisible to
 `update.electronjs.org` and to the release check, both of which ask only for the latest
 _published_ release — so nothing in the field updates itself, or is told to, until the
@@ -695,6 +806,27 @@ installers. Configuration lives in `forge.config.ts` (the name matters — that 
 Forge discovers), and `electron.vite.config.ts` is untouched by any of it. Before the
 bundle is sealed, a hook re-reads the copied `out/` and refuses to go on if it holds
 development IPC wiring; see "Packaging refuses development wiring" below.
+
+This is Forge 8, which is ESM throughout and needs Node 22.13 or newer — inside the
+range above. It renamed `electron-forge publish` to `electron-forge release` (the old
+name still works, with a deprecation warning, and is why the npm script is `release`
+too), renamed `make --skip-package` to `make --from-package`, and writes each DMG to
+`release/make/dmg/<arch>/`. Its config loader still reads `forge.config.ts` through jiti,
+so the file can use any TypeScript it likes. `@reforged/maker-appimage` is the one maker
+that is not Forge's own, and it still declares Forge 7's `@electron-forge/maker-base` as
+a dependency — which pulled a second, older and audit-failing Forge tree in beside this
+one. The `overrides` entry in `package.json` hands it Forge 8's instead. What it takes
+from the base class — its config, `ensureFile`, the external-binary check — is all still
+there, and it loads and constructs under Forge 8, but no AppImage has been built with it
+yet: that needs Linux.
+
+`npm audit` has one advisory left, and it is not fixable from here. The DMG maker uses
+`electron-installer-dmg`, which uses `appdmg`, which pins `image-size@^0.7` to read the
+DMG's background picture, and image-size before 2.0.3 can be sent into an infinite loop
+by a crafted ICNS file. The fixed 2.x line no longer reads a file path, which is all
+appdmg ever hands it, so forcing it in would break every DMG. The input is the PNG that
+ships inside `electron-installer-dmg` itself, read on the machine doing the build, so
+nothing an attacker controls ever reaches the parser. `npm audit --omit=dev` is clean.
 
 | Platform | Targets                                              |
 | -------- | ---------------------------------------------------- |
@@ -811,8 +943,7 @@ bound to the signature that created it, and an ad-hoc signature changes with eve
 build. macOS therefore asks for permission the first time each freshly packaged build
 reads it. A Developer ID build has a stable identity and does not.
 
-That prompt is why `EnableCookieEncryption` must stay off — see "Electron fuses" below,
-which is also why no fuse is flipped at all.
+That prompt is why `EnableCookieEncryption` must stay off — see "Electron fuses" below.
 
 With a Developer ID Application certificate the build signs and notarizes instead. The
 certificate has to already be in a keychain:
@@ -825,20 +956,39 @@ certificate has to already be in a keychain:
 | `APPLE_TEAM_ID`                                         | pins the designated requirement to the team          |
 
 electron-builder imported `CSC_LINK` into a throwaway keychain itself. Nothing in the
-Forge stack does, and there is no equivalent to reach for, so CI has to import the
-certificate before the build — `apple-actions/import-codesign-certs`, or a `security
-import` into a keychain of its own. `CSC_LINK` is still read, but only as a statement of
+Forge stack does, and there is no equivalent to reach for, so a release job has to import
+the certificate before the build — `apple-actions/import-codesign-certs`, or a `security
+import` into a keychain of its own. There is no such job yet: `.github/workflows/ci.yml`
+checks and tests, and packages nothing. `CSC_LINK` is still read, but only as a statement of
 intent: if the keychain has not been prepared, signing fails loudly rather than quietly
 producing an ad-hoc build and calling it a release.
 
 `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` notarizes too, as does
 `APPLE_KEYCHAIN` + `APPLE_KEYCHAIN_PROFILE`, but an API key is preferred.
 
-Entitlements are `build/entitlements.mac.plist` (app) and
-`build/entitlements.mac.inherit.plist` (helpers). Both allow JIT and unsigned
-executable memory, which V8 needs under the hardened runtime. Forge finds neither by
-convention the way electron-builder did, so `forge.config.ts` picks between them itself,
-per file signed.
+Entitlements are chosen by how the build is signed, not by which file is being signed,
+and every one of them is an exception to the hardened runtime — one more thing a signed
+process will put up with. So there are as few as the build can start with:
+
+| File                                 | Signed             | Grants                                    |
+| ------------------------------------ | ------------------ | ----------------------------------------- |
+| `build/entitlements.mac.plist`       | Developer ID       | `allow-jit`                               |
+| `build/entitlements.mac.adhoc.plist` | ad hoc, no Team ID | `allow-jit`, `disable-library-validation` |
+
+`allow-jit` is what V8 needs to compile JavaScript as it runs, in the app and in every
+helper, and it is the only exception Electron asks for — `@electron/osx-sign`'s own
+default entitlements are the same. The electron-builder-era files also granted unsigned
+executable memory, which V8 has not needed since `allow-jit` existed;
+`allow-dyld-environment-variables` on the helpers, which let anything that could set the
+process's environment load its own code into them through `DYLD_INSERT_LIBRARIES`; and
+`disable-library-validation` everywhere.
+
+That last one survives in exactly one place. Library validation admits a library signed
+by Apple or by the process's own Team ID, and an ad-hoc signature has no Team ID — so
+under the hardened runtime dyld refuses to map Electron Framework into an ad-hoc build
+("mapped file has no Team ID and is not a platform binary") and the app dies before it
+reaches the menu bar. A local build keeps the exception so that it starts at all; a
+Developer ID build, whose every binary carries the same Team ID, never has it.
 
 Check what a build actually produced with:
 
@@ -875,78 +1025,115 @@ from `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`. Signing run
 
 ### Electron fuses
 
-Statusky flips none of them. A packaged build ships whatever fuse wire Electron shipped,
-and `src/test/packaging.test.ts` fails if `forge.config.ts` ever grows a plugin that
-changes that. On Electron 44 the defaults are:
+A fuse is a byte in the Electron binary that switches a feature off before any of the
+app's own code runs, so it holds against things that code never gets the chance to
+refuse. Electron ships them set for compatibility, and `forge.config.ts` flips them on
+every packaged build:
 
-| Fuse                                    | Default |
-| --------------------------------------- | ------- |
-| `RunAsNode`                             | on      |
-| `EnableCookieEncryption`                | off     |
-| `EnableNodeOptionsEnvironmentVariable`  | on      |
-| `EnableNodeCliInspectArguments`         | on      |
-| `EnableEmbeddedAsarIntegrityValidation` | off     |
-| `OnlyLoadAppFromAsar`                   | off     |
-| `LoadBrowserProcessSpecificV8Snapshot`  | off     |
-| `GrantFileProtocolExtraPrivileges`      | on      |
+| Fuse                                    | Electron 44 ships | Statusky ships        |
+| --------------------------------------- | ----------------- | --------------------- |
+| `RunAsNode`                             | on                | **off**               |
+| `EnableCookieEncryption`                | off               | off                   |
+| `EnableNodeOptionsEnvironmentVariable`  | on                | **off**               |
+| `EnableNodeCliInspectArguments`         | on                | **off**               |
+| `EnableEmbeddedAsarIntegrityValidation` | off               | **on** (off on Linux) |
+| `OnlyLoadAppFromAsar`                   | off               | **on**                |
+| `LoadBrowserProcessSpecificV8Snapshot`  | off               | off                   |
+| `GrantFileProtocolExtraPrivileges`      | on                | **off**               |
+| `WasmTrapHandlers`                      | on                | on                    |
 
-Flipping a fuse means rewriting bytes inside the Electron binary, and on macOS that
-invalidates whatever code signature is on it. `@electron-forge/plugin-fuses` carries a
-`resetAdHocDarwinSignature` option for exactly that reason, and it runs in
-`packageAfterCopy` — before `@electron/packager` renames the bundle and writes
-`ElectronAsarIntegrity` into `Info.plist`. So the rewrite has to be sequenced against
-both `osxSign` and packager's own late writes, and getting the order wrong is how a build
-ends up reporting `Info.plist=not bound` and losing the Keychain access that keeps the
-webhook secret sealed. Leaving the wire alone removes the ordering problem instead of
-solving it: there is no rewrite, so there is nothing to re-sign, and `codesign --verify
---strict --deep` passes on a bundle packager signed last and touched no further.
+**What the defaults would cost.** With `RunAsNode`, `EnableNodeOptionsEnvironmentVariable`
+and `EnableNodeCliInspectArguments` on, anyone who can set environment variables for the
+process — `ELECTRON_RUN_AS_NODE=1`, `NODE_OPTIONS=--require …`, or `--inspect` and a
+debugger — can run arbitrary code inside a bundle macOS has already identified as
+Statusky, including code that asks `safeStorage` to hand back the webhook secret.
+`GrantFileProtocolExtraPrivileges` gives `file://` pages powers no browser gives them,
+and the popover is never a `file://` page — it is served over `app://statusky` — so those
+powers could only ever help somebody else's. Nothing in the app needs any of the four: it
+forks no Node child, reads no `NODE_OPTIONS`, and reaches its own renderer bundle with
+`net.fetch(pathToFileURL(…))` inside `protocol.handle`, which is Electron's own recipe
+for serving files once that last fuse is off. A development run is untouched: it runs the
+Electron in `node_modules`, and only the copy packager unzips is flipped.
 
-`EnableCookieEncryption` is the one that has actually cost this project something, and
-the default is the value it needs. With it on, Chromium will not open the cookie store
-until the browser process has fetched a Safe Storage key from the Keychain, and it will
-not send anything that consults a cookie until the store is open. A menu bar app has no
-window for a modal SecurityAgent prompt to belong to, and an ad-hoc signature changes
-with every package, so the prompt is raised, never answered, and the wait has no timeout.
-Measured on one packaged build with the fuse on: 171 of 181 checks passed and all ten
-stream checks timed out, because a WebSocket handshake reads cookies before it sends and
-the HTTP checks send `credentials: 'omit'`. With the fuse off, 181 of 181. The test above
-asserts this against the installed Electron binary rather than against the config, so an
-upgrade that changes the default fails on `npm install` rather than on somebody's Mac a
-release later.
+**The two that are switched on** work as a pair. `OnlyLoadAppFromAsar` makes `app.asar`
+the only app Electron will run, and `EnableEmbeddedAsarIntegrityValidation` checks that
+asar's header at boot against the hash packager records — `ElectronAsarIntegrity` in
+`Info.plist` on macOS, a resource in the executable on Windows — so an edited `app.asar`
+stops the app starting instead of running. The code signature already seals the asar on
+macOS; this is the second, Electron-level check, and it still holds after something has
+been let past Gatekeeper. Electron only validates on macOS and Windows, and packager
+records no hash for Linux, so on Linux the fuse is left off rather than trusted to do
+nothing.
 
-What the defaults cost is the three hardening fuses. `RunAsNode`,
-`EnableNodeOptionsEnvironmentVariable` and `EnableNodeCliInspectArguments` are all on,
-which means anyone who can set environment variables for the process can run arbitrary
-code inside a bundle macOS has already identified as Statusky — including code that asks
-`safeStorage` to hand back the webhook secret. That is a local-attacker-only exposure, and
-an attacker who can set your environment variables has other options, but it is a real
-one and it is worth naming rather than implying it away. `EnableEmbeddedAsarIntegrityValidation`
-being off costs the matching guarantee for the bundle's contents: packager still writes an
-`ElectronAsarIntegrity` hash into `Info.plist`, but nothing checks it at boot, so editing
-`app.asar` in a shipped bundle no longer stops it starting. The code signature still seals
-the asar, so on a Developer ID build Gatekeeper catches the edit — it is the second,
-Electron-level check that is absent. `OnlyLoadAppFromAsar` being off changes nothing in
-practice: packager produces an `app.asar` and no `app/` directory beside it for Electron
-to prefer.
+**When they are flipped.** Rewriting bytes in the binary invalidates the code signature
+it shipped with, and Apple silicon will not run a binary whose signature does not verify.
+`@electron-forge/plugin-fuses` deals with that by re-signing ad hoc in `packageAfterCopy`
+— in the middle of packaging, before `@electron/packager` renames the bundle and writes
+`ElectronAsarIntegrity` into `Info.plist` — which is how a build ends up reporting
+`Info.plist=not bound` and losing the Keychain access that keeps the webhook secret
+sealed. So the plugin is not used. `forge.config.ts` flips the wire itself in
+`packageAfterExtract`, on the Electron packager has only just unzipped, before anything
+of packager's has happened to it, and re-signs nothing: `osxSign` runs last of all and
+replaces every signature in the bundle, so the stale one never leaves the build, and
+`codesign --verify --strict --deep` passes as it did before. The one place that cannot
+work is packaging for macOS from Linux or Windows, where there is no `codesign` to sign
+with afterwards; the hook refuses that outright rather than produce a bundle that cannot
+start.
+
+**`EnableCookieEncryption` stays off**, and is written into the config as off rather
+than inherited, because it is the one that has actually cost this project something.
+With it on, Chromium will not open the cookie store until the browser process has
+fetched a Safe Storage key from the Keychain, and it will not send anything that consults
+a cookie until the store is open. A menu bar app has no window for a modal SecurityAgent
+prompt to belong to, and an ad-hoc signature changes with every package, so the prompt is
+raised, never answered, and the wait has no timeout. Measured on one packaged build with
+the fuse on: 171 of 181 checks passed and all ten stream checks timed out, because a
+WebSocket handshake reads cookies before it sends and the HTTP checks send
+`credentials: 'omit'`. With the fuse off, 181 of 181.
+
+**`WasmTrapHandlers` stays on.** It lets V8 bounds-check WebAssembly memory with guard
+pages and a signal handler instead of a comparison on every access. Nothing here runs
+untrusted WebAssembly, and turning it off would only make whatever WebAssembly Chromium
+runs slower.
+
+**Every fuse is decided.** The config sets all nine and passes `@electron/fuses` its
+`strictlyRequireAllFuses` flag, so the day an Electron upgrade adds a tenth, packaging
+stops and names it rather than shipping whatever default Electron picked.
+`src/test/packaging.test.ts` holds all of this in place: it checks the wire the config
+asks for on every platform, runs the hook against a copy of the wire cut out of the
+installed Electron and reads back what it wrote, hands it the same wire with a tenth fuse
+added and checks that nothing is written, and checks that a macOS package is refused where
+nothing will re-sign it.
+
+To see what a packaged build actually carries:
+
+```bash
+npx @electron/fuses read --app release/Statusky-darwin-arm64/Statusky.app
+```
 
 ## Development
 
 | Command                 | Purpose                                                                   |
 | ----------------------- | ------------------------------------------------------------------------- |
 | `npm run dev`           | Electron + Vite with hot reload                                           |
-| `npm test`              | Vitest suite (both projects)                                              |
+| `npm test`              | Vitest suite: all three projects — `node`, `node-development`, `renderer` |
 | `npm run test:node`     | Main process, preload bridge and shared logic, under both wiring branches |
 | `npm run test:renderer` | Svelte components and renderer state only                                 |
 | `npm run test:coverage` | Coverage, with a floor the suite must not fall below                      |
-| `npm run check`         | `svelte-check` + `tsc` + `oxlint`                                         |
+| `npm run check`         | `svelte-check` + `tsc` + `oxlint` + `prettier --check`                    |
+| `npm run build`         | `check`, then `npm test`, then `electron-vite build` into `out/`          |
 | `npm run format`        | Prettier                                                                  |
 | `npm run icons`         | Regenerate every icon from `scripts/gen-icons.mjs`                        |
-| `npm run fixture`       | Re-snapshot live status posts into the UI preview fixture                 |
+| `npm run fixture`       | Re-snapshot live status posts into the UI preview fixture, then format it |
 | `npm run generate:ipc`  | Regenerate `src/ipc/` from `schemas/statusky.eipc`                        |
 
 `generate:ipc` runs automatically before `dev`, `start`, `build`, `check` and every test script, so you
 should never need it by hand. It matters that it does: which branch of the origin
 validator gets compiled in is decided at generation time, not at runtime.
+
+`ELECTRON_RENDERER_URL`, which electron-vite sets to point the popover at its dev server,
+is honoured only by an unpackaged run: a packaged build always serves its own bundle over
+`app://statusky`, whatever the environment says.
 
 ### Previewing the UI in a browser
 
@@ -1012,7 +1199,9 @@ Three decisions shape everything else:
 **All network and disk access lives in the main process.** The renderer runs sandboxed
 with context isolation and no Node integration; it receives whole `AppState` snapshots
 over IPC and sends back narrow, individually-typed requests. There is no generic
-`invoke` escape hatch, and the renderer cannot drift from what is persisted. It is also
+`invoke` escape hatch, and the renderer cannot drift from what is persisted: a request
+main refuses is said beside the control that asked, and the control goes on showing what
+main has. It is also
 refused every permission Chromium can be asked for — camera, microphone, geolocation,
 renderer-side notifications — before the first page exists, because Chromium decides for
 itself when nothing says otherwise, and the popover has no business asking for any of
@@ -1107,8 +1296,9 @@ now stop that from happening quietly:
 - **Packaging refuses development wiring.** Forge's `packageAfterCopy` hook reads the
   compiled validator in the staged copy of `out/`, which is what actually gets packed
   and can be older than `src/ipc`. It stops unless it finds production wiring and
-  nothing else. `electron-forge make --skip-package` reuses an existing bundle without
-  packaging, so it skips this check too.
+  nothing else. `electron-forge make --from-package` and `release --from-make` reuse an
+  existing bundle without packaging, so they skip this check too — and the fuses with it,
+  though the bundle they reuse had both when it was packaged.
 
 To see which branch is compiled in right now:
 
@@ -1128,6 +1318,11 @@ npm run test:coverage # with the coverage floor enforced
 Every layer is covered — main process, preload bridge, shared logic, renderer state and
 every Svelte component — by running the real code against a harness of behavioural
 doubles rather than by mocking the module under test.
+
+CI (`.github/workflows/ci.yml`) runs `npm run check` and `npm test` on every push to
+`main` and every pull request. It runs on macOS, because some tests still assume the
+platform they were written on rather than pinning `process.platform` the way the tray's
+Linux tests do — the menu bar count, which only exists on macOS, is one.
 
 ### The harness
 
@@ -1191,6 +1386,14 @@ matters there is what an actual request gets back. The AppView double passes any
 that is not an XRPC call straight through to the real `fetch`, so a harness test can post
 a delivery to the app's own endpoint and watch it come out as a feed entry.
 
+Nothing else reaches a real socket, and `src/test/setup.ts` makes sure of it rather than
+trusting every test to remember. It wraps the global `fetch` and `WebSocket` in ones that
+refuse any http(s) or ws(s) address off the machine — loopback is let through, for the
+webhook receiver — and fails the test that tried, in `afterEach`, even when the app code
+under test caught the refusal and carried on. A test that wants the network has to install
+the fake AppView or hand the code a transport; `src/test/closed-network.test.ts` pins the
+guard itself.
+
 ### Both validator branches
 
 `npm test` generates production wiring, so on its own the suite would only ever meet
@@ -1220,4 +1423,4 @@ rebuilt into cursors that badge exactly the posts its unread list badged.
 
 ## Licence
 
-MIT
+MIT. See [`LICENSE`](LICENSE).

@@ -1,9 +1,16 @@
 import { safeStorage } from 'electron'
 import ElectronStore from 'electron-store'
+import { sortPosts } from '../shared/bsky'
 import { BUILTIN_ACCOUNTS, DEFAULT_SETTINGS } from '../shared/defaults'
-import { sanitizeProbeTargets } from '../shared/probe-targets'
+import { settingsSchema } from '../shared/schemas'
 import type { Account, Settings, StatusPost } from '../shared/types'
-import { EMPTY_READ, readStateFromUnread, type Cursors, type ReadState } from './state'
+import {
+  EMPTY_READ,
+  readStateFromUnread,
+  sanitizeSettings,
+  type Cursors,
+  type ReadState
+} from './state'
 import { generateWebhookSecret } from './webhook'
 
 export interface PersistedShape extends Record<string, unknown> {
@@ -98,7 +105,16 @@ export function createStore(): ElectronStore<PersistedShape> {
  */
 export function reconcile(store: ElectronStore<PersistedShape>): void {
   store.set('settings', migrateSettings(store.get('settings')))
-  store.set('read', migrateRead(store))
+  // Posts before cursors, and both against the same moment: a post read through a cursor
+  // dated in the future has to come back no later than the cursor does, or bringing the
+  // cursor back would make it unread again. Before `migrateRead` too, which reads them.
+  const now = Date.now()
+  store.set('posts', postsNotAhead(store.get('posts') ?? [], now))
+  // A config with no `read` key at all — deleted by hand, since the defaults always
+  // write one — starts from nothing read rather than stopping the app here.
+  const read = migrateRead(store) ?? EMPTY_READ
+  store.set('read', { ...read, cursors: notAhead(read.cursors, now) })
+  store.set('cursors', notAhead(store.get('cursors') ?? {}, now))
 
   // The webhook secret is deliberately not settled here, and nothing in this function
   // may read it. `safeStorage` is a synchronous trip into the OS credential store on
@@ -164,6 +180,13 @@ export function reconcile(store: ElectronStore<PersistedShape>): void {
  * count off wanted a quiet menu bar, and still does. `notifyOnlyIncidents` is gone
  * entirely; drop it rather than persist a key nothing reads. Schema 6 made the sound a
  * choice of three, and a stored boolean maps onto the two ends of it.
+ *
+ * Then everything is held to what the rest of the app assumes of it, because nothing
+ * after this point checks again. Each setting has to be a value of the right kind —
+ * see `keepValid` — and then within the ranges `sanitizeSettings` holds a change from
+ * Settings to: a poll interval of `0`, typed into the file by hand or left there by some
+ * older build, is an interval timer that fires as fast as it can, at somebody else's
+ * public API, for as long as the app runs.
  */
 function migrateSettings(stored: Settings | undefined): Settings {
   const {
@@ -195,11 +218,79 @@ function migrateSettings(stored: Settings | undefined): Settings {
 
   // An override that no longer validates — edited by hand, or written against a schema
   // this build does not share — must reach neither the probes nor the popover, whose
-  // state carries every setting and is validated whole on every push. It is dropped for
-  // the checked-in defaults, with a warning, rather than allowed to stop the app.
-  const probeTargets = sanitizeProbeTargets(rest.probeTargets)
+  // state carries every setting and is validated whole on every push. `sanitizeSettings`
+  // drops it for the checked-in defaults, with a warning, rather than let it stop the app.
+  return sanitizeSettings(
+    keepValid({ ...DEFAULT_SETTINGS, ...rest, trayUnreadStyle, notificationSound })
+  )
+}
 
-  return { ...DEFAULT_SETTINGS, ...rest, trayUnreadStyle, notificationSound, probeTargets }
+/**
+ * Every setting this build knows, as stored if it is still a value of the kind
+ * `settingsSchema` describes, and as its default if it is not.
+ *
+ * Field by field, so that one bad value costs the user that one setting rather than all
+ * of them. And done here, once, because the alternative is finding out later: the
+ * popover's state carries every setting and is validated whole on every push, so a
+ * single field of the wrong type — a string where a number goes, a panel this build has
+ * never heard of — would leave the popover with no state at all. Keys this build does
+ * not know are left alone, as they always have been: a newer build may want them back.
+ */
+function keepValid(settings: Settings): Settings {
+  const kept: Settings = { ...settings }
+  // The schema's keys are `Settings`' keys: src/shared/schemas.ts asserts as much.
+  for (const key of Object.keys(settingsSchema.shape) as (keyof Settings)[]) {
+    // The override has a sanitiser of its own, which says what is wrong with it.
+    if (key === 'probeTargets' || settingsSchema.shape[key].safeParse(kept[key]).success) continue
+    console.warn(`The saved setting ${key} is not valid, so its default is in use instead.`)
+    Object.assign(kept, { [key]: DEFAULT_SETTINGS[key] })
+  }
+  return kept
+}
+
+/**
+ * The cursors, with any dated after `now` brought back to `now`.
+ *
+ * A cursor says everything from that source up to that moment has been read, or
+ * announced, and earlier builds took the moment from a post's own `createdAt` — which
+ * the author's client writes, and can date in the future: a clock set wrong, local time
+ * with a `Z` on the end. *Mark everything older as read* on a post dated 2099 left that
+ * source's read cursor in 2099, so every real update after it arrived already read; the
+ * notification cursor the same, and every banner after it never raised. This build no
+ * longer writes one, but the ones those builds wrote are still on disk, and nothing else
+ * would ever bring them back. A cursor that does not parse is left as it is: it compares
+ * as no moment at all, which is how everything else already reads it.
+ */
+function notAhead(cursors: Cursors, now: number): Cursors {
+  const latest = new Date(now).toISOString()
+  return Object.fromEntries(
+    Object.entries(cursors).map(([did, at]) => [did, Date.parse(at) > now ? latest : at])
+  )
+}
+
+/**
+ * The cached posts, with any dated after `now` brought back: to the moment it was
+ * indexed if that is no later than `now`, and to `now` otherwise. Re-sorted if any moved.
+ *
+ * The cache's half of `notAhead`. Earlier builds kept a post's `createdAt` as its author
+ * wrote it, so a post dated 2099 sits at the top of the feed until 2099, and with its
+ * source's cursors brought back to the present it would read as unread again. The index
+ * time is the rule `normalizePost` now applies to everything it fetches — a post cannot
+ * have been made after the AppView first saw it — so a polled post brought back here is
+ * dated exactly as fetching it again would date it, and the next poll's copy, which
+ * replaces it by URI, changes nothing. A webhook post's index time is when it reached this
+ * machine, and it is never fetched again, so this is the only thing that will ever fix it.
+ */
+function postsNotAhead(posts: StatusPost[], now: number): StatusPost[] {
+  let moved = false
+  const kept = posts.map((post) => {
+    if (!(Date.parse(post.createdAt) > now)) return post
+    moved = true
+    const indexed = Date.parse(post.indexedAt)
+    const createdAt = indexed <= now ? post.indexedAt : new Date(now).toISOString()
+    return { ...post, createdAt }
+  })
+  return moved ? sortPosts(kept) : posts
 }
 
 /** Rebuild schema 3's flat `unread` list as read cursors, and drop the old key. */
@@ -214,7 +305,8 @@ function migrateRead(store: ElectronStore<PersistedShape>): ReadState {
   const unread = Array.isArray(stored)
     ? stored.filter((uri: unknown): uri is string => typeof uri === 'string')
     : []
-  const read = readStateFromUnread(store.get('posts') ?? [], unread)
+  // `reconcile` has written `posts` by now, even into a config that had none.
+  const read = readStateFromUnread(store.get('posts'), unread)
   // Schema 3's key has no reader left; leave nothing behind to drift.
   store.delete('unread' as keyof PersistedShape & string)
   return read

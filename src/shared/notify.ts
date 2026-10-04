@@ -1,4 +1,5 @@
-import { SERVICES, isCore, isProbeSource, probeServiceId } from './network'
+import { isCounted, isProbeSource, probeServiceId, servicesFor } from './network'
+import { effectiveProbeTargets } from './probe-targets'
 import type {
   Account,
   AwayBehaviour,
@@ -144,9 +145,19 @@ export function presetOf(severities: readonly Severity[]): NotifyPreset | null {
 
 // ------------------------------------------------------------------ what
 
-function probeTier(serviceId: string | null): 'core' | 'community' {
-  const service = serviceId ? SERVICES.find((s) => s.id === serviceId) : undefined
-  return service && !isCore(service) ? 'community' : 'core'
+/**
+ * Whether a measured service counts for this user, by the same rule the header and the
+ * tray use: core, and in a panel they have kept in. Looked up among the rows their own
+ * targets make, so a PDS they added themselves is found like any other. A service that
+ * is not among them at all — a feed since taken off the list — is given the benefit of
+ * the doubt, as it always was.
+ */
+function counts(serviceId: string | null, settings: Settings): boolean {
+  if (!serviceId) return true
+  const service = servicesFor(effectiveProbeTargets(settings.probeTargets)).find(
+    (s) => s.id === serviceId
+  )
+  return !service || isCounted(service, settings.countedProbeGroups)
 }
 
 /** Whether follow-ups for this source wait for the incident they follow. */
@@ -168,7 +179,7 @@ export function wantsBanner(post: StatusPost, account: Account, settings: Settin
     const serviceId = probeServiceId(post)
     switch (settings.notifyProbeScope) {
       case 'core':
-        if (probeTier(serviceId) !== 'core') return false
+        if (!counts(serviceId, settings)) return false
         break
       case 'pinned':
         if (!serviceId || !settings.pinnedServices.includes(serviceId)) return false

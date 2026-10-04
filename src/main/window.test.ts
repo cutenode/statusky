@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BrowserWindow, app, dialog, openedExternally, screen } from '../test/electron'
 import { flush, withPlatform } from '../test/harness'
-import { followDisplayChanges, PopoverWindow } from './window'
+import { devServerUrl, followDisplayChanges, PopoverWindow } from './window'
 
 const TRAY_BOUNDS = { x: 900, y: 0, width: 24, height: 24 }
 
@@ -116,6 +116,34 @@ describe('create', () => {
     const { window } = popoverWithWindow()
     expect(window.loaded).toEqual([{ url: 'app://statusky/index.html' }])
   })
+
+  // Anything that can set the environment of a shipped app could otherwise put a page of
+  // its own in a window that looks exactly like Statusky's.
+  it('ignores a dev server URL in a packaged build', () => {
+    app.isPackaged = true
+    process.env.ELECTRON_RENDERER_URL = 'https://attacker.test/'
+    const { window } = popoverWithWindow()
+    expect(window.loaded).toEqual([{ url: 'app://statusky/index.html' }])
+  })
+})
+
+describe('devServerUrl', () => {
+  it('is the dev server electron-vite named, when running from source', () => {
+    process.env.ELECTRON_RENDERER_URL = 'http://localhost:5173'
+    expect(devServerUrl()).toBe('http://localhost:5173')
+  })
+
+  it('is nothing when none was named, or an empty one was', () => {
+    expect(devServerUrl()).toBeNull()
+    process.env.ELECTRON_RENDERER_URL = ''
+    expect(devServerUrl()).toBeNull()
+  })
+
+  it('is nothing in a packaged build, whatever the environment says', () => {
+    app.isPackaged = true
+    process.env.ELECTRON_RENDERER_URL = 'http://localhost:5173'
+    expect(devServerUrl()).toBeNull()
+  })
 })
 
 /**
@@ -154,6 +182,34 @@ describe('navigation containment', () => {
 
     expect(event.preventDefault).toHaveBeenCalled()
     expect(openedExternally).toEqual(['https://evil.test/'])
+  })
+
+  /**
+   * A middle click on a link in a post reaches main as a popup request without passing
+   * through the page's click handler, carrying whatever scheme the post's author wrote.
+   */
+  it('denies a popup to anywhere but the web without handing it to the OS', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { window } = popoverWithWindow()
+
+    const result = window.webContents.windowOpenHandler?.({ url: 'smb://attacker.test/share' })
+
+    expect(result).toEqual({ action: 'deny' })
+    expect(openedExternally).toEqual([])
+    expect(warn).toHaveBeenCalled()
+  })
+
+  it('cancels navigation to anywhere but the web without handing it to the OS', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { window } = popoverWithWindow()
+    const url = 'file:///Applications/Calculator.app'
+    const event = { preventDefault: vi.fn(), url }
+
+    window.webContents.emit('will-navigate', event, url)
+
+    expect(event.preventDefault).toHaveBeenCalled()
+    expect(openedExternally).toEqual([])
+    expect(warn).toHaveBeenCalled()
   })
 
   it('allows a reload of the page it is already on', () => {

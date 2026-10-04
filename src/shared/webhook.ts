@@ -13,10 +13,12 @@
  *
  * The payload is remote input from a URL the user has published, so nothing in it is
  * trusted: unknown shapes return null, unknown statuses fall back to classifying the
- * prose the way an AT Protocol post is classified, and every string that reaches the
- * UI is length-capped.
+ * prose the way an AT Protocol post is classified, every string that reaches the UI is
+ * length-capped, every link is held to `safeHttpUrl`, and no timestamp may run ahead of
+ * the delivery by more than `MAX_CLOCK_SKEW_MS`.
  */
 import { isProbeSource } from './network'
+import { safeHttpUrl } from './richtext'
 import { classifySeverity } from './status'
 import type { Account, RichSegment, Severity, StatusPost } from './types'
 
@@ -208,31 +210,40 @@ function str(value: unknown, max: number): string {
   return typeof value === 'string' ? value.slice(0, max).trim() : ''
 }
 
-/** Keep only absolute http(s) URLs: `Host.openExternal` refuses anything else anyway. */
-export function safeHttpUrl(value: unknown): string | null {
-  if (typeof value !== 'string' || !value) return null
-  try {
-    const parsed = new URL(value)
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
-    return parsed.toString()
-  } catch {
-    return null
-  }
-}
-
 /** The hostname of an already-validated URL. */
 function hostOf(url: string | null): string | null {
   return url === null ? null : new URL(url).hostname
 }
 
-/** Normalise a timestamp to ISO, or null when it is missing or unparseable. */
-function isoOrNull(value: unknown): string | null {
+/**
+ * How far past the moment a delivery arrived an update in it may be dated.
+ *
+ * A status page's clock and this machine's need not agree, and an update stamped a
+ * minute after it reached us is two clocks disagreeing and nothing else — it keeps its
+ * own time, so the updates in one delivery stay in the order their author put them in.
+ * But the timestamp is the sender's to choose. An update dated 2099 would sit at the top
+ * of the feed until then, push the rest of the feed out of the post cap a few dozen at a
+ * time, and carry any cursor that is moved onto it — the source's notification cursor,
+ * and through *Mark this and everything older as read* every source's read cursor —
+ * into a future where nothing is ever news again. Past this allowance a timestamp is
+ * taken to be a lie, and the update is dated when it arrived, which is the one moment
+ * this machine actually knows about.
+ */
+export const MAX_CLOCK_SKEW_MS = 5 * 60_000
+
+/**
+ * Normalise a timestamp to ISO, or null when it is missing or unparseable. One that is
+ * further ahead of `receivedAt` than `MAX_CLOCK_SKEW_MS` becomes `receivedAt`.
+ */
+function isoOrNull(value: unknown, receivedAt: string): string | null {
   if (typeof value !== 'string' && typeof value !== 'number') return null
   // Checked on the Date rather than the number: a finite number can still lie outside
   // the range a Date holds, and `toISOString` throws on one of those rather than
   // answering, which would take the whole delivery down with it.
   const date = new Date(typeof value === 'number' ? value : Date.parse(value))
-  return Number.isNaN(date.getTime()) ? null : date.toISOString()
+  const time = date.getTime()
+  if (Number.isNaN(time)) return null
+  return time > Date.parse(receivedAt) + MAX_CLOCK_SKEW_MS ? receivedAt : date.toISOString()
 }
 
 /** Statuses arrive in assorted casing and with spaces or underscores between words. */
@@ -255,9 +266,10 @@ const ENTITIES: Record<string, string> = {
 
 function decodeEntities(text: string): string {
   return text.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (match, name: string) => {
-    const direct = ENTITIES[name.toLowerCase()]
-    if (direct) return direct
     const lower = name.toLowerCase()
+    // Own keys only: `&constructor;` is not an entity, whatever the prototype says.
+    const direct = Object.hasOwn(ENTITIES, lower) ? ENTITIES[lower] : undefined
+    if (direct) return direct
     const numeric = lower.startsWith('#x')
       ? Number.parseInt(name.slice(2), 16)
       : lower.startsWith('#')
@@ -493,7 +505,7 @@ function parseIncident(
   const incidentId = str(incident.id, MAX_NAME)
   const name = str(incident.name, MAX_NAME)
   const url = safeHttpUrl(incident.url)
-  const openedAt = isoOrNull(incident.created_at) ?? receivedAt
+  const openedAt = isoOrNull(incident.created_at, receivedAt) ?? receivedAt
   const fallback = table[statusKey(incident.status)]
 
   const updates = updatesOf(incident)
@@ -507,7 +519,7 @@ function parseIncident(
         title: name,
         body: '',
         severity: fallback ?? classifySeverity(name),
-        createdAt: isoOrNull(incident.updated_at) ?? openedAt,
+        createdAt: isoOrNull(incident.updated_at, receivedAt) ?? openedAt,
         url,
         receivedAt
       })
@@ -528,7 +540,7 @@ function parseIncident(
         // The status field is the page author naming the stage, which beats guessing
         // it from prose — but an unknown value should not silently become `update`.
         severity: status ?? fallback ?? classifySeverity(body || name),
-        createdAt: isoOrNull(update.created_at) ?? openedAt,
+        createdAt: isoOrNull(update.created_at, receivedAt) ?? openedAt,
         url,
         receivedAt
       })
@@ -552,7 +564,7 @@ function parseComponent(
   if (!isComponentStatus(status)) return []
   const severity = COMPONENT_SEVERITY[status]
 
-  const createdAt = isoOrNull(update.created_at) ?? receivedAt
+  const createdAt = isoOrNull(update.created_at, receivedAt) ?? receivedAt
   return [
     makeWebhookPost({
       source,

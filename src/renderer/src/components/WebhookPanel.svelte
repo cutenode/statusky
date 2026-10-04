@@ -4,23 +4,30 @@
   import { Separator } from '$lib/components/ui/separator'
   import { Switch } from '$lib/components/ui/switch'
   import { app } from '$lib/app-state.svelte'
+  import { Refusals } from '$lib/requests.svelte'
   import { cn } from '$lib/utils'
   import { relativeTime } from '@shared/time'
   import Check from '@lucide/svelte/icons/check'
   import Copy from '@lucide/svelte/icons/copy'
   import RefreshCw from '@lucide/svelte/icons/refresh-cw'
+  import Refused from './Refused.svelte'
 
   let { now }: { now: number } = $props()
 
   const webhook = $derived(app.webhook)
   const enabled = $derived(app.settings.webhookEnabled)
 
+  /** Why main refused what each control here last asked for, said beside it. */
+  const refusals = new Refusals()
+
   /** Shown next to the button for a moment, because a copy has no other evidence. */
   let copied = $state(false)
   let copyTimer: ReturnType<typeof setTimeout> | undefined
 
+  /** Said only once main has copied it: a copy that failed is said as a failure. */
   async function copy(url: string): Promise<void> {
-    await app.copyText(url)
+    const outcome = await refusals.track('copy', app.copyText(url))
+    if (!outcome.ok) return
     copied = true
     clearTimeout(copyTimer)
     copyTimer = setTimeout(() => (copied = false), 2000)
@@ -29,19 +36,25 @@
   /**
    * Commit the port on blur or Enter rather than on every keystroke: each change
    * rebinds a socket, and typing "8080" would walk through three doomed ports first.
+   *
+   * Main keeps a port inside the range it can bind, so what lands may not be what was
+   * typed, and a refusal lands nothing. Either way the box goes back to the port in
+   * force once main has answered — which it would not do by itself whenever the setting
+   * had not moved, leaving a port on screen that nothing is listening on.
    */
-  function commitPort(event: Event & { currentTarget: HTMLInputElement }): void {
+  async function commitPort(event: Event & { currentTarget: HTMLInputElement }): Promise<void> {
     const input = event.currentTarget
     const port = Number(input.value)
     // An empty or nonsensical box is someone mid-edit, not a request for port 0.
     if (!input.value.trim() || !Number.isFinite(port) || port <= 0) return
     if (port === app.settings.webhookPort) return
-    void app.patchSettings({ webhookPort: port })
+    await refusals.track('port', app.patchSettings({ webhookPort: port }))
+    input.value = String(app.settings.webhookPort)
   }
 
   function onPortKey(event: KeyboardEvent & { currentTarget: HTMLInputElement }): void {
     if (event.key !== 'Enter') return
-    commitPort(event)
+    void commitPort(event)
     event.currentTarget.blur()
   }
 
@@ -74,12 +87,16 @@
     </div>
     <div class="shrink-0">
       <Switch
-        checked={enabled}
-        onCheckedChange={(checked) => void app.patchSettings({ webhookEnabled: checked })}
+        bind:checked={
+          () => enabled,
+          (checked) =>
+            void refusals.track('enabled', app.patchSettings({ webhookEnabled: checked }))
+        }
         aria-label="Enable the webhook receiver"
       />
     </div>
   </div>
+  <Refused text={refusals.of('enabled')} />
 
   {#if enabled}
     <div class="pb-2">
@@ -126,6 +143,7 @@
             {/if}
           </Button>
         </div>
+        <Refused class="pt-1 pb-0" text={refusals.of('copy')} />
 
         <p class="selectable mt-1.5 text-[11px] leading-snug text-muted-foreground">
           Paste this into a status page's webhook subscription — for example
@@ -144,12 +162,13 @@
             variant="ghost"
             size="sm"
             class="shrink-0 text-muted-foreground"
-            onclick={() => void app.regenerateWebhookSecret()}
+            onclick={() => void refusals.track('secret', app.regenerateWebhookSecret())}
           >
             <RefreshCw class="size-3.5" />
             New secret
           </Button>
         </div>
+        <Refused class="pt-1 pb-0" text={refusals.of('secret')} />
       {/if}
     </div>
 
@@ -169,9 +188,10 @@
         max="65535"
         value={app.settings.webhookPort}
         aria-label="Webhook port"
-        onchange={commitPort}
+        onchange={(event) => void commitPort(event)}
         onkeydown={onPortKey}
       />
     </div>
+    <Refused text={refusals.of('port')} />
   {/if}
 </section>

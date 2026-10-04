@@ -69,7 +69,7 @@ describe('the collapsed row', () => {
   it('says nothing alarming about a service while offline', async () => {
     const { container } = await row({ state: 'down' }, { offline: true })
     expect(verdict(container)).toBe('No connection')
-    expect(container.querySelector('.animate-ping')).toBeNull()
+    expect(container.querySelector('[class*="animate-ping"]')).toBeNull()
   })
 
   it('still shows the control checks failing while offline: they are the evidence', async () => {
@@ -249,6 +249,44 @@ describe('the open row', () => {
   })
 })
 
+describe('a check whose target has gone', () => {
+  const gone =
+    'No AppView has this account any more: it was deleted, deactivated or suspended. Replace it in Settings'
+  const checks = [
+    makeCheck({ label: '_health', durationMs: 80 }),
+    makeCheck({
+      label: 'getProfile',
+      ok: false,
+      error: 'HTTP 400 · Profile not found',
+      durationMs: 60,
+      excused: gone
+    })
+  ]
+
+  it('shows the failure, says why it is not held against the service, and counts it apart', async () => {
+    const { container } = await row({ checks, state: 'live', latencyMs: 80 }, { expanded: true })
+    const item = container.querySelectorAll('li')[1]!
+    expect(item.querySelector('[data-failure]')!.className).toContain('text-muted-foreground')
+    expect(item.querySelector('[data-excused]')!.textContent!.trim()).toBe(gone)
+    expect(container.textContent).toContain('1 of 1 passed · 1 excused')
+    expect(verdict(container)).toBe('80\u202Fms')
+  })
+})
+
+describe('a service slow for itself', () => {
+  it('says what it usually answers in', async () => {
+    const history = Array.from({ length: 8 }, (_, n) => ({
+      at: `2026-01-01T11:${String(n).padStart(2, '0')}:00Z`,
+      state: 'live' as const,
+      latencyMs: 300
+    }))
+    const { container } = await row({ state: 'slow', latencyMs: 4_100, history })
+    const shown = container.querySelector('[data-verdict]')!
+    expect(shown.textContent!.trim()).toBe('Slow · 4.1\u202Fs')
+    expect(shown.getAttribute('title')).toBe('Usually 300\u202Fms')
+  })
+})
+
 describe('the tiers', () => {
   it('marks a community service, and says why its outage is not counted', async () => {
     const { container, getByText } = await row(
@@ -280,6 +318,15 @@ describe('the tiers', () => {
   ])('says the same of %s', async (_name, service, text, tone) => {
     const { getByText } = await row({ id: 'pds:pds.rip', ...service }, { expanded: true })
     expect(getByText(text).className).toContain(tone)
+  })
+
+  it('says a core service in a panel left out of the menu bar is not counted', async () => {
+    const { container, queryByText } = await row(
+      { id: PDS, state: 'down', condition: 'down', since: '2026-01-01T11:00:00Z' },
+      { expanded: true, counted: false }
+    )
+    expect(container.textContent).toContain('Unreachable for 1 hour · not counted in the menu bar')
+    expect(queryByText('community')).toBeNull()
   })
 
   it('leaves the network proper unmarked', async () => {

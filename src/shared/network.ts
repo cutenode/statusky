@@ -55,16 +55,37 @@ export const CATALOGUE = {
     'relay3.fr.hose.cam',
     'relay.fire.hose.cam',
     'relay2.fire.hose.cam',
-    // W Social's relay, also stock `indigo`. It carries the whole network, not only W's PDS.
+    // W Social's relay, also stock `indigo`. It carries the whole network, but not by
+    // crawling it: its host list is W Social's own PDS and `bsky.network`, so everything
+    // else reaches it through Bluesky's relay, and an outage there is an outage here too.
     'relay.wsocial.eu'
   ],
+  /**
+   * The relay each PDS is asked about with `com.atproto.sync.getHostStatus`: whether it
+   * is still subscribed to that host, and so whether that PDS's commits reach the rest
+   * of the network. Bluesky's own, as the relay a PDS can least afford to be dropped by.
+   */
+  hostStatusRelay: 'bsky.network',
   /**
    * Jetstream carries the same commits as the firehose as plain JSON, with a top-level
    * `time_us`: no CAR or CBOR to decode, one integer to compare against the clock.
    * `jetstream1.us-east` is here specifically because UFOs consumes it, so its lag
    * explains UFOs' lag.
    */
-  jetstreams: ['jetstream1.us-east.fire.hose.cam', 'jetstream2.fr.hose.cam'],
+  jetstreams: [
+    // Bluesky's own, which most bots, feeds and hobby apps consume. One per region.
+    'jetstream1.us-east.bsky.network',
+    'jetstream2.us-west.bsky.network',
+    'jetstream1.us-east.fire.hose.cam',
+    'jetstream2.fr.hose.cam'
+  ],
+  /**
+   * Where the AppViews' indexing check gets its posts, and how many. A handful of posts
+   * created in the last few seconds, taken straight off a Jetstream, are what each
+   * AppView is then asked for with one `getPosts`: a measurement of how far behind its
+   * indexer is in seconds, which no account's newest post can give.
+   */
+  indexSample: { jetstream: 'jetstream1.us-east.bsky.network', size: 10 },
   appViews: [
     'api.bsky.app',
     'public.api.bsky.app',
@@ -80,6 +101,19 @@ export const CATALOGUE = {
    * where a gap it chose does not hold the tray amber. See `ProbeTier`.
    */
   communityAppViews: ['appview.wsocial.eu'],
+  /**
+   * AppViews that are another AppView's index under a second name, mapped to the host
+   * whose index it is. `public.api.bsky.app` is the cached public face of `api.bsky.app`:
+   * both are measured, because either can fail on its own, but what they say about an
+   * account is one index talking. See `TargetCensus`.
+   */
+  sharedIndexes: { 'public.api.bsky.app': 'api.bsky.app' },
+  /**
+   * Bluesky's entryway: where every account on Bluesky's own PDSes signs in, refreshes
+   * its session and is sent for OAuth. It is not one of those PDSes, and none of their
+   * checks reach it, so it is a row of its own.
+   */
+  entryway: 'bsky.social',
   /**
    * Probed directly, every sweep: the independent providers' PDSes, then a hand-kept
    * sample of Bluesky's fleet, which is 89 hosts and growing. Keeping these fixed means
@@ -132,6 +166,12 @@ export const CATALOGUE = {
   ],
   cdnHosts: ['cdn.bsky.app'],
   /**
+   * The PLC directory, where every `did:plc` resolves. Account creation, handle changes,
+   * PDS migrations and every OAuth sign-in, which resolves the DID to find the PDS, go
+   * through it. The most central service in the Atmosphere.
+   */
+  plc: 'plc.directory',
+  /**
    * Community and sandbox PDSes. Real, federated, and explicitly best-effort — `pds.rip`
    * publishes "uptime: no guarantee, backups: none" — so they are graded at the
    * `community` tier and never reach the tray. See `ProbeTier`.
@@ -160,7 +200,11 @@ export const CATALOGUE = {
   },
   /** Publishing apps, which answer on `/up` rather than `/xrpc/_health`. */
   apps: {
-    pckt: 'pckt.blog',
+    pckt: {
+      host: 'pckt.blog',
+      /** A blog on pckt's own subdomains, whose well-known route resolves out of the database. */
+      publicationHost: 'notes.pckt.blog'
+    },
     leaflet: {
       host: 'leaflet.pub',
       /** What the full-text search is asked for: the app's own name always finds something. */
@@ -226,14 +270,31 @@ function define(
   return { id: `${kind}:${host}`, group, kind, label, host, tier }
 }
 
+/** Every PDS host the catalogue measures already, under whatever kind. */
+const CATALOGUE_PDSES: ReadonlySet<string> = new Set([
+  ...CATALOGUE.pdses,
+  ...CATALOGUE.communityPdses,
+  CATALOGUE.tangled.pds,
+  CATALOGUE.entryway
+])
+
+/**
+ * The PDSes a user listed that the catalogue does not already measure. Listing one it
+ * does would otherwise be two rows with one id.
+ */
+function ownPdses(targets: ProbeTargets): string[] {
+  return targets.pdses.filter((host) => !CATALOGUE_PDSES.has(host))
+}
+
 /**
  * Every service the catalogue names, in dashboard order, under the given targets.
  *
  * Nearly every row is a host in `CATALOGUE` and stays put whatever the targets say. The
- * feeds are the exception: each feed a user lists is its own row, so this list follows
- * `ProbeTargets.feeds`, and `NetworkMonitor.retarget` rebuilds the dashboard from it when
- * they change. A feed's row is `feed:<host>` like everything else's, which is why the
- * schema holds each feed to a host of its own.
+ * feeds and the user's own PDSes are the exceptions: each one listed is its own row, so
+ * this list follows `ProbeTargets.feeds` and `ProbeTargets.pdses`, and
+ * `NetworkMonitor.retarget` rebuilds the dashboard from them when they change. A feed's
+ * row is `feed:<host>` like everything else's, which is why the schema holds each feed
+ * to a host of its own.
  */
 export function servicesFor(targets: ProbeTargets): ServiceDefinition[] {
   return [
@@ -244,6 +305,9 @@ export function servicesFor(targets: ProbeTargets): ServiceDefinition[] {
     ...CATALOGUE.communityAppViews.map((host) =>
       define('appview', 'appviews', host, { tier: 'community' })
     ),
+    // The user's own come first: they are the rows somebody who listed them looks for.
+    ...ownPdses(targets).map((host) => define('pds', 'pdses', host)),
+    define('entryway', 'pdses', CATALOGUE.entryway, { label: 'bsky.social (Bluesky sign-in)' }),
     ...CATALOGUE.pdses.map((host) => define('pds', 'pdses', host)),
     ...CATALOGUE.communityPdses.map((host) => define('pds', 'pdses', host, { tier: 'community' })),
     define('tangled-appview', 'tangled', CATALOGUE.tangled.appview),
@@ -252,13 +316,19 @@ export function servicesFor(targets: ProbeTargets): ServiceDefinition[] {
     define('pds', 'tangled', CATALOGUE.tangled.pds, { label: 'tngl.sh (Tangled PDS)' }),
     ...CATALOGUE.tangled.knots.map((host) => define('knot', 'tangled', host)),
     ...CATALOGUE.tangled.spindles.map((host) => define('spindle', 'tangled', host)),
-    define('pckt', 'apps', CATALOGUE.apps.pckt),
+    define('pckt', 'apps', CATALOGUE.apps.pckt.host),
     define('leaflet', 'apps', CATALOGUE.apps.leaflet.host),
     define('offprint', 'apps', CATALOGUE.apps.offprint.host),
     ...targets.feeds.map((feed) =>
       define('feed', 'infrastructure', feed.host, { label: feed.label })
     ),
-    define('foryou', 'infrastructure', CATALOGUE.forYou.host, { label: 'For You feed' }),
+    define('plc', 'infrastructure', CATALOGUE.plc, { label: 'PLC directory' }),
+    // One person's PC at home, behind a small VPS, promising nothing about uptime: by the
+    // same rule as `pds.rip`, community. See `ProbeTier`.
+    define('foryou', 'infrastructure', CATALOGUE.forYou.host, {
+      label: 'For You feed',
+      tier: 'community'
+    }),
     ...CATALOGUE.constellationHosts.map((host) => define('constellation', 'infrastructure', host)),
     define('ufos', 'infrastructure', CATALOGUE.microcosm.ufos),
     define('slingshot', 'infrastructure', CATALOGUE.microcosm.slingshot),
@@ -304,6 +374,18 @@ export const PROBE_GROUPS: readonly { id: ProbeGroup; title: string; blurb: stri
 
 /** A check that takes this long still passes, but the service reads as slow. */
 export const SLOW_MS = 15_000
+/**
+ * How many times its own usual latency a service has to take to read as slow.
+ *
+ * `SLOW_MS` is status.feeds.blue's rule, and against a thirty-second timeout it almost
+ * never fires: a relay that answers in 300 ms and starts taking 4 s is something people
+ * feel, and fifteen seconds never sees it. Each service is compared with itself instead.
+ */
+export const SLOW_FACTOR = 4
+/** Nothing under this reads as slow, however fast the service usually is. */
+export const SLOW_FLOOR_MS = 2_000
+/** Recent answers a service needs before its usual latency means anything. */
+export const BASELINE_SAMPLES = 6
 /** Every request gives up after this long. */
 export const REQUEST_TIMEOUT_MS = 30_000
 /** How long to wait on the firehose for a fresh commit. */
@@ -320,6 +402,12 @@ export const INDEX_LAG_MS = 15 * 60_000
  * every ten minutes.
  */
 export const CURSOR_LAG_MS = 5 * 60_000
+/**
+ * How long each AppView is given to index a sample of brand-new posts before it is
+ * asked for them. Healthy AppViews have nearly all of them within three seconds, so a
+ * row that cannot find half of them after ten is behind by more than a hiccup.
+ */
+export const INDEX_GRACE_MS = 10_000
 /**
  * How long a check that is too expensive for every sweep waits between runs. Leaflet's
  * publication feed is the case: twelve kilobytes for a date that moves in hours, so it
@@ -352,6 +440,17 @@ export function isCore(service: { group: ProbeGroup; tier: ProbeTier }): boolean
 }
 
 /**
+ * Whether a service counts for this person: core, and in a panel they have kept in.
+ * See `Settings.countedProbeGroups`.
+ */
+export function isCounted(
+  service: { group: ProbeGroup; tier: ProbeTier },
+  groups: readonly ProbeGroup[]
+): boolean {
+  return isCore(service) && groups.includes(service.group)
+}
+
+/**
  * Roll a service's checks up into one state, the way status.feeds.blue does: every
  * check passing is `live` (or `slow`, when one took 15 seconds or more), every check
  * failing is `down`, and anything failing alongside a pass — or alongside a check still
@@ -359,6 +458,13 @@ export function isCore(service: { group: ProbeGroup; tier: ProbeTier }): boolean
  */
 export function probeState(checks: ProbeCheck[]): ProbeState {
   if (!checks.length) return 'pending'
+  // An excused failure is the target's news, not the service's; see `ProbeCheck.excused`.
+  const judged = checks.filter((check) => check.excused === undefined)
+  if (!judged.length) return 'live'
+  return judgedState(judged)
+}
+
+function judgedState(checks: ProbeCheck[]): ProbeState {
   let passed = 0
   let failed = 0
   let slow = false
@@ -374,6 +480,49 @@ export function probeState(checks: ProbeCheck[]): ProbeState {
   if (failed === checks.length) return 'down'
   if (failed > 0) return 'partial'
   return 'pending'
+}
+
+/**
+ * The latency a service usually answers in: the median of its recent answers, or null
+ * while it has too few to say. Failed observations are left out, since a timeout is not
+ * a latency.
+ */
+export function usualLatency(
+  history: readonly { state: ProbeState; latencyMs: number | null }[]
+): number | null {
+  const times = history
+    .filter((sample) => isReachable(sample.state) && sample.latencyMs !== null)
+    .map((sample) => sample.latencyMs!)
+    .toSorted((a, b) => a - b)
+  if (times.length < BASELINE_SAMPLES) return null
+  const middle = times.length >> 1
+  return times.length % 2 ? times[middle]! : (times[middle - 1]! + times[middle]!) / 2
+}
+
+/** Whether `latencyMs` is slow for a service with this history. See `SLOW_FACTOR`. */
+export function slowForItself(
+  latencyMs: number | null,
+  history: readonly { state: ProbeState; latencyMs: number | null }[],
+  floorMs = SLOW_FLOOR_MS
+): boolean {
+  if (latencyMs === null || latencyMs < floorMs) return false
+  const usual = usualLatency(history)
+  return usual !== null && latencyMs >= usual * SLOW_FACTOR
+}
+
+/**
+ * What one finished observation of a service reads as: its checks rolled up by
+ * `probeState`, and then, if they all passed, whether it took several times as long as
+ * it usually does. `history` is what came before this observation, not including it.
+ */
+export function observedState(
+  checks: ProbeCheck[],
+  history: readonly { state: ProbeState; latencyMs: number | null }[],
+  floorMs = SLOW_FLOOR_MS
+): ProbeState {
+  const state = probeState(checks)
+  if (state !== 'live') return state
+  return slowForItself(medianLatency(checks), history, floorMs) ? 'slow' : 'live'
 }
 
 /** Whether a state counts as the service answering. */
@@ -418,14 +567,21 @@ export function isOffline(services: { group: ProbeGroup; state: ProbeState }[]):
   return controls.length > 0 && controls.every((service) => service.state === 'down')
 }
 
-/** Roll the dashboard up into the few facts the header, tray and tooltip show. */
-export function summarizeNetwork(snapshot: NetworkSnapshot, enabled: boolean): NetworkSummary {
+/**
+ * Roll the dashboard up into the few facts the header, tray and tooltip show, counting
+ * only the services in `counted` panels. See `Settings.countedProbeGroups`.
+ */
+export function summarizeNetwork(
+  snapshot: NetworkSnapshot,
+  enabled: boolean,
+  counted: readonly ProbeGroup[]
+): NetworkSummary {
   const atmosphere = snapshot.services.filter((service) => !isControl(service))
-  const core = atmosphere.filter(isCore)
+  const core = atmosphere.filter((service) => isCounted(service, counted))
   const down = core.filter((s) => s.condition === 'down').map((s) => s.label)
   const degraded = core.filter((s) => s.condition === 'partial').map((s) => s.label)
-  const community = atmosphere
-    .filter((s) => !isCore(s) && (s.condition === 'down' || s.condition === 'partial'))
+  const uncounted = atmosphere
+    .filter((s) => !isCounted(s, counted) && (s.condition === 'down' || s.condition === 'partial'))
     .map((s) => s.label)
 
   let health: NetworkHealth
@@ -433,8 +589,8 @@ export function summarizeNetwork(snapshot: NetworkSnapshot, enabled: boolean): N
   else if (snapshot.offline) health = 'offline'
   else if (down.length) health = 'down'
   else if (degraded.length) health = 'degraded'
-  // A community service answering still proves the checks are working, so it counts
-  // towards `operational` even though its failures never count against it.
+  // A service that does not count still proves the checks are working when it answers,
+  // so it counts towards `operational` even though its failures never count against it.
   else if (atmosphere.some((s) => s.condition === 'up')) health = 'operational'
   else health = 'unknown'
 
@@ -444,7 +600,8 @@ export function summarizeNetwork(snapshot: NetworkSnapshot, enabled: boolean): N
     reachable: atmosphere.filter((s) => isReachable(s.state)).length,
     down,
     degraded,
-    community,
+    uncounted,
+    vanished: snapshot.vanished,
     running: snapshot.running,
     lastSweepAt: snapshot.finishedAt,
     // Carried through unjudged: it says why the schedule is behaving as it is, which is
@@ -715,7 +872,12 @@ function failureSummary(checks: ProbeCheck[]): string {
 }
 
 function eventText(event: ProbeEvent): string {
-  const { service, checks } = event
+  const { service } = event
+  // Counted and named the way `probeState` judged them, with an excused failure — an
+  // account gone from under every AppView — left out. Kept in, three of those would be
+  // all an entry had room to name, and the failure that actually changed the service's
+  // condition would be the "1 more" after them.
+  const checks = event.checks.filter((check) => check.excused === undefined)
   switch (event.to) {
     case 'down':
       return `${service.label} is not responding from this computer. ${failureSummary(checks)}.`

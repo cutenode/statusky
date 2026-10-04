@@ -14,6 +14,7 @@
       "uri": "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot"
     }
   ],
+  "pdses": [],
   "forYou": {
     "did": "did:web:foryou.club",
     "feed": "at://did:plc:3guzzweuqraryl3rdkimjamk/app.bsky.feed.generator/for-you"
@@ -39,6 +40,9 @@
     "ownerDid": "did:plc:wshs7t2adsemcrrd4snkeqli"
   },
   "apps": {
+    "pckt": {
+      "publication": "at://did:plc:revjuqmkvrw6fnkxppqtszpv/site.standard.publication/3lwafzkjqm25s"
+    },
     "leaflet": {
       "publication": { "did": "did:plc:btxrwcaeyodrap5mnjw2fvmz", "rkey": "3lppk75kw7k26" },
       "feed": { "did": "did:plc:jbeaa5kdaladzwq3r7f5xgwe", "rkey": "3gtfwwbnks225" }

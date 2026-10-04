@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent } from '@testing-library/svelte'
+import { fireEvent, within } from '@testing-library/svelte'
 import {
   makeAccount,
+  makeNetworkSummary,
   makePost,
   makeService,
   makeSettings,
@@ -9,7 +10,7 @@ import {
 } from '../../test/factories'
 import { app } from '$lib/app-state.svelte'
 import { mediaListenerCount, setMediaQuery } from './test/setup'
-import { pushState, renderApp, settle } from './test/render'
+import { openSelect, pushState, renderApp, settle } from './test/render'
 import App from './App.svelte'
 
 const account = makeAccount({ did: 'did:plc:a', handle: 'status.bsky.app', displayName: 'Bluesky' })
@@ -124,6 +125,58 @@ describe('startup', () => {
     }
   })
 
+  // The loading light used to stay on for good when the first state never came.
+  it('says the first state could not be loaded, and tries again on request', async () => {
+    const spy = vi
+      .spyOn(app, 'init')
+      .mockRejectedValueOnce(
+        new Error("Error invoking remote method 'State.get': Error: The store is locked")
+      )
+    try {
+      const { bridge, getByText, findByRole, queryByText } = await renderApp(App, {
+        ...populated,
+        unread: []
+      })
+      expect((await findByRole('alert')).textContent).toContain('The store is locked')
+      expect(getByText('Statusky could not load')).toBeTruthy()
+
+      await fireEvent.click(getByText('Try again'))
+      await settle()
+      await settle()
+      await settle()
+
+      expect(queryByText('Statusky could not load')).toBeNull()
+      expect(getByText('We are investigating elevated error rates.')).toBeTruthy()
+      expect(bridge.listenerCount()).toBe(1)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  // A popover closed while it was still loading left its subscriptions behind.
+  it('lets go of a first state that lands after it has gone', async () => {
+    let answer!: () => void
+    const held = new Promise<void>((resolve) => (answer = resolve))
+    const init = app.init.bind(app)
+    const spy = vi.spyOn(app, 'init').mockImplementationOnce(async () => {
+      await held
+      return init()
+    })
+    try {
+      const { bridge, unmount } = await renderApp(App, populated)
+      unmount()
+
+      answer()
+      await settle()
+      await settle()
+
+      expect(bridge.listenerCount()).toBe(0)
+      expect(bridge.pushListenerCount()).toBe(0)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('mirrors the system colour scheme onto the document', async () => {
     setMediaQuery('(prefers-color-scheme: dark)', true)
     await renderApp(App, populated)
@@ -177,6 +230,27 @@ describe('keyboard shortcuts', () => {
     await fireEvent.keyDown(window, { key: 'r' })
 
     expect(bridge.api.Feed.refresh).not.toHaveBeenCalled()
+  })
+
+  // Esc in an open select closes the select. Taken as "close the popover" as well, it
+  // took the window — and whatever was being edited in it — along with the select.
+  it('leaves Escape to an open select, which answered it first', async () => {
+    const { bridge, getByLabelText, findByText } = await renderApp(App, populated)
+    await fireEvent.click(getByLabelText('Settings'))
+    expect(await findByText('Push notifications')).toBeTruthy()
+    const listbox = await openSelect(getByLabelText('Appearance'))
+
+    await fireEvent.keyDown(listbox, { key: 'Escape' })
+
+    expect(bridge.api.Host.hideWindow).not.toHaveBeenCalled()
+  })
+
+  it('leaves Escape to an input method that is still composing', async () => {
+    const { bridge } = await renderApp(App, populated)
+
+    await fireEvent.keyDown(window, { key: 'Escape', isComposing: true })
+
+    expect(bridge.api.Host.hideWindow).not.toHaveBeenCalled()
   })
 
   it('stops listening once unmounted', async () => {
@@ -373,6 +447,28 @@ describe('the network tab', () => {
     await select('1', 'Timeline')
   })
 
+  it('ignores a digit past the last tab', async () => {
+    const { getByRole } = await renderApp(App, { ...populated, snapshot })
+    const event = new KeyboardEvent('keydown', { key: '4', metaKey: true, cancelable: true })
+
+    await fireEvent(window, event)
+
+    expect(getByRole('tab', { name: 'Timeline' }).getAttribute('aria-selected')).toBe('true')
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('calls the open tab’s panel by its name, and a detour nothing of the sort', async () => {
+    const { getByRole, getByLabelText, queryByRole } = await renderApp(App, {
+      ...populated,
+      snapshot
+    })
+    await fireEvent.click(getByRole('tab', { name: 'Network' }))
+    expect(getByRole('tabpanel', { name: 'Network' }).id).toBe('view')
+
+    await fireEvent.click(getByLabelText('Settings'))
+    expect(queryByRole('tabpanel')).toBeNull()
+  })
+
   it('ignores a bare digit', async () => {
     const { getByRole } = await renderApp(App, { ...populated, snapshot })
     await fireEvent.keyDown(window, { key: '2' })
@@ -402,5 +498,48 @@ describe('the network tab', () => {
     const fresh = await renderApp(App, { ...populated, snapshot: recent })
     await fireEvent.focus(window)
     expect(fresh.bridge.api.Network.run).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The editor in Settings is rebuilt with the rest of the panel on every switch, and its
+ * working copy used to go with it: half an edit, lost to a banner being clicked.
+ */
+describe('the check targets editor across a switch', () => {
+  it('keeps an unsaved edit through a reveal, and back', async () => {
+    const { bridge, getByLabelText, getByRole, findByText } = await renderApp(App, populated)
+    await fireEvent.click(getByLabelText('Settings'))
+    await findByText('Check targets')
+    await fireEvent.click(document.getElementById('probe-section-toggle-tangled')!)
+    const page = (): HTMLInputElement =>
+      within(getByRole('group', { name: 'Tangled' })).getByLabelText('Page') as HTMLInputElement
+    await fireEvent.input(page(), { target: { value: '/someone.example.com/elsewhere' } })
+
+    // A notification asks for the dashboard, and the editor is torn down with Settings.
+    bridge.reveal(null)
+    await settle()
+    expect(getByRole('tab', { name: 'Network' }).getAttribute('aria-selected')).toBe('true')
+
+    await fireEvent.click(getByLabelText('Settings'))
+    await findByText('Check targets')
+
+    expect(page().value).toBe('/someone.example.com/elsewhere')
+    expect(getByRole('button', { name: 'Save' })).toBeTruthy()
+  })
+
+  it('lands on the accounts from the dashboard’s "Replace in Settings"', async () => {
+    const { getByRole, findByText } = await renderApp(App, {
+      ...populated,
+      network: makeNetworkSummary({ vanished: [{ did: 'did:plc:gone', part: 'account' }] })
+    })
+    await fireEvent.click(getByRole('tab', { name: 'Network' }))
+
+    await fireEvent.click(getByRole('button', { name: 'Replace in Settings' }))
+    await findByText('Check targets')
+    await settle()
+
+    const heading = document.getElementById('probe-section-toggle-accounts')!
+    expect(heading.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement).toBe(heading)
   })
 })

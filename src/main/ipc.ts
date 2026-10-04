@@ -1,4 +1,4 @@
-import { clipboard, net, shell } from 'electron'
+import { clipboard, net } from 'electron'
 import type { WebContents } from 'electron'
 import {
   Accounts,
@@ -17,6 +17,7 @@ import {
 } from '@ipc/browser/statusky'
 import type { AppState, NetworkSnapshot } from '../shared/types'
 import { showPostMenu } from './context-menu'
+import { openInBrowser } from './external'
 import type { Model } from './model'
 import { notifyTest } from './notifications'
 import { probeTargetsFile } from './probe-targets-file'
@@ -160,11 +161,11 @@ export function registerIpc({
       async openExternal(url) {
         // Never hand an arbitrary scheme to the OS — `file:` and custom schemes can
         // launch local handlers, and the URL here ultimately comes from remote posts.
-        const parsed = new URL(url)
-        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        // The same check every other way out of main uses: see src/main/external.ts.
+        // Unlike those, a page is waiting on this answer, so a refusal is thrown.
+        if (!(await openInBrowser(url))) {
           throw new Error('Only http and https links can be opened.')
         }
-        await shell.openExternal(parsed.toString())
       },
       // The webhook endpoint is long, secret and useless retyped, so it has to be
       // copyable — and the renderer's own clipboard access is unreliable inside a

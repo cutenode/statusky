@@ -58,10 +58,16 @@
    */
   const unread = $derived(app.isUnread(post.uri))
 
+  /**
+   * The row's whole name, since the button's own text is spread across a gutter and two
+   * lines. Unread first when it is, because the dot that says so to everyone else is
+   * inside the button and a label covers it.
+   */
   const label = $derived(
-    serviceId
-      ? `${SEVERITY_LABEL[post.severity]}: ${post.text} — show on the network dashboard`
-      : `${SEVERITY_LABEL[post.severity]}: ${post.text} — open the original`
+    (unread ? 'Unread. ' : '') +
+      (serviceId
+        ? `${SEVERITY_LABEL[post.severity]}: ${post.text} — show on the network dashboard`
+        : `${SEVERITY_LABEL[post.severity]}: ${post.text} — open the original`)
   )
 
   /** Only a row with somewhere to go is a button, so there is always one of the two. */

@@ -48,6 +48,24 @@
   --sev-degraded: oklch(0.7 0.16 85);
   --sev-maintenance: oklch(0.6 0.18 300);
   --sev-update: oklch(0.6 0.02 265);
+
+  /*
+   * The same colours as text, which is held to more than a rail or a dot is: 4.5:1
+   * against the window for anything this small (WCAG AA). The fills above sit around
+   * 3:1 on white — amber nearer 2.7 — which is plenty for a dot beside a word and too
+   * little for the word itself, so text gets a darker step of each hue, around 5:1 on
+   * the window and 4.7 on a badge's own tint. `@theme` below hands these to the `text-*`
+   * utilities alone, so `text-sev-degraded` reads this while `bg-sev-degraded` does not.
+   */
+  --sev-resolved-text: oklch(0.515 0.125 155);
+  --sev-monitoring-text: oklch(0.525 0.11 235);
+  --sev-identified-text: oklch(0.535 0.11 75);
+  --sev-investigating-text: oklch(0.545 0.155 45);
+  --sev-outage-text: oklch(0.56 0.22 20);
+  --sev-degraded-text: oklch(0.53 0.105 85);
+  --sev-maintenance-text: oklch(0.55 0.18 300);
+  --sev-update-text: oklch(0.53 0.02 265);
+  --destructive-text: oklch(0.56 0.22 15);
 }
 
 .dark {
@@ -84,6 +102,18 @@
   --sev-degraded: oklch(0.78 0.15 85);
   --sev-maintenance: oklch(0.72 0.16 300);
   --sev-update: oklch(0.7 0.02 265);
+
+  /* Light on dark, the fills already read as text — all of them over 5:1 on a card. */
+  --sev-resolved-text: var(--sev-resolved);
+  --sev-monitoring-text: var(--sev-monitoring);
+  --sev-identified-text: var(--sev-identified);
+  --sev-investigating-text: var(--sev-investigating);
+  --sev-outage-text: var(--sev-outage);
+  --sev-degraded-text: var(--sev-degraded);
+  --sev-maintenance-text: var(--sev-maintenance);
+  --sev-update-text: var(--sev-update);
+  /* Bar this one, at 4.3 on a card: a touch lighter for the error sentences. */
+  --destructive-text: oklch(0.66 0.2 20);
 }
 
 @theme inline {
@@ -116,6 +146,17 @@
   --color-sev-degraded: var(--sev-degraded);
   --color-sev-maintenance: var(--sev-maintenance);
   --color-sev-update: var(--sev-update);
+
+  /* What `text-*` alone reads, ahead of `--color-*`: see the text tokens in `:root`. */
+  --text-color-sev-resolved: var(--sev-resolved-text);
+  --text-color-sev-monitoring: var(--sev-monitoring-text);
+  --text-color-sev-identified: var(--sev-identified-text);
+  --text-color-sev-investigating: var(--sev-investigating-text);
+  --text-color-sev-outage: var(--sev-outage-text);
+  --text-color-sev-degraded: var(--sev-degraded-text);
+  --text-color-sev-maintenance: var(--sev-maintenance-text);
+  --text-color-sev-update: var(--sev-update-text);
+  --text-color-destructive: var(--destructive-text);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -163,6 +204,24 @@
   :focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
+  }
+
+  /*
+   * Asked for less motion: everything the stylesheet moves comes to rest at once. The
+   * lights that pulse or ping are also `motion-safe:`, so they never start; this is the
+   * net under the rest — a spinner, a sliding tab marker, a hover's fade — without
+   * having to find each one. What moves by script reads the same preference from
+   * `$lib/motion.svelte` instead, which this cannot reach.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   /*

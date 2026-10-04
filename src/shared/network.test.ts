@@ -21,6 +21,7 @@ import {
   humanDuration,
   isControl,
   isCore,
+  isCounted,
   isOffline,
   isProbeSource,
   isReachable,
@@ -28,20 +29,23 @@ import {
   networkAsHealth,
   networkForHealth,
   observedCondition,
+  observedState,
   probeAccount,
   probePost,
   probeServiceId,
   probeState,
   reportHeadline,
   servicesFor,
+  slowForItself,
   splitHost,
   summarizeNetwork,
   uptimePercent,
+  usualLatency,
   type ProbeEvent
 } from './network'
 import { DEFAULT_PROBE_TARGETS } from './probe-targets'
 import { HEALTH_LABEL, type Health } from './status'
-import type { ProbeState } from './types'
+import type { ProbeCheck, ProbeState } from './types'
 
 const relay = SERVICES.find((s) => s.id === 'relay:europe.firehose.network')!
 
@@ -58,10 +62,10 @@ describe('the catalogue', () => {
   it('covers every service status.feeds.blue measures', () => {
     expect(count('relays')).toBe(CATALOGUE.relays.length)
     expect(count('appviews')).toBe(CATALOGUE.appViews.length + CATALOGUE.communityAppViews.length)
-    // The hand-kept PDSes and the community ones.
-    expect(count('pdses')).toBe(CATALOGUE.pdses.length + CATALOGUE.communityPdses.length)
-    // Discover feed, For You, Constellation, UFOs, Slingshot and the CDN.
-    expect(count('infrastructure')).toBe(6)
+    // Bluesky's entryway, the hand-kept PDSes and the community ones.
+    expect(count('pdses')).toBe(1 + CATALOGUE.pdses.length + CATALOGUE.communityPdses.length)
+    // Discover feed, PLC, For You, Constellation, UFOs, Slingshot and the CDN.
+    expect(count('infrastructure')).toBe(7)
     expect(count('internet')).toBe(4)
   })
 
@@ -77,7 +81,12 @@ describe('the catalogue', () => {
 
   it('grades hobby infrastructure below the network proper', () => {
     const community = SERVICES.filter((s) => s.tier === 'community').map((s) => s.host)
-    expect(community).toEqual([...CATALOGUE.communityAppViews, ...CATALOGUE.communityPdses])
+    expect(community).toEqual([
+      ...CATALOGUE.communityAppViews,
+      ...CATALOGUE.communityPdses,
+      // A feed on one person's PC at home promises no more than pds.rip does.
+      CATALOGUE.forYou.host
+    ])
     expect(SERVICES.filter(isCore).every((s) => s.tier === 'core')).toBe(true)
     expect(SERVICES.filter(isControl).some(isCore)).toBe(false)
   })
@@ -140,8 +149,39 @@ describe('the catalogue', () => {
     expect(none).toHaveLength(SERVICES.length - DEFAULT_PROBE_TARGETS.feeds.length)
   })
 
+  it('gives each PDS a user lists a row of its own, first among the PDSes', () => {
+    const services = servicesFor({
+      ...structuredClone(DEFAULT_PROBE_TARGETS),
+      pdses: ['mine.example.test', 'theirs.example.test']
+    })
+    const pdses = services.filter((s) => s.group === 'pdses')
+    expect(pdses.slice(0, 3).map((s) => [s.id, s.tier])).toEqual([
+      ['pds:mine.example.test', 'core'],
+      ['pds:theirs.example.test', 'core'],
+      ['entryway:bsky.social', 'core']
+    ])
+    expect(services).toHaveLength(SERVICES.length + 2)
+  })
+
+  it('does not measure a PDS twice when the user lists one the catalogue has', () => {
+    const services = servicesFor({
+      ...structuredClone(DEFAULT_PROBE_TARGETS),
+      pdses: ['blacksky.app', 'pds.rip', 'tngl.sh', 'bsky.social']
+    })
+    expect(services).toEqual(SERVICES)
+  })
+
   it('measures the checked-in targets unless told otherwise', () => {
     expect(SERVICES).toEqual(servicesFor(DEFAULT_PROBE_TARGETS))
+  })
+
+  it('counts a core service only in a panel that is kept in', () => {
+    const spindle = SERVICES.find((s) => s.kind === 'spindle')!
+    const pdsRip = SERVICES.find((s) => s.id === 'pds:pds.rip')!
+    expect(isCounted(spindle, ['tangled'])).toBe(true)
+    expect(isCounted(spindle, ['relays', 'pdses'])).toBe(false)
+    // Community infrastructure never counts, whichever panel it sits in.
+    expect(isCounted(pdsRip, ['pdses'])).toBe(false)
   })
 
   it('treats only the Internet group as the control', () => {
@@ -167,6 +207,14 @@ describe('probeState', () => {
     ['passes with one still in flight', [pass, wait], 'pending']
   ])('%s', (_name, checks, expected) => {
     expect(probeState(checks)).toBe(expected)
+  })
+
+  it('leaves an excused failure out of the verdict', () => {
+    const excused = makeCheck({ ok: false, error: 'HTTP 400 · Profile not found', excused: 'gone' })
+    expect(probeState([pass, excused])).toBe('live')
+    expect(probeState([pass, excused, fail])).toBe('partial')
+    // Nothing left to judge is nothing wrong.
+    expect(probeState([excused])).toBe('live')
   })
 
   it('does not call a slow failure slow', () => {
@@ -247,6 +295,7 @@ describe('isOffline', () => {
 })
 
 describe('summarizeNetwork', () => {
+  const ALL = PROBE_GROUPS.map((group) => group.id)
   const up = makeService({ id: 'relay:bsky.network', label: 'bsky.network' })
   const down = makeService({
     id: 'relay:europe.firehose.network',
@@ -263,19 +312,20 @@ describe('summarizeNetwork', () => {
   const github = makeService({ id: 'internet:github', group: 'internet', state: 'down' })
 
   it('is off when checks are switched off, whatever was measured', () => {
-    expect(summarizeNetwork(makeSnapshot({ services: [down] }), false).health).toBe('off')
+    expect(summarizeNetwork(makeSnapshot({ services: [down] }), false, ALL).health).toBe('off')
   })
 
   it('is offline when the sweep said so', () => {
-    expect(summarizeNetwork(makeSnapshot({ offline: true, services: [down] }), true).health).toBe(
-      'offline'
-    )
+    expect(
+      summarizeNetwork(makeSnapshot({ offline: true, services: [down] }), true, ALL).health
+    ).toBe('offline')
   })
 
   it('names what is down and what is degraded', () => {
     const summary = summarizeNetwork(
       makeSnapshot({ services: [up, down, partial, github], finishedAt: '2026-01-01T00:00:00Z' }),
-      true
+      true,
+      ALL
     )
     expect(summary).toEqual({
       health: 'down',
@@ -283,7 +333,8 @@ describe('summarizeNetwork', () => {
       reachable: 1,
       down: ['europe.firehose.network'],
       degraded: ['eurosky.social'],
-      community: [],
+      uncounted: [],
+      vanished: [],
       running: false,
       lastSweepAt: '2026-01-01T00:00:00Z',
       restraint: null
@@ -297,40 +348,123 @@ describe('summarizeNetwork', () => {
       state: 'down',
       condition: 'down'
     })
-    const summary = summarizeNetwork(makeSnapshot({ services: [up, hobby] }), true)
+    const summary = summarizeNetwork(makeSnapshot({ services: [up, hobby] }), true, ALL)
     // Measured, listed and filed in the feed — but it never reaches the tray.
     expect(summary).toMatchObject({
       health: 'operational',
       total: 2,
       reachable: 1,
       down: [],
-      community: ['pds.rip']
+      uncounted: ['pds.rip']
     })
   })
 
+  it('counts only the panels the user keeps in, but still lists the rest', () => {
+    const spindle = makeService({
+      id: 'spindle:spindle.tangled.sh',
+      group: 'tangled',
+      label: 'spindle.tangled.sh',
+      state: 'down',
+      condition: 'down'
+    })
+    const withTangled = summarizeNetwork(makeSnapshot({ services: [up, spindle] }), true, ALL)
+    expect(withTangled).toMatchObject({ health: 'down', down: ['spindle.tangled.sh'] })
+
+    const without = ALL.filter((group) => group !== 'tangled')
+    const summary = summarizeNetwork(makeSnapshot({ services: [up, spindle] }), true, without)
+    expect(summary).toMatchObject({
+      health: 'operational',
+      down: [],
+      uncounted: ['spindle.tangled.sh'],
+      // Still measured, and still said to be unreachable.
+      total: 2,
+      reachable: 1
+    })
+  })
+
+  it('passes on what the census found missing', () => {
+    const vanished = [{ did: 'did:plc:gone', part: 'account' as const }]
+    expect(summarizeNetwork(makeSnapshot({ vanished }), true, ALL).vanished).toEqual(vanished)
+  })
+
   it('is degraded with only partial failures', () => {
-    expect(summarizeNetwork(makeSnapshot({ services: [up, partial] }), true).health).toBe(
+    expect(summarizeNetwork(makeSnapshot({ services: [up, partial] }), true, ALL).health).toBe(
       'degraded'
     )
   })
 
   it('is operational once anything is known to be up', () => {
-    expect(summarizeNetwork(makeSnapshot({ services: [up] }), true).health).toBe('operational')
+    expect(summarizeNetwork(makeSnapshot({ services: [up] }), true, ALL).health).toBe('operational')
   })
 
   it('is unknown before anything is judged', () => {
     const blank = blankService(relay)
     expect(
-      summarizeNetwork(makeSnapshot({ services: [blank], running: true }), true)
+      summarizeNetwork(makeSnapshot({ services: [blank], running: true }), true, ALL)
     ).toMatchObject({ health: 'unknown', running: true, reachable: 0, total: 1 })
   })
 
   it('leaves the control group out of every count', () => {
-    expect(summarizeNetwork(makeSnapshot({ services: [github] }), true)).toMatchObject({
+    expect(summarizeNetwork(makeSnapshot({ services: [github] }), true, ALL)).toMatchObject({
       health: 'unknown',
       total: 0,
       down: []
     })
+  })
+})
+
+/** A history of answers that came back in these times. */
+function answered(...latencies: (number | null)[]): { state: 'live'; latencyMs: number | null }[] {
+  return latencies.map((latencyMs) => ({ state: 'live' as const, latencyMs }))
+}
+
+describe('judging latency against the service itself', () => {
+  it('knows nothing of a service with too few answers', () => {
+    expect(usualLatency(answered(300, 300, 300, 300, 300))).toBeNull()
+    expect(usualLatency(answered(300, 300, 300, 300, 300, 310))).toBe(300)
+  })
+
+  it('takes the median of what answered, leaving out failures and blanks', () => {
+    const history = [
+      ...answered(200, 900, 300, 250, null, 280, 310),
+      { state: 'down' as const, latencyMs: 30_000 },
+      { state: 'partial' as const, latencyMs: 20_000 }
+    ]
+    expect(usualLatency(history)).toBe(290)
+  })
+
+  it.each([
+    ['four times its usual 600 ms', 2_400, true],
+    ['just short of four times', 2_399, false],
+    // A fast service slowing down is noticed once it is slow enough for anyone to feel.
+    ['ten times a fast service, still under two seconds', 1_500, false],
+    ['no latency at all', null, false]
+  ])('calls %s slow: %s', (_name, latency, expected) => {
+    const usual = latency === 1_500 ? 150 : 600
+    const history = answered(...Array.from({ length: 10 }, () => usual))
+    expect(slowForItself(latency, history)).toBe(expected)
+  })
+
+  it('says nothing until there is a baseline', () => {
+    expect(slowForItself(20_000, answered(100, 100))).toBe(false)
+  })
+
+  it('reads an observation that passed but took four times as long as slow', () => {
+    const history = answered(...Array.from({ length: 8 }, () => 300))
+    const quick = [makeCheck({ durationMs: 310 })]
+    const sluggish = [makeCheck({ durationMs: 4_100 }), makeCheck({ durationMs: 3_900 })]
+    expect(observedState(quick, history)).toBe('live')
+    expect(observedState(sluggish, history)).toBe('slow')
+    // Failing is worse news than slow, and says so.
+    expect(observedState([...sluggish, makeCheck({ ok: false })], history)).toBe('partial')
+    // status.feeds.blue's own rule still holds with no history at all.
+    expect(observedState([makeCheck({ durationMs: SLOW_MS })], [])).toBe('slow')
+  })
+
+  it('takes a lower floor when told to', () => {
+    const history = answered(...Array.from({ length: 8 }, () => 2))
+    expect(observedState([makeCheck({ durationMs: 40 })], history)).toBe('live')
+    expect(observedState([makeCheck({ durationMs: 40 })], history, 20)).toBe('slow')
   })
 })
 
@@ -687,6 +821,16 @@ describe('networkForHealth', () => {
   })
 })
 
+/** A lookup of an account that has gone, failed and excused as `TargetCensus` leaves it. */
+function gone(label: string): ProbeCheck {
+  return makeCheck({
+    label,
+    ok: false,
+    error: 'HTTP 400 · Profile not found',
+    excused: 'No AppView has this account any more'
+  })
+}
+
 describe('the checks as a feed source', () => {
   it('is a built-in, pollless account', () => {
     expect(probeAccount('2026-01-01T00:00:00Z')).toEqual({
@@ -743,6 +887,20 @@ describe('the checks as a feed source', () => {
     const post = probePost(event({ to: 'partial' }))
     expect(post.severity).toBe('degraded')
     expect(post.text).toMatch(/^europe\.firehose\.network is partly failing: 2 of 3 checks\./)
+  })
+
+  it('counts and names only the failures held against the service', () => {
+    const checks = [
+      makeCheck({ label: '_health', ok: true }),
+      gone('getProfile'),
+      gone('resolveHandle'),
+      gone('getAuthorFeed'),
+      makeCheck({ label: 'indexing', ok: false, error: 'Found 0 of 10 posts from 10 seconds ago' })
+    ]
+    expect(probePost(event({ to: 'partial', checks })).text).toBe(
+      'europe.firehose.network is partly failing: 1 of 2 checks. ' +
+        'indexing: Found 0 of 10 posts from 10 seconds ago.'
+    )
   })
 
   it('names three failures at most', () => {

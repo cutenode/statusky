@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest'
-import { fireEvent } from '@testing-library/svelte'
+import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, within } from '@testing-library/svelte'
 import { NETWORK_INTERVAL_CHOICES, POLL_INTERVAL_CHOICES } from '@shared/defaults'
 import { makeSettings, makeWebhookStatus } from '../../../test/factories'
-import { chooseOption, openSelect, pushState, renderWith } from '../test/render'
+import { chooseOption, openSelect, pushState, renderWith, settle } from '../test/render'
 import SettingsPanel from './SettingsPanel.svelte'
 
 /**
@@ -257,6 +257,56 @@ describe('the application settings', () => {
   })
 })
 
+/**
+ * A refusal used to land on a line under the Accounts tab's add field, nowhere near the
+ * control that asked, and the control went on showing the click as if it had worked.
+ */
+describe('a change main refuses', () => {
+  it('is said under the row that asked, and the switch goes back', async () => {
+    const { bridge, getByLabelText, getByRole } = await renderWith(SettingsPanel)
+    vi.mocked(bridge.api.Preferences.patch).mockRejectedValueOnce(
+      new Error("Error invoking remote method 'x': Error: Login items are managed for you")
+    )
+    const toggle = getByLabelText('Launch at login')
+
+    await fireEvent.click(toggle)
+    await settle()
+
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    expect(getByRole('alert').textContent).toContain('Login items are managed for you')
+  })
+
+  it('stops being said once a change from the same row goes through', async () => {
+    const { bridge, getByLabelText, queryByRole } = await renderWith(SettingsPanel)
+    vi.mocked(bridge.api.Preferences.patch).mockRejectedValueOnce(new Error('Not now'))
+    const toggle = getByLabelText('Launch at login')
+
+    await fireEvent.click(toggle)
+    await settle()
+    expect(queryByRole('alert')).not.toBeNull()
+
+    await fireEvent.click(toggle)
+    await settle()
+    expect(queryByRole('alert')).toBeNull()
+    expect(toggle.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('puts a select back on what main has, as well as saying why', async () => {
+    const { bridge, getByLabelText, getByRole } = await renderWith(SettingsPanel)
+    vi.mocked(bridge.api.Preferences.patch).mockRejectedValueOnce(new Error('Not a theme'))
+    const trigger = getByLabelText('Appearance')
+
+    await chooseOption(trigger, 'Dark')
+    await settle()
+
+    expect(trigger.textContent?.trim()).toBe('Match system')
+    expect(getByRole('alert').textContent).toContain('Not a theme')
+    const listbox = await openSelect(trigger)
+    const selected = listbox.querySelector('[role="option"][aria-selected="true"]')
+    expect(selected?.textContent?.trim()).toBe('Match system')
+  })
+})
+
 describe('the footer', () => {
   it('names the version and what the app reads', async () => {
     const { container } = await renderWith(SettingsPanel, {}, { version: '9.9.9' })
@@ -422,5 +472,100 @@ describe('a newer Statusky', () => {
     await pushState(bridge, { update: { stage: 'available', version: '0.3.0' } })
 
     expect(container.textContent).toContain('Statusky 0.3.0 is available')
+  })
+})
+
+/** One panel's switch, found among the panel switches rather than the whole page. */
+const chip = (view: { getByRole: (role: string, options: object) => HTMLElement }, name: string) =>
+  within(view.getByRole('group', { name: 'Count in the menu bar' })).getByRole('button', {
+    name: new RegExp(`^${name}$`)
+  })
+
+describe('which panels count in the menu bar', () => {
+  it('offers every panel but the control group, pressed when it counts', async () => {
+    const view = await renderWith(SettingsPanel)
+    const group = view.getByRole('group', { name: 'Count in the menu bar' })
+    expect([...group.querySelectorAll('button')].map((b) => b.textContent!.trim())).toEqual([
+      'Relays',
+      'Streams',
+      'AppViews',
+      'PDSes',
+      'Tangled',
+      'Apps',
+      'Other infrastructure'
+    ])
+    expect(chip(view, 'Relays').getAttribute('aria-pressed')).toBe('true')
+    expect(chip(view, 'Tangled').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('adds a panel in the dashboard’s own order, and takes one out', async () => {
+    const view = await renderWith(SettingsPanel)
+    await fireEvent.click(chip(view, 'Tangled'))
+    expect(view.bridge.api.Preferences.patch).toHaveBeenLastCalledWith({
+      countedProbeGroups: ['relays', 'streams', 'appviews', 'pdses', 'tangled', 'infrastructure']
+    })
+
+    await fireEvent.click(chip(view, 'Relays'))
+    expect(view.bridge.api.Preferences.patch).toHaveBeenLastCalledWith({
+      countedProbeGroups: ['streams', 'appviews', 'pdses', 'tangled', 'infrastructure']
+    })
+  })
+
+  // Built on the push, a second click before main answered the first sent a list
+  // without the first one's change in it, and quietly undid it.
+  it('keeps both of two quick clicks, though main has answered neither', async () => {
+    const view = await renderWith(SettingsPanel)
+    const patch = vi.mocked(view.bridge.api.Preferences.patch)
+    const answers: (() => void)[] = []
+    patch.mockImplementation(
+      (next) =>
+        new Promise((resolve) => {
+          answers.push(() => resolve({ ...view.bridge.state.settings, ...next }))
+        })
+    )
+
+    await fireEvent.click(chip(view, 'Tangled'))
+    await fireEvent.click(chip(view, 'Apps'))
+
+    expect(patch).toHaveBeenLastCalledWith({
+      countedProbeGroups: [
+        'relays',
+        'streams',
+        'appviews',
+        'pdses',
+        'tangled',
+        'apps',
+        'infrastructure'
+      ]
+    })
+    for (const answer of answers) answer()
+    await new Promise((resolve) => setTimeout(resolve))
+
+    // Answered, it builds on what main has again.
+    patch.mockRestore()
+    await fireEvent.click(chip(view, 'Relays'))
+    expect(patch).toHaveBeenLastCalledWith({
+      countedProbeGroups: ['streams', 'appviews', 'pdses', 'infrastructure']
+    })
+  })
+
+  it('says under the chips when main refuses', async () => {
+    const view = await renderWith(SettingsPanel)
+    vi.mocked(view.bridge.api.Preferences.patch).mockRejectedValueOnce(new Error('No such panel'))
+
+    await fireEvent.click(chip(view, 'Tangled'))
+    await settle()
+
+    expect(view.getByRole('alert').textContent).toContain('No such panel')
+    expect(chip(view, 'Tangled').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('holds still while the checks are off', async () => {
+    const view = await renderWith(
+      SettingsPanel,
+      {},
+      { settings: makeSettings({ networkChecks: false }) }
+    )
+    expect((chip(view, 'Relays') as HTMLButtonElement).disabled).toBe(true)
   })
 })

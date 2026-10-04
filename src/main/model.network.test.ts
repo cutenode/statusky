@@ -8,11 +8,12 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PROBE_SOURCE_DID, SERVICES, isControl, reportHeadline } from '../shared/network'
+import { DEFAULT_SETTINGS } from '../shared/defaults'
 import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
 import type { ProbeTargets } from '../shared/types'
 import { createHarness, flush, waitFor, type Harness } from '../test/harness'
 import { FakeNetwork } from '../test/network'
-import type { MonitorTimings } from './network'
+import { NetworkMonitor, type MonitorTimings } from './network'
 
 const network = new FakeNetwork()
 let harness: Harness | null = null
@@ -20,6 +21,7 @@ let harness: Harness | null = null
 const FAST: Partial<MonitorTimings> = {
   requestTimeoutMs: 500,
   firehoseWindowMs: 40,
+  indexGraceMs: 0,
   recheckDelayMs: 5,
   offlineRetryMs: 5,
   throttleMs: 1
@@ -64,6 +66,23 @@ afterEach(() => {
   harness = null
   network.reset()
   vi.restoreAllMocks()
+})
+
+describe('the machine coming back', () => {
+  it('catches up only once what was last measured has gone stale', async () => {
+    let clock = Date.now()
+    const h = await started({
+      network: { transport: network, timings: FAST, now: () => clock }
+    })
+    const run = vi.spyOn(NetworkMonitor.prototype, 'run')
+
+    h.model.catchUpNetwork()
+    expect(run).not.toHaveBeenCalled()
+
+    clock += 5 * 60_000
+    h.model.catchUpNetwork()
+    expect(run).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('what the popover is told', () => {
@@ -179,6 +198,55 @@ describe('settings', () => {
     // Not when the hung request times out: now.
     expect(h.model.networkSnapshot().running).toBe(false)
     expect(h.model.networkSnapshot().finishedAt).toBeNull()
+  })
+})
+
+describe('which panels count', () => {
+  it('keeps a panel left out of the menu bar off its health, and still files it', async () => {
+    const h = await started()
+    network.fail('spindle.tangled.sh', { kind: 'network', message: 'net::ERR_CONNECTION_REFUSED' })
+    await h.model.runNetworkChecks()
+    await waitFor(
+      () => h.state().network.uncounted.includes('spindle.tangled.sh'),
+      'the spindle to be confirmed down'
+    )
+    expect(h.state().network).toMatchObject({ health: 'operational', down: [] })
+    expect(
+      h
+        .state()
+        .posts.some(
+          (p) => p.authorDid === PROBE_SOURCE_DID && p.text.startsWith('spindle.tangled.sh')
+        )
+    ).toBe(true)
+
+    await h.api.Preferences.patch({
+      countedProbeGroups: [...DEFAULT_SETTINGS.countedProbeGroups, 'tangled']
+    })
+    expect(h.state().network).toMatchObject({ health: 'down', down: ['spindle.tangled.sh'] })
+  })
+
+  it('never counts the control group, whatever it is told', async () => {
+    const h = await started()
+    await h.api.Preferences.patch({ countedProbeGroups: ['relays', 'internet'] })
+    expect(h.state().settings.countedProbeGroups).toEqual(['relays'])
+  })
+})
+
+describe('an account the checks read that has gone', () => {
+  it('is named for Settings, and no AppView is marked down for it', async () => {
+    const [gone] = DEFAULT_PROBE_TARGETS.accounts
+    for (const service of SERVICES.filter((s) => s.kind === 'appview')) {
+      network.unindex(service.host, gone!.did)
+    }
+    const h = await started()
+    expect(h.state().network).toMatchObject({
+      health: 'operational',
+      degraded: [],
+      vanished: [
+        { part: 'account', did: gone!.did },
+        { part: 'handle', did: gone!.did }
+      ]
+    })
   })
 })
 

@@ -146,6 +146,8 @@ export interface RecordedProbeRequest {
   headers: Record<string, string>
   cache: RequestInit['cache']
   credentials: RequestInit['credentials']
+  /** What the request was sent with, to see whether the probe hung up on it afterwards. */
+  signal: AbortSignal | null
 }
 
 function json(body: unknown, contentType = 'application/json; charset=utf-8'): Response {
@@ -188,6 +190,10 @@ export class FakeNetwork implements ProbeTransport {
   private readonly newest = new Map<string, string>()
   /** Accounts an AppView has not indexed, by host. */
   private readonly unindexed = new Map<string, Set<string>>()
+  /** What the relays say about a host they are asked after; null is never heard of. */
+  private readonly hostStatuses = new Map<string, string | null>()
+  /** Where each publication `publish` has put on the Internet says it is served, by AT-URI. */
+  private readonly publications = new Map<string, string>()
   private readonly ticks = new Map<string, number>()
   private offline = false
   /** The accounts, feeds and documents this Internet has in it. */
@@ -235,6 +241,26 @@ export class FakeNetwork implements ProbeTransport {
     return this
   }
 
+  /**
+   * What every relay says about `host` when asked `getHostStatus`: a status such as
+   * `throttled`, or null for a host it has never crawled. Default: `active`.
+   */
+  setHostStatus(host: string, status: string | null): this {
+    this.hostStatuses.set(host, status)
+    return this
+  }
+
+  /**
+   * Put a `site.standard.publication` on the Internet: its record, as Slingshot hands it
+   * back, names `url` as where it is served, and that URL's well-known route names the
+   * record back. `url` is written into the record as given, so a test can hand over one
+   * the probe ought to refuse.
+   */
+  publish(uri: string, url: string): this {
+    this.publications.set(uri, url)
+    return this
+  }
+
   /** Every request and socket fails, as with the Wi-Fi off. */
   goOffline(): this {
     this.offline = true
@@ -258,6 +284,8 @@ export class FakeNetwork implements ProbeTransport {
     this.firehose.clear()
     this.newest.clear()
     this.unindexed.clear()
+    this.hostStatuses.clear()
+    this.publications.clear()
     this.ticks.clear()
     this.offline = false
     this.targets = DEFAULT_PROBE_TARGETS
@@ -273,7 +301,8 @@ export class FakeNetwork implements ProbeTransport {
       path: parsed.pathname,
       headers: Object.fromEntries(new Headers(init.headers).entries()),
       cache: init.cache,
-      credentials: init.credentials
+      credentials: init.credentials,
+      signal: init.signal ?? null
     })
 
     const signal = init.signal ?? undefined
@@ -423,6 +452,20 @@ export class FakeNetwork implements ProbeTransport {
         return json({ status: 'ok', version: '0.4.0' })
       case 'com.atproto.sync.listHosts':
         return json(this.hostPage(params))
+      case 'com.atproto.sync.getHostStatus': {
+        const hostname = params.get('hostname') ?? ''
+        const status = this.hostStatuses.has(hostname) ? this.hostStatuses.get(hostname)! : 'active'
+        if (status === null) {
+          return new Response(
+            JSON.stringify({ error: 'HostNotFound', message: 'host not found' }),
+            {
+              status: 404,
+              headers: { 'content-type': 'application/json' }
+            }
+          )
+        }
+        return json({ accountCount: 1588, hostname, seq: 12259440, status })
+      }
       case 'com.atproto.server.describeServer':
         return json({ did: `did:web:${host}` })
       case 'com.atproto.sync.listRepos':
@@ -434,12 +477,20 @@ export class FakeNetwork implements ProbeTransport {
         })
       case 'com.atproto.repo.listRecords':
         return json({ records: [] })
-      case 'com.atproto.repo.getRecord':
-        return json({
-          uri: `at://${params.get('repo')}/${params.get('collection')}/${params.get('rkey')}`,
-          cid: 'bafyreiprobe',
-          value: { $type: params.get('collection') }
-        })
+      case 'com.atproto.repo.getRecord': {
+        const uri = `at://${params.get('repo')}/${params.get('collection')}/${params.get('rkey')}`
+        if (params.get('collection') === 'site.standard.publication') {
+          const served = this.publications.get(uri)
+          // What Slingshot says about a record that is not there.
+          if (served === undefined) return xrpcError('Could not locate record')
+          return json({
+            uri,
+            cid: 'bafyreipublication',
+            value: { $type: 'site.standard.publication', name: 'A blog', url: served }
+          })
+        }
+        return json({ uri, cid: 'bafyreiprobe', value: { $type: params.get('collection') } })
+      }
       case 'app.bsky.actor.getProfile':
         return indexed(params.get('actor'))
           ? json({ did: params.get('actor') })
@@ -468,6 +519,19 @@ export class FakeNetwork implements ProbeTransport {
           this.newest.get(`${host} ${actor}`) ?? this.newest.get(host) ?? new Date().toISOString()
         return json({ feed: newest ? [{ post: { record: { createdAt: newest } } }] : [] })
       }
+      case 'app.bsky.feed.getPosts':
+        // Every post whose author this AppView has indexed, which is every one by default.
+        return json({
+          posts: params
+            .getAll('uris')
+            .filter((uri) => indexed(/^at:\/\/([^/]+)\//.exec(uri)?.[1]))
+            .map((uri) => ({
+              uri,
+              cid: 'bafyreipost',
+              record: {},
+              indexedAt: new Date().toISOString()
+            }))
+        })
       case 'app.bsky.feed.getFeedSkeleton':
         // Unauthenticated, For You's proxy answers by itself with a single canned post
         // rather than reaching the recommender.
@@ -526,6 +590,46 @@ export class FakeNetwork implements ProbeTransport {
 
     if (listed(CATALOGUE.jetstreams, host) && path === '/') {
       return text('Welcome to Jetstream')
+    }
+    if (host === CATALOGUE.plc) {
+      if (path === '/_health') {
+        return json({ version: '996e23b5ced9c15b32bcc612dd304880342ca4ab' })
+      }
+      if (path === '/export') {
+        return text(
+          `${JSON.stringify({
+            did: 'did:plc:lxrhb66z3qebyowvq5dwtkiy',
+            cid: 'bafyreifvdsf2ydobt6xkwydhxlbhq2lc3z2dtozbirwxz344wshlwoyuvq',
+            createdAt: new Date().toISOString(),
+            operation: { type: 'plc_operation' },
+            nullified: false
+          })}\n`,
+          'application/jsonlines'
+        )
+      }
+      if (path === `/${CATALOGUE.anchor.did}`) {
+        return json(
+          {
+            id: CATALOGUE.anchor.did,
+            alsoKnownAs: [`at://${CATALOGUE.anchor.handle}`],
+            service: [
+              {
+                id: '#atproto_pds',
+                type: 'AtprotoPersonalDataServer',
+                serviceEndpoint: 'https://puffball.us-east.host.bsky.network'
+              }
+            ]
+          },
+          'application/did+ld+json; charset=utf-8'
+        )
+      }
+    }
+    if (host === CATALOGUE.entryway && path === '/.well-known/oauth-authorization-server') {
+      return json({
+        issuer: `https://${host}`,
+        authorization_endpoint: `https://${host}/oauth/authorize`,
+        token_endpoint: `https://${host}/oauth/token`
+      })
     }
     if (host === microcosm.ufos) {
       if (path === '/meta') {
@@ -594,7 +698,7 @@ export class FakeNetwork implements ProbeTransport {
     if (listed(tangled.spindles, host) && path === '/_health') {
       return json({ status: 'ok' })
     }
-    if (host === apps.pckt && path === '/up') {
+    if (host === apps.pckt.host && path === '/up') {
       return json({
         status: 'ok',
         uptime: { deployed_at: new Date().toISOString(), seconds: 1 },
@@ -606,6 +710,12 @@ export class FakeNetwork implements ProbeTransport {
         typesense: true,
         scheduler: { last_heartbeat_seconds_ago: 5 }
       })
+    }
+    // The catalogue's own publications serve the checked-in records, whatever a test has
+    // listed in their place: a blog does not change what it is because somebody else's
+    // was put in the targets.
+    if (host === apps.pckt.publicationHost && path === '/.well-known/site.standard.publication') {
+      return text(DEFAULT_PROBE_TARGETS.apps.pckt.publication)
     }
     if (host === apps.leaflet.host) {
       const { publication, feed } = targets.apps.leaflet
@@ -634,7 +744,16 @@ export class FakeNetwork implements ProbeTransport {
       host === apps.offprint.publicationHost &&
       path === '/.well-known/site.standard.publication'
     ) {
-      return text(targets.apps.offprint.publication)
+      return text(DEFAULT_PROBE_TARGETS.apps.offprint.publication)
+    }
+    for (const [uri, served] of this.publications) {
+      // A URL the probe ought to refuse is served nowhere at all.
+      if (!URL.canParse(served)) continue
+      const at = new URL(served)
+      const base = at.pathname.endsWith('/') ? at.pathname : `${at.pathname}/`
+      if (host === at.hostname && path === `${base}.well-known/site.standard.publication`) {
+        return text(uri)
+      }
     }
     return null
   }

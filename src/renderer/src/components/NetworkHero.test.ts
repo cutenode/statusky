@@ -9,7 +9,7 @@ import {
   makeSnapshot
 } from '../../../test/factories'
 import type { BridgeOptions } from '../../../test/bridge'
-import { renderWith } from '../test/render'
+import { pushNetwork, renderWith, settle } from '../test/render'
 import NetworkHero from './NetworkHero.svelte'
 
 const NOW = Date.parse('2026-01-01T12:00:00Z')
@@ -28,6 +28,10 @@ async function hero(options: BridgeOptions) {
 }
 
 const title = (container: HTMLElement): HTMLElement => container.querySelector('h2')!
+
+/** The region a screen reader is told things from. */
+const live = (container: HTMLElement): HTMLElement =>
+  container.querySelector('[aria-live="polite"]')!
 
 describe('the verdict', () => {
   it('says the Atmosphere is reachable, how many answered and how quickly', async () => {
@@ -85,17 +89,54 @@ describe('the verdict', () => {
 
   it('says it is re-checking a failure it has not believed yet', async () => {
     const one = await hero({
-      snapshot: makeSnapshot({ finishedAt: FINISHED, services: [relay({ state: 'down' }), pds()] })
+      snapshot: makeSnapshot({
+        finishedAt: FINISHED,
+        services: [relay({ state: 'down', rechecking: true }), pds()]
+      })
     })
     expect(title(one.container).textContent?.trim()).toBe('Re-checking 1 service')
 
     const two = await hero({
       snapshot: makeSnapshot({
         finishedAt: FINISHED,
-        services: [relay({ state: 'partial' }), pds({ rechecking: true })]
+        services: [relay({ state: 'partial', rechecking: true }), pds({ rechecking: true })]
       })
     })
     expect(title(two.container).textContent?.trim()).toBe('Re-checking 2 services')
+  })
+
+  // Confirmed down in a panel the menu bar leaves out: red on its row, and before this
+  // the hero said "Re-checking" about it for as long as the outage lasted.
+  it('names a failure that does not count as one, not as a re-check', async () => {
+    const one = await hero({
+      snapshot: makeSnapshot({
+        finishedAt: FINISHED,
+        services: [relay(), makeService({ id: 'spindle:spindle.tangled.sh', state: 'down' })]
+      }),
+      network: makeNetworkSummary({
+        health: 'operational',
+        uncounted: ['spindle.tangled.sh']
+      })
+    })
+    expect(title(one.container).textContent?.trim()).toBe(
+      'spindle.tangled.sh is failing, not counted'
+    )
+    expect(title(one.container).className).not.toContain('text-sev')
+    expect(one.container.textContent).not.toContain('Re-checking')
+
+    const two = await hero({
+      snapshot: makeSnapshot({ finishedAt: FINISHED, services: [relay()] }),
+      network: makeNetworkSummary({ health: 'operational', uncounted: ['a', 'b'] })
+    })
+    expect(title(two.container).textContent?.trim()).toBe('2 uncounted services failing')
+  })
+
+  it('puts a re-check ahead of a failure that does not count', async () => {
+    const { container } = await hero({
+      snapshot: makeSnapshot({ finishedAt: FINISHED, services: [relay({ rechecking: true })] }),
+      network: makeNetworkSummary({ health: 'operational', uncounted: ['a'] })
+    })
+    expect(title(container).textContent?.trim()).toBe('Re-checking 1 service')
   })
 
   it('says it has not checked yet', async () => {
@@ -105,6 +146,38 @@ describe('the verdict', () => {
     expect(container.textContent).not.toContain('Checked ')
     // Nothing measured means nothing answering, whatever the services last said.
     expect(container.textContent).toMatch(/\b0\s*of 1/)
+  })
+})
+
+/**
+ * The progress line changes with every answer, several times a second through a sweep.
+ * Announced as it went, it was all a screen reader said for the length of the sweep.
+ */
+describe('what a screen reader is told', () => {
+  it('says once that a sweep is under way, however far it has got', async () => {
+    const { bridge, container } = await hero({
+      snapshot: makeSnapshot({
+        running: true,
+        services: [relay({ state: 'pending', checks: [makeCheck({ ok: null })] })]
+      })
+    })
+    expect(live(container).textContent?.trim()).toBe('Checking the Atmosphere…')
+
+    await pushNetwork(bridge, {
+      services: [relay({ state: 'pending', checks: [makeCheck()] })]
+    })
+
+    expect(live(container).textContent?.trim()).toBe('Checking the Atmosphere…')
+    expect(container.textContent).toContain('1 of 1 requests answered')
+  })
+
+  it('says the verdict once it is in', async () => {
+    const { container } = await hero({
+      snapshot: makeSnapshot({ finishedAt: FINISHED, services: [relay()] }),
+      network: makeNetworkSummary({ health: 'operational', total: 1, reachable: 1 })
+    })
+    const said = live(container).textContent!.trim()
+    expect(said).toMatch(/^The Atmosphere is reachable\. 1 of 1 answering · median 200/)
   })
 })
 
@@ -205,6 +278,18 @@ describe('switched off', () => {
 
     await fireEvent.click(getByText('Turn on'))
     expect(bridge.api.Preferences.patch).toHaveBeenCalledWith({ networkChecks: true })
+  })
+
+  it('says why, under the button, when main will not turn them on', async () => {
+    const { getByText, getByRole, bridge } = await hero({
+      settings: makeSettings({ networkChecks: false })
+    })
+    vi.mocked(bridge.api.Preferences.patch).mockRejectedValueOnce(new Error('Not on battery'))
+
+    await fireEvent.click(getByText('Turn on'))
+    await settle()
+
+    expect(getByRole('alert').textContent).toContain('Not on battery')
   })
 })
 

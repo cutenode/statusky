@@ -19,9 +19,38 @@
 export function startReducedMotionSync(report: (reduce: boolean) => void): () => void {
   const query = window.matchMedia('(prefers-reduced-motion: reduce)')
 
-  const push = (): void => report(query.matches)
+  const push = (): void => {
+    motion.reduced = query.matches
+    report(query.matches)
+  }
 
   push()
   query.addEventListener('change', push)
   return () => query.removeEventListener('change', push)
+}
+
+/**
+ * The same preference, kept for the page's own motion.
+ *
+ * CSS can answer it for itself — `app.css` stills every animation and transition under
+ * it, and `motion-safe:` keeps the lights from pulsing at all — but two things here move
+ * from script, where no stylesheet reaches: Svelte's transitions, which run as Web
+ * Animations, and a smooth `scrollIntoView`. Both read this instead. Kept current by
+ * `startReducedMotionSync`, which `App` starts; until then, and in a component mounted
+ * without it, nothing has asked for less.
+ */
+class Motion {
+  reduced = $state(false)
+}
+
+export const motion = new Motion()
+
+/** How long a transition should take: as long as it says, or no time at all. */
+export function transitionMs(ms: number): number {
+  return motion.reduced ? 0 : ms
+}
+
+/** How to scroll something into view: smoothly, or straight there. */
+export function scrolling(): ScrollBehavior {
+  return motion.reduced ? 'auto' : 'smooth'
 }

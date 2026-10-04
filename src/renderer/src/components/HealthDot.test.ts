@@ -23,20 +23,20 @@ describe('HealthDot', () => {
 
   it.each(['incident', 'monitoring'] as const)('pulses while %s', async (health) => {
     const { container } = await renderWith(HealthDot, { health, pulse: true })
-    expect(container.querySelector('.animate-ping')).not.toBeNull()
+    expect(container.querySelector('[class*="animate-ping"]')).not.toBeNull()
   })
 
   it.each(['operational', 'maintenance', 'unknown'] as const)(
     'stays still while %s, because nothing is changing',
     async (health) => {
       const { container } = await renderWith(HealthDot, { health, pulse: true })
-      expect(container.querySelector('.animate-ping')).toBeNull()
+      expect(container.querySelector('[class*="animate-ping"]')).toBeNull()
     }
   )
 
   it('never pulses unless asked to', async () => {
     const { container } = await renderWith(HealthDot, { health: 'incident' })
-    expect(container.querySelector('.animate-ping')).toBeNull()
+    expect(container.querySelector('[class*="animate-ping"]')).toBeNull()
   })
 
   it('merges an extra class onto the wrapper', async () => {

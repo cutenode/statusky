@@ -174,7 +174,8 @@ export function makeNetworkSummary(overrides: Partial<NetworkSummary> = {}): Net
     reachable: 0,
     down: [],
     degraded: [],
-    community: [],
+    uncounted: [],
+    vanished: [],
     running: false,
     lastSweepAt: null,
     restraint: null,
@@ -217,6 +218,7 @@ export function makeSnapshot(overrides: Partial<NetworkSnapshot> = {}): NetworkS
     finishedAt: null,
     offline: false,
     restraint: null,
+    vanished: [],
     services: [],
     ...overrides
   }

@@ -1,8 +1,9 @@
-import { Menu, ShareMenu, clipboard, shell } from 'electron'
+import { Menu, ShareMenu, clipboard } from 'electron'
 import type { BrowserWindow, MenuItemConstructorOptions } from 'electron'
 import { probeServiceId } from '../shared/network'
 import { SEVERITY_LABEL } from '../shared/status'
 import type { AppState, StatusPost } from '../shared/types'
+import { openInBrowser } from './external'
 import type { Model } from './model'
 import type { PopoverWindow } from './window'
 
@@ -138,7 +139,9 @@ export function showPostMenu(uri: string, deps: PostMenuDeps): void {
             { label: 'Copy link', click: (): void => void clipboard.writeText(post.url) },
             {
               label: 'Open in browser',
-              click: (): void => void shell.openExternal(post.url)
+              // Through the same check as every other link this app opens, rather than
+              // trusting that whatever built `post.url` only ever builds web addresses.
+              click: (): void => void openInBrowser(post.url)
             }
           ]
         : []),

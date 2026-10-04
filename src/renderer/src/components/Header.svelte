@@ -3,6 +3,7 @@
   import { Tooltip, TooltipContent, TooltipTrigger } from '$lib/components/ui/tooltip'
   import { app } from '$lib/app-state.svelte'
   import { nav, TAB_ORDER, type Tab } from '$lib/nav.svelte'
+  import { Refusals } from '$lib/requests.svelte'
   import { HEALTH_STYLE } from '$lib/severity'
   import { cn } from '$lib/utils'
   import { HEALTH_NOUN } from '@shared/status'
@@ -19,6 +20,7 @@
   import WifiOff from '@lucide/svelte/icons/wifi-off'
   import X from '@lucide/svelte/icons/x'
   import HealthDot from './HealthDot.svelte'
+  import Refused from './Refused.svelte'
 
   let { now }: { now: number } = $props()
 
@@ -59,9 +61,11 @@
   const refreshing = $derived(onNetwork ? app.snapshot.running : syncing)
   const refreshLabel = $derived(onNetwork ? 'Run network checks' : 'Refresh now')
 
+  /** Why main refused the last thing one of these buttons asked for, said under them. */
+  const refusals = new Refusals()
+
   function refresh(): void {
-    if (onNetwork) app.runNetworkChecks()
-    else void app.refresh()
+    void refusals.track('header', onNetwork ? app.runNetworkChecks() : app.refresh())
   }
 
   /**
@@ -78,6 +82,30 @@
 
   /** Where the sliding selection indicator sits, as a share of the strip. */
   const tabIndex = $derived(Math.max(0, TAB_ORDER.indexOf(nav.tab)))
+
+  /**
+   * The arrow keys, Home and End move along the strip, the way a tab list is expected to
+   * work: one tab stop for the whole strip, and the keys to choose within it. A tab is
+   * opened as it is reached, since opening one costs nothing and nothing is lost by it.
+   */
+  function onTabKey(event: KeyboardEvent & { currentTarget: HTMLElement }, index: number): void {
+    const last = TABS.length - 1
+    const next =
+      event.key === 'ArrowRight'
+        ? (index + 1) % TABS.length
+        : event.key === 'ArrowLeft'
+          ? (index + last) % TABS.length
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? last
+              : null
+    if (next === null) return
+    event.preventDefault()
+    nav.open(TABS[next]!.id)
+    const strip = event.currentTarget.closest('[role="tablist"]')
+    strip?.querySelectorAll<HTMLElement>('[role="tab"]')[next]?.focus()
+  }
 
   /** Per-tab unread counts, so a badge says which tab is asking for attention. */
   function unreadFor(tab: Tab): number {
@@ -142,7 +170,7 @@
                 {...props}
                 variant="ghost"
                 size="icon-sm"
-                onclick={() => void app.markAllRead()}
+                onclick={() => void refusals.track('header', app.markAllRead())}
                 aria-label="Mark all as read"
               >
                 <CheckCheck class="size-3.5" />
@@ -239,6 +267,7 @@
       {app.sync.error}
     </p>
   {/if}
+  <Refused class="mt-1.5 pb-0" text={refusals.of('header')} />
 
   <!-- The three things the app is for. A detour to accounts or settings leaves all unselected. -->
   <div
@@ -255,10 +284,16 @@
       aria-hidden="true"
     ></span>
 
-    {#each TABS as tab (tab.id)}
+    {#each TABS as tab, index (tab.id)}
       {@const selected = nav.view === tab.id}
       {@const unread = unreadFor(tab.id)}
       {@const Icon = tab.icon}
+      {@const badge = `tab-badge-${tab.id}`}
+      {@const described = tab.id === 'network' ? networkBadge.kind !== 'none' : unread > 0}
+      <!--
+        The label is the tab's name and its badge is its description, so a screen reader
+        hears "Feed, tab, 3 unread" rather than a name that changes with every count.
+      -->
       <Tooltip>
         <TooltipTrigger>
           {#snippet child({ props })}
@@ -268,7 +303,11 @@
               role="tab"
               aria-selected={selected}
               aria-label={tab.label}
+              aria-controls="view"
+              aria-describedby={described ? badge : undefined}
+              tabindex={tab.id === nav.tab ? 0 : -1}
               onclick={() => nav.open(tab.id)}
+              onkeydown={(event) => onTabKey(event, index)}
               class={cn(
                 'relative z-10 flex items-center justify-center gap-1 rounded-md py-[5px] text-[12px] font-medium transition-colors',
                 selected ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
@@ -281,34 +320,49 @@
 
               {#if tab.id === 'network'}
                 {#if networkBadge.kind === 'text'}
-                  <span class="text-[10.5px] font-normal text-muted-foreground"
+                  <span id={badge} class="text-[10.5px] font-normal text-muted-foreground"
                     >{networkBadge.text}</span
                   >
                 {:else if networkBadge.kind === 'offline'}
-                  <WifiOff class="size-3 text-muted-foreground" aria-label="Offline" />
+                  <span id={badge}>
+                    <WifiOff class="size-3 text-muted-foreground" aria-hidden="true" />
+                    <span class="sr-only">Offline</span>
+                  </span>
                 {:else if networkBadge.kind === 'running'}
-                  <LoaderCircle
-                    class="size-3 animate-spin text-muted-foreground"
-                    aria-label="Checking"
-                  />
+                  <span id={badge}>
+                    <LoaderCircle
+                      class="size-3 animate-spin text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <span class="sr-only">Checking</span>
+                  </span>
                 {:else if networkBadge.kind === 'count'}
                   <span
+                    id={badge}
                     class={cn(
                       'min-w-4 rounded-full px-1 text-[10px] leading-4 font-semibold text-white tabular-nums',
                       networkBadge.tone === 'bad' ? 'bg-sev-outage' : 'bg-sev-investigating'
                     )}
-                    aria-label={`${networkBadge.count} with problems`}>{networkBadge.count}</span
+                    ><span aria-hidden="true">{networkBadge.count}</span><span class="sr-only"
+                      >{`${networkBadge.count} with problems`}</span
+                    ></span
                   >
                 {:else if networkBadge.kind === 'dot'}
-                  <span
-                    class="size-1.5 rounded-full bg-sev-resolved shadow-[0_0_6px_var(--sev-resolved)]"
-                    aria-label="All reachable"
-                  ></span>
+                  <span id={badge}>
+                    <span
+                      class="block size-1.5 rounded-full bg-sev-resolved shadow-[0_0_6px_var(--sev-resolved)]"
+                      aria-hidden="true"
+                    ></span>
+                    <span class="sr-only">All reachable</span>
+                  </span>
                 {/if}
               {:else if unread > 0}
                 <span
+                  id={badge}
                   class="min-w-4 rounded-full bg-primary px-1 text-[10px] leading-4 font-semibold text-primary-foreground tabular-nums"
-                  aria-label={`${unread} unread`}>{unread}</span
+                  ><span aria-hidden="true">{unread}</span><span class="sr-only"
+                    >{`${unread} unread`}</span
+                  ></span
                 >
               {/if}
             </button>

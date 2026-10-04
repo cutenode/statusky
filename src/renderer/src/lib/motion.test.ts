@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mediaListenerCount, setMediaQuery } from '../test/setup'
-import { startReducedMotionSync } from './motion.svelte'
+import { motion, scrolling, startReducedMotionSync, transitionMs } from './motion.svelte'
 
 const REDUCE = '(prefers-reduced-motion: reduce)'
 
@@ -59,5 +59,21 @@ describe('startReducedMotionSync', () => {
     report.mockClear()
     setMediaQuery(REDUCE, true)
     expect(report).not.toHaveBeenCalled()
+  })
+})
+
+describe('the page’s own motion', () => {
+  it('follows the preference as it is reported', () => {
+    setMediaQuery(REDUCE, true)
+    const stop = startReducedMotionSync(vi.fn())
+    expect(motion.reduced).toBe(true)
+    expect(transitionMs(180)).toBe(0)
+    expect(scrolling()).toBe('auto')
+
+    setMediaQuery(REDUCE, false)
+    expect(motion.reduced).toBe(false)
+    expect(transitionMs(180)).toBe(180)
+    expect(scrolling()).toBe('smooth')
+    stop()
   })
 })

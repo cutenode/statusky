@@ -14,6 +14,8 @@
     type SectionChange,
     type SectionKey
   } from '$lib/probe-targets'
+  import { scrolling } from '$lib/motion.svelte'
+  import { targetsDraft as store } from '$lib/probe-targets-draft.svelte'
   import { cn } from '$lib/utils'
   import {
     DEFAULT_PROBE_TARGETS,
@@ -34,8 +36,7 @@
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw'
   import Upload from '@lucide/svelte/icons/upload'
   import X from '@lucide/svelte/icons/x'
-  import { tick, untrack } from 'svelte'
-  import { SvelteSet } from 'svelte/reactivity'
+  import { onMount, tick, untrack } from 'svelte'
 
   /**
    * The check targets editor: the accounts and records the network checks read, which
@@ -51,6 +52,10 @@
    * An import and a reset replace the whole document, so both say what they would change
    * and wait to be confirmed. Export writes what is in force, not the working copy: the
    * file is exactly what an import of it would put back.
+   *
+   * The working copy, and what goes with it, is kept in `$lib/probe-targets-draft`
+   * rather than here, so it outlives this panel: the popover rebuilds it on every switch,
+   * and an edit is not lost to a tab being changed or a banner being clicked.
    */
 
   /** What the checks read now: the saved override, or the checked-in defaults. */
@@ -60,9 +65,8 @@
 
   const copy = (targets: ProbeTargets): ProbeTargets => structuredClone(targets)
 
-  let draft = $state(copy(effectiveProbeTargets(app.settings.probeTargets)))
-  /** The saved document the working copy was last taken from, to tell edits from pushes. */
-  let base = effectiveProbeTargets(app.settings.probeTargets)
+  /** The working copy, which `store` keeps between one drawing of the panel and the next. */
+  const draft = $derived(store.doc)
 
   const current = $derived<ProbeTargets>($state.snapshot(draft))
   const validation = $derived(validateProbeTargets(current))
@@ -84,36 +88,69 @@
    * would be scolding the user for pressing the button. There are no issues about a
    * whole list to show: the add and remove buttons stop at each list's limits.
    */
-  const touched = new SvelteSet<string>()
-  let attempted = $state(false)
+  const touched = store.touched
 
   const shown = $derived(
     validation.ok
       ? []
       : validation.issues.filter(
-          (issue: ProbeTargetIssue) => attempted || touched.has(pathKey(issue.path))
+          (issue: ProbeTargetIssue) => store.attempted || touched.has(pathKey(issue.path))
         )
   )
   const fieldIssues = $derived(issuesByPath(shown))
 
-  const expanded = new SvelteSet<SectionKey>()
+  const expanded = store.expanded
 
   function problemsIn(key: SectionKey): number {
     return shown.filter((issue) => sectionOf(issue.path) === key).length
   }
 
+  /**
+   * What the checks found gone of an account in the working copy, if anything: the
+   * account itself, or the handle it is listed under. Read against what is saved, so an
+   * account already replaced or looked up again here stops being flagged at once.
+   */
+  function goneOf(account: ProbeAccount): 'account' | 'handle' | null {
+    const listed = saved.accounts.find((a) => a.did === account.did)
+    if (!listed) return null
+    const parts = new Set(
+      app.network.vanished.filter((v) => v.did === account.did).map((v) => v.part)
+    )
+    if (parts.has('account')) return 'account'
+    return parts.has('handle') && listed.handle === account.handle ? 'handle' : null
+  }
+
+  const goneCount = $derived(draft.accounts.filter((account) => goneOf(account) !== null).length)
+
+  // ---------------------------------------------------------- account edits
+
+  // Declared ahead of `reset`, which clears them, and which the first drawing of the panel
+  // can call before the rest of this script has run.
+  let addValue = $state('')
+  let addError = $state<string | null>(null)
+  /**
+   * The account being replaced, by its DID, and what it is being replaced with.
+   *
+   * By DID rather than by its place in the list: the list can change under an edit — a
+   * push, an import — and a place remembered across that is somebody else's place.
+   */
+  let editing = $state<string | null>(null)
+  let editValue = $state('')
+  let editError = $state<string | null>(null)
+  let editInput = $state<HTMLInputElement | null>(null)
+  /** Which lookup is in flight: `'add'` for the add field, or the DID of the row changing. */
+  let looking = $state<string | null>(null)
+
   // ------------------------------------------------------------ status line
 
   type Notice = { kind: 'done' | 'error'; text: string }
   let notice = $state<Notice | null>(null)
-  /** What is waiting on main, so its button can say so and the others hold still. */
-  let busy = $state<'export' | 'open' | 'save' | 'apply' | null>(null)
 
   /** Put the working copy back to what is saved, forgetting edits and errors alike. */
   function reset(next: ProbeTargets): void {
-    base = next
-    draft = copy(next)
-    attempted = false
+    store.base = next
+    store.doc = copy(next)
+    store.attempted = false
     touched.clear()
     editing = null
     editError = null
@@ -122,12 +159,27 @@
 
   // Follow what is saved when it changes underneath — an import, a reset, this panel's
   // own save — unless there are edits in progress that the change did not come from.
+  // Also what adopts the saved document the first time the editor is drawn, since the
+  // working copy starts out as the defaults and nothing has been edited to keep.
   $effect.pre(() => {
     const next = saved
     untrack(() => {
-      if (sameProbeTargets(next, base)) return
-      if (sameProbeTargets(current, base)) reset(next)
-      else base = next
+      if (sameProbeTargets(next, store.base)) return
+      if (sameProbeTargets(current, store.base)) reset(next)
+      else store.base = next
+    })
+  })
+
+  // Asked to land on a section, by the dashboard's "Replace in Settings": scroll it into
+  // view and put focus on its heading, where the keyboard can carry on from.
+  onMount(() => {
+    const key = store.reveal
+    if (!key) return
+    store.reveal = null
+    void tick().then(() => {
+      const heading = document.getElementById(`probe-section-toggle-${key}`)
+      heading?.scrollIntoView({ block: 'start', behavior: scrolling() })
+      heading?.focus()
     })
   })
 
@@ -165,22 +217,17 @@
     void focusField(['feeds', draft.feeds.length - 1, 'label'])
   }
 
+  function addPds(): void {
+    draft.pdses.push('')
+    void focusField(['pdses', draft.pdses.length - 1])
+  }
+
   function addImage(): void {
     draft.cdnImages.push({ did: '', cid: '' })
     void focusField(['cdnImages', draft.cdnImages.length - 1, 'did'])
   }
 
   // ----------------------------------------------------------- accounts
-
-  let addValue = $state('')
-  let addError = $state<string | null>(null)
-  /** The account being replaced, by index, and what it is being replaced with. */
-  let editing = $state<number | null>(null)
-  let editValue = $state('')
-  let editError = $state<string | null>(null)
-  let editInput = $state<HTMLInputElement | null>(null)
-  /** Which lookup is in flight: the add field, or the row being changed. */
-  let looking = $state<'add' | number | null>(null)
 
   const accountsFull = $derived(draft.accounts.length >= PROBE_TARGET_LIMITS.accounts)
 
@@ -190,10 +237,10 @@
    * Goes through main, which answers from the same AppView lookup that tracking a
    * status account uses. An account whose handle does not verify comes back as
    * `handle.invalid`, which is a real domain name as far as the schema can tell and a
-   * handle check that could never pass, so it is refused here. `replacing` is the row
-   * being changed, which may of course resolve to itself.
+   * handle check that could never pass, so it is refused here. `replacing` is the DID of
+   * the row being changed, which may of course resolve to itself.
    */
-  async function lookUp(input: string, replacing: number | null): Promise<ProbeAccount | string> {
+  async function lookUp(input: string, replacing: string | null): Promise<ProbeAccount | string> {
     const outcome = await app.lookUpActor(input)
     if (!outcome.ok) return outcome.error
     const did = outcome.value.did
@@ -202,7 +249,7 @@
       return `${did} has no handle that verifies, so its handle check could never pass.`
     }
     const clash = draft.accounts.findIndex(
-      (account, index) => index !== replacing && (account.did === did || account.handle === handle)
+      (account) => account.did !== replacing && (account.did === did || account.handle === handle)
     )
     if (clash !== -1) return `@${handle} is already in the list.`
     return { did, handle }
@@ -224,41 +271,62 @@
     notice = null
   }
 
-  async function startEdit(index: number): Promise<void> {
-    editing = index
-    editValue = draft.accounts[index]!.handle
+  async function startEdit(account: ProbeAccount): Promise<void> {
+    editing = account.did
+    editValue = account.handle
     editError = null
     await tick()
     editInput?.select()
   }
 
-  function cancelEdit(): void {
-    editing = null
-    editError = null
+  /** Put focus back on a row's change button, which is where it was before the edit. */
+  async function focusRow(did: string): Promise<void> {
+    await tick()
+    document.getElementById(`probe-account-${did}`)?.focus()
   }
 
-  async function replaceAccount(event: SubmitEvent, index: number): Promise<void> {
+  function cancelEdit(): void {
+    const did = editing
+    editing = null
+    editError = null
+    if (did) void focusRow(did)
+  }
+
+  async function replaceAccount(event: SubmitEvent, did: string): Promise<void> {
     event.preventDefault()
     const input = editValue.trim()
     if (!input || looking !== null) return
-    looking = index
-    const result = await lookUp(input, index)
+    looking = did
+    const result = await lookUp(input, did)
     looking = null
+    // Found again by its DID: wherever it is now, if it is still here at all.
+    const index = draft.accounts.findIndex((account) => account.did === did)
+    if (index === -1 || editing !== did) return
     if (typeof result === 'string') {
       editError = result
       return
     }
     draft.accounts[index] = result
-    cancelEdit()
+    editing = null
+    editError = null
     notice = null
+    void focusRow(result.did)
+  }
+
+  /** Why a row's remove button is held, if it is: the last account, or one being changed. */
+  function keepAccount(): string | undefined {
+    if (draft.accounts.length <= 1) return 'The checks need at least one account'
+    if (editing !== null || looking !== null) return 'Finish changing the account first'
+    return undefined
   }
 
   // --------------------------------------------------------------- save
 
   async function save(): Promise<void> {
-    attempted = true
+    store.attempted = true
     notice = null
-    const result = validateProbeTargets(current)
+    const sent = current
+    const result = validateProbeTargets(sent)
     if (!result.ok) {
       // Open every section with something to fix, since a closed one hides where it is.
       for (const issue of result.issues) {
@@ -267,14 +335,18 @@
       }
       return
     }
-    busy = 'save'
+    store.busy = 'save'
     const outcome = await app.setProbeTargets(result.targets)
-    busy = null
+    store.busy = null
     if (!outcome.ok) {
       notice = { kind: 'error', text: outcome.error }
       return
     }
-    reset(effectiveProbeTargets(outcome.value.probeTargets))
+    const next = effectiveProbeTargets(outcome.value.probeTargets)
+    // Anything typed while the save was on its way stays, as an edit on top of what was
+    // saved. Replacing the working copy with the saved one threw it away unseen.
+    if (sameProbeTargets(current, sent)) reset(next)
+    else store.base = next
     notice = { kind: 'done', text: 'Saved. The next check uses them.' }
   }
 
@@ -287,9 +359,9 @@
 
   async function exportTargets(): Promise<void> {
     notice = null
-    busy = 'export'
+    store.busy = 'export'
     const outcome = await app.exportProbeTargets()
-    busy = null
+    store.busy = null
     if (!outcome.ok) notice = { kind: 'error', text: outcome.error }
     else if (outcome.value) {
       const unsaved = dirty ? ' Your unsaved edits are not in it.' : ''
@@ -349,9 +421,9 @@
 
   async function chooseFile(): Promise<void> {
     problems = null
-    busy = 'open'
+    store.busy = 'open'
     const outcome = await app.openProbeTargetsFile()
-    busy = null
+    store.busy = null
     if (!outcome.ok) problems = { from: 'The file', lines: [outcome.error] }
     else if (outcome.value) check(outcome.value.text, outcome.value.name)
   }
@@ -369,9 +441,9 @@
   }
 
   async function apply({ kind, from, targets }: Pending): Promise<void> {
-    busy = 'apply'
+    store.busy = 'apply'
     const outcome = await app.setProbeTargets(targets)
-    busy = null
+    store.busy = null
     if (!outcome.ok) {
       notice = { kind: 'error', text: outcome.error }
       return
@@ -392,9 +464,11 @@
   const HINTS: Record<SectionKey, string> = {
     accounts: 'Every AppView is asked for each one’s profile, handle and newest posts.',
     feeds: 'Each is asked for one post, from its own host, and gets a row of its own.',
+    pdses: 'Each gets a row of its own, and Bluesky’s relay is asked whether it still carries it.',
     forYou: 'A feed the AppViews serve, and the service its generator record names.',
     cdnImages: 'The CDN is asked for the start of each image.',
     tangled: 'One repository: its page, its Go import path and its DID.',
+    pckt: 'The publication its well-known route answers with.',
     leaflet: 'A published document, and a busy publication whose feed shows it is current.',
     offprint: 'The publication its well-known route answers with.'
   }
@@ -402,6 +476,7 @@
   function countOf(key: SectionKey): string | null {
     if (key === 'accounts') return `${draft.accounts.length} of ${PROBE_TARGET_LIMITS.accounts}`
     if (key === 'feeds') return `${draft.feeds.length} of ${PROBE_TARGET_LIMITS.feeds}`
+    if (key === 'pdses') return `${draft.pdses.length} of ${PROBE_TARGET_LIMITS.pdses}`
     if (key === 'cdnImages') {
       return `${draft.cdnImages.length} of ${PROBE_TARGET_LIMITS.cdnImages}`
     }
@@ -459,10 +534,10 @@
       {@const didIssue = fieldIssues.get(pathKey(['accounts', index, 'did']))}
       {@const handleIssue = fieldIssues.get(pathKey(['accounts', index, 'handle']))}
       <li class="px-2.5 py-1.5">
-        {#if editing === index}
+        {#if editing === account.did}
           <form
             class="flex items-center gap-1.5"
-            onsubmit={(event) => replaceAccount(event, index)}
+            onsubmit={(event) => replaceAccount(event, account.did)}
           >
             <Input
               bind:ref={editInput}
@@ -473,9 +548,14 @@
               autocomplete="off"
               autocapitalize="off"
               spellcheck={false}
-              disabled={looking === index}
+              disabled={looking === account.did}
               oninput={() => (editError = null)}
-              onkeydown={(event) => event.key === 'Escape' && cancelEdit()}
+              onkeydown={(event) => {
+                if (event.key !== 'Escape') return
+                // Answered here: the edit is what Esc closes, not the whole popover.
+                event.preventDefault()
+                cancelEdit()
+              }}
             />
             <Button
               type="submit"
@@ -484,7 +564,7 @@
               aria-label="Look it up and replace"
               disabled={!editValue.trim() || looking !== null}
             >
-              {#if looking === index}
+              {#if looking === account.did}
                 <LoaderCircle class="size-3.5 animate-spin" />
               {:else}
                 <Check class="size-3.5" />
@@ -511,25 +591,34 @@
               </p>
             </div>
             <Button
+              id={`probe-account-${account.did}`}
               variant="ghost"
               size="icon-sm"
               class="size-6 text-muted-foreground"
               aria-label={`Change @${account.handle}`}
               title="Replace with another account"
               disabled={looking !== null}
-              onclick={() => void startEdit(index)}
+              onclick={() => void startEdit(account)}
             >
               <Pencil class="size-3" />
             </Button>
             {@render removeButton(
               `@${account.handle}`,
               () => draft.accounts.splice(index, 1),
-              draft.accounts.length <= 1 ? 'The checks need at least one account' : undefined
+              keepAccount()
             )}
           </div>
           {#if didIssue || handleIssue}
             <p class="pt-1 text-[10.5px] leading-snug text-destructive">
               {handleIssue ?? didIssue}
+            </p>
+          {:else if goneOf(account) === 'account'}
+            <p class="pt-1 text-[10.5px] leading-snug text-sev-degraded" role="status">
+              No AppView has this account any more. Replace it with one that is still posting.
+            </p>
+          {:else if goneOf(account) === 'handle'}
+            <p class="pt-1 text-[10.5px] leading-snug text-sev-degraded" role="status">
+              This handle no longer leads to this account. Look it up again by its DID.
             </p>
           {/if}
         {/if}
@@ -611,6 +700,40 @@
   </Button>
 {/snippet}
 
+{#snippet pdsesBody()}
+  <div class="space-y-1.5">
+    {#each draft.pdses as host, index (index)}
+      <div
+        class="relative rounded-md border border-border/70 py-2 pr-9 pl-2"
+        role="group"
+        aria-label={`PDS ${index + 1}`}
+      >
+        <div class="absolute top-2.5 right-1.5">
+          {@render removeButton(host || `PDS ${index + 1}`, () => draft.pdses.splice(index, 1))}
+        </div>
+        {@render field('Host', ['pdses', index], 'pds.example.com')}
+      </div>
+    {:else}
+      <p class="px-0.5 text-[11px] text-muted-foreground">
+        Only the PDSes Statusky ships with are checked. Add yours to watch it too.
+      </p>
+    {/each}
+  </div>
+  <Button
+    variant="ghost"
+    size="sm"
+    class="mt-1 text-muted-foreground"
+    disabled={draft.pdses.length >= PROBE_TARGET_LIMITS.pdses}
+    title={draft.pdses.length >= PROBE_TARGET_LIMITS.pdses
+      ? `At most ${PROBE_TARGET_LIMITS.pdses} PDSes`
+      : undefined}
+    onclick={addPds}
+  >
+    <Plus class="size-3.5" />
+    Add PDS
+  </Button>
+{/snippet}
+
 {#snippet imagesBody()}
   <div class="space-y-1.5">
     {#each draft.cdnImages, index (index)}
@@ -662,6 +785,14 @@
   </div>
 {/snippet}
 
+{#snippet pcktBody()}
+  {@render field(
+    'Publication',
+    ['apps', 'pckt', 'publication'],
+    'at://did:plc:…/site.standard.publication/…'
+  )}
+{/snippet}
+
 {#snippet leafletBody()}
   <div class="space-y-1.5">
     {#each [{ key: 'publication', title: 'Document' }, { key: 'feed', title: 'Feed' }] as const as record (record.key)}
@@ -687,12 +818,16 @@
     {@render accountsBody()}
   {:else if key === 'feeds'}
     {@render feedsBody()}
+  {:else if key === 'pdses'}
+    {@render pdsesBody()}
   {:else if key === 'forYou'}
     {@render forYouBody()}
   {:else if key === 'cdnImages'}
     {@render imagesBody()}
   {:else if key === 'tangled'}
     {@render tangledBody()}
+  {:else if key === 'pckt'}
+    {@render pcktBody()}
   {:else if key === 'leaflet'}
     {@render leafletBody()}
   {:else}
@@ -724,17 +859,17 @@
     <Button
       variant="outline"
       size="sm"
-      disabled={busy !== null}
+      disabled={store.busy !== null}
       onclick={() => void exportTargets()}
     >
-      {#if busy === 'export'}
+      {#if store.busy === 'export'}
         <LoaderCircle class="size-3.5 animate-spin" />
       {:else}
         <Download class="size-3.5" />
       {/if}
       Export…
     </Button>
-    <Button variant="outline" size="sm" disabled={busy !== null} onclick={startImport}>
+    <Button variant="outline" size="sm" disabled={store.busy !== null} onclick={startImport}>
       <Upload class="size-3.5" />
       Import…
     </Button>
@@ -742,7 +877,7 @@
       variant="ghost"
       size="sm"
       class="ml-auto text-muted-foreground"
-      disabled={!custom || busy !== null}
+      disabled={!custom || store.busy !== null}
       title={custom ? undefined : 'Already on the defaults'}
       onclick={startReset}
     >
@@ -809,8 +944,8 @@
           {changed.length ? 'Cancel' : 'Close'}
         </Button>
         {#if changed.length}
-          <Button size="sm" disabled={busy !== null} onclick={() => void apply(confirming)}>
-            {#if busy === 'apply'}
+          <Button size="sm" disabled={store.busy !== null} onclick={() => void apply(confirming)}>
+            {#if store.busy === 'apply'}
               <LoaderCircle class="size-3.5 animate-spin" />
             {/if}
             {pending.kind === 'reset' ? 'Reset' : 'Replace targets'}
@@ -830,6 +965,12 @@
       </p>
       <textarea
         bind:value={pasted}
+        onkeydown={(event) => {
+          if (event.key !== 'Escape') return
+          // Esc puts the import away, rather than the whole popover.
+          event.preventDefault()
+          closeImport()
+        }}
         rows="3"
         class="selectable flex w-full min-w-0 resize-none rounded-md border border-input bg-background/60 px-2 py-1.5 font-mono text-[11px] shadow-xs outline-none placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-[2px] focus-visible:ring-ring/40"
         placeholder="Paste JSON here, or choose a file."
@@ -840,10 +981,10 @@
         <Button
           variant="outline"
           size="sm"
-          disabled={busy !== null}
+          disabled={store.busy !== null}
           onclick={() => void chooseFile()}
         >
-          {#if busy === 'open'}
+          {#if store.busy === 'open'}
             <LoaderCircle class="size-3.5 animate-spin" />
           {/if}
           Choose file…
@@ -880,10 +1021,11 @@
       {@const issues = problemsIn(section.key)}
       <div>
         <button
+          id={`probe-section-toggle-${section.key}`}
           type="button"
-          class="flex w-full items-center gap-1.5 py-2 text-left"
+          class="flex w-full scroll-mt-2 items-center gap-1.5 py-2 text-left"
           aria-expanded={open}
-          aria-controls={`probe-section-${section.key}`}
+          aria-controls={open ? `probe-section-${section.key}` : undefined}
           onclick={() => toggle(section.key)}
         >
           <ChevronRight
@@ -895,6 +1037,8 @@
           <span class="text-[12.5px] font-medium">{section.label}</span>
           {#if issues}
             <span class="text-[10.5px] text-destructive">{issues} to fix</span>
+          {:else if section.key === 'accounts' && goneCount}
+            <span class="text-[10.5px] text-sev-degraded">{goneCount} gone</span>
           {:else if edited.has(section.key)}
             <span class="text-[10.5px] text-primary">edited</span>
           {/if}
@@ -926,7 +1070,7 @@
     keeps clear of, leaving a strip of content scrolling past underneath.
   -->
   {#if dirty}
-    {@const failing = attempted && !validation.ok}
+    {@const failing = store.attempted && !validation.ok}
     {@const count = validation.ok ? 0 : validation.issues.length}
     <div
       class="sticky -bottom-4 z-10 -mx-3 mt-2 flex items-center gap-2 border-t border-border/70 bg-background/40 px-3 py-2 backdrop-blur-md"
@@ -943,8 +1087,8 @@
           : 'Unsaved changes to the check targets.'}
       </p>
       <Button variant="ghost" size="sm" onclick={discard}>Discard</Button>
-      <Button size="sm" disabled={busy !== null} onclick={() => void save()}>
-        {#if busy === 'save'}
+      <Button size="sm" disabled={store.busy !== null} onclick={() => void save()}>
+        {#if store.busy === 'save'}
           <LoaderCircle class="size-3.5 animate-spin" />
         {/if}
         Save

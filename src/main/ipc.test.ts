@@ -311,7 +311,7 @@ describe('opening links', () => {
 
   it('rejects a value that is not a URL at all', async () => {
     const h = await boot()
-    await expect(h.api.Host.openExternal('not a url')).rejects.toThrow(/Invalid URL/)
+    await expect(h.api.Host.openExternal('not a url')).rejects.toThrow(/http and https/)
     expect(openedExternally).toEqual([])
   })
 })

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { absoluteTime, compactRelativeTime, dayLabel, relativeTime, sinceTime } from './time'
+import {
+  absoluteTime,
+  compactRelativeTime,
+  dayKey,
+  dayLabel,
+  relativeTime,
+  sinceTime
+} from './time'
 
 const NOW = Date.parse('2026-09-09T12:00:00Z')
 
@@ -119,6 +126,46 @@ describe('dayLabel', () => {
 
   it('handles unparseable input', () => {
     expect(dayLabel('nope', localNow)).toBe('Unknown')
+  })
+
+  it('leaves the year off a date earlier this year', () => {
+    expect(dayLabel(new Date(2026, 0, 15, 10).toISOString(), localNow)).not.toContain('2026')
+  })
+
+  // A feed of rare posts can reach back further than a year, where "September 10"
+  // twice over would be two days wearing one name.
+  it('gives a date in another year its year', () => {
+    const lastYear = dayLabel(new Date(2025, 8, 10, 10).toISOString(), localNow)
+    const thisYear = dayLabel(new Date(2026, 7, 10, 10).toISOString(), localNow)
+
+    expect(lastYear).toContain('2025')
+    expect(thisYear).not.toContain('2026')
+    expect(dayLabel(new Date(2024, 8, 10, 10).toISOString(), localNow)).not.toBe(lastYear)
+  })
+})
+
+describe('dayKey', () => {
+  it('names the local calendar day', () => {
+    expect(dayKey(new Date(2026, 8, 9, 23, 30).toISOString(), localNow + 86_400_000)).toBe(
+      '2026-09-09'
+    )
+    expect(dayKey(new Date(2025, 0, 3, 0, 5).toISOString(), localNow)).toBe('2025-01-03')
+  })
+
+  it('tells the same date in two years apart', () => {
+    expect(dayKey(new Date(2025, 8, 10, 10).toISOString(), localNow)).not.toBe(
+      dayKey(new Date(2024, 8, 10, 10).toISOString(), localNow)
+    )
+  })
+
+  it('files anything dated ahead of the local clock under today, as dayLabel does', () => {
+    expect(dayKey(atLocal(-1), localNow)).toBe(dayKey(atLocal(0), localNow))
+    expect(dayKey(atLocal(0), localNow)).toBe('2026-09-09')
+  })
+
+  it('puts every unparseable stamp under one key', () => {
+    expect(dayKey('nope', localNow)).toBe('unknown')
+    expect(dayKey('also not a date', localNow)).toBe('unknown')
   })
 })
 

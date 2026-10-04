@@ -6,6 +6,7 @@ import { formatClock } from '@shared/notify'
 import { DEFAULT_PROBE_TARGETS } from '@shared/probe-targets'
 import type { Settings } from '@shared/types'
 import { makeSettings } from '../../../test/factories'
+import type { TestBridge } from '../../../test/bridge'
 import { chooseOption, pushState, renderWith, settle, type Rendered } from '../test/render'
 import NotificationSettings from './NotificationSettings.svelte'
 
@@ -461,6 +462,24 @@ describe('the test notification', () => {
     expect(getByRole('button', { name: 'Send test' }).hasAttribute('disabled')).toBe(false)
   })
 
+  // The answer read is this call's own, not whatever happened to fail meanwhile.
+  it('reports its own answer, not some other control’s failure', async () => {
+    const view = await renderWith(NotificationSettings)
+    let deliver!: () => void
+    vi.mocked(view.bridge.api.Host.sendTestNotification).mockImplementationOnce(
+      () => new Promise<void>((resolve) => (deliver = resolve))
+    )
+    vi.mocked(view.bridge.api.Preferences.patch).mockRejectedValueOnce(new Error('Refused'))
+
+    await fireEvent.click(view.getByRole('button', { name: 'Send test' }))
+    await fireEvent.click(view.getByLabelText('Combine bursts'))
+    await settle()
+    deliver()
+    await settle()
+
+    expect((await view.findByRole('status')).textContent).toContain('Sent.')
+  })
+
   // A refused banner is invisible by definition, so the panel has to say so itself.
   it('reports the reason when the system refuses the notification', async () => {
     const { bridge, getByRole, findByRole, queryByRole } = await renderWith(NotificationSettings)
@@ -474,5 +493,190 @@ describe('the test notification', () => {
       'Enable notifications for Statusky in System Settings.'
     )
     expect(queryByRole('status')).toBeNull()
+  })
+})
+
+/** Refuse the next settings change, the way main refuses one: with a reason. */
+function refuse(bridge: TestBridge): void {
+  vi.mocked(bridge.api.Preferences.patch).mockRejectedValueOnce(
+    new Error('Settings are read-only right now')
+  )
+}
+
+/**
+ * Hold every settings change unanswered, the way a busy main would, and hand back what
+ * answers them all — as main would, with what was asked for.
+ */
+function hold(bridge: TestBridge): () => Promise<void> {
+  const answers: (() => void)[] = []
+  vi.mocked(bridge.api.Preferences.patch).mockImplementation(
+    (next) =>
+      new Promise((resolve) => {
+        answers.push(() => resolve({ ...bridge.state.settings, ...next }))
+      })
+  )
+  return async (): Promise<void> => {
+    for (const answer of answers) answer()
+    await new Promise((resolve) => setTimeout(resolve))
+  }
+}
+
+/**
+ * A refusal used to go onto one line shared by the whole popover, under the Accounts
+ * tab's add field, and the control that asked went on showing the click.
+ */
+describe('a change main refuses', () => {
+  it('is said under the switch that asked, and the switch goes back', async () => {
+    const view = await renderWith(NotificationSettings)
+    refuse(view.bridge)
+    const toggle = view.getByLabelText('Keep outages on screen')
+    const before = toggle.getAttribute('aria-checked')
+
+    await fireEvent.click(toggle)
+    await settle()
+
+    expect(toggle.getAttribute('aria-checked')).toBe(before)
+    expect(view.getByRole('alert').textContent).toContain('Settings are read-only right now')
+  })
+
+  it('is said under the master switch too', async () => {
+    const view = await renderWith(NotificationSettings)
+    refuse(view.bridge)
+
+    await fireEvent.click(view.getByLabelText('Enable notifications'))
+    await settle()
+
+    expect(view.getByRole('alert').textContent).toContain('read-only')
+    expect(view.getByLabelText('Enable notifications').getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('puts a stage chip back, and says why under the chips', async () => {
+    const view = await renderWith(NotificationSettings)
+    refuse(view.bridge)
+
+    await fireEvent.click(stage(view, 'Degraded'))
+    await settle()
+
+    expect(stage(view, 'Degraded').getAttribute('aria-pressed')).toBe('true')
+    expect(view.getByRole('alert').textContent).toContain('read-only')
+  })
+
+  it('unticks a pin main would not take', async () => {
+    const view = await renderWith(
+      NotificationSettings,
+      {},
+      { settings: makeSettings({ notifyProbeScope: 'pinned' }) }
+    )
+    refuse(view.bridge)
+    const box = pinRow(view, bobbin.label).querySelector('input')!
+
+    await fireEvent.click(box)
+    await settle()
+
+    expect(box.checked).toBe(false)
+    expect(view.getByRole('alert').textContent).toContain('read-only')
+  })
+
+  it('puts a quiet-hours time back to the one in force', async () => {
+    const view = await renderWith(
+      NotificationSettings,
+      {},
+      { settings: makeSettings({ quietHoursEnabled: true }) }
+    )
+    refuse(view.bridge)
+    const start = view.getByLabelText('Quiet hours start') as HTMLInputElement
+
+    await fireEvent.change(start, { target: { value: '23:30' } })
+    await settle()
+
+    expect(start.value).toBe('22:00')
+    expect(view.getByRole('alert').textContent).toContain('read-only')
+  })
+
+  it('is said under an indented row in line with it', async () => {
+    const view = await renderWith(NotificationSettings)
+    refuse(view.bridge)
+
+    await fireEvent.click(view.getByLabelText('Notify when a service recovers'))
+    await settle()
+
+    expect(view.getByRole('alert').className).toContain('pl-3')
+  })
+
+  it('is said under the source that asked', async () => {
+    const view = await renderWith(NotificationSettings)
+    refuse(view.bridge)
+
+    await fireEvent.click(view.getByLabelText('Notifications from webhook sources'))
+    await settle()
+
+    expect(view.getByRole('alert').textContent).toContain('read-only')
+    expect(
+      view.getByLabelText('Notifications from webhook sources').getAttribute('aria-checked')
+    ).toBe('true')
+  })
+})
+
+describe('quick clicks', () => {
+  it('lands both of two stages clicked before main answers either', async () => {
+    const view = await renderWith(
+      NotificationSettings,
+      {},
+      { settings: makeSettings({ notifySeverities: ['resolved'] }) }
+    )
+    const release = hold(view.bridge)
+
+    await fireEvent.click(stage(view, 'Outage'))
+    // Drawn as asked for while it is on its way.
+    expect(stage(view, 'Outage').getAttribute('aria-pressed')).toBe('true')
+    await fireEvent.click(stage(view, 'Maintenance'))
+
+    expect(view.bridge.api.Preferences.patch).toHaveBeenLastCalledWith({
+      notifySeverities: ['outage', 'resolved', 'maintenance']
+    })
+    await release()
+  })
+
+  it('builds a stage on a preset still on its way', async () => {
+    const view = await renderWith(NotificationSettings)
+    const release = hold(view.bridge)
+
+    await fireEvent.click(view.getByText('Outages'))
+    await fireEvent.click(stage(view, 'Maintenance'))
+
+    expect(view.bridge.api.Preferences.patch).toHaveBeenLastCalledWith({
+      notifySeverities: ['outage', 'degraded', 'investigating', 'maintenance']
+    })
+    await release()
+  })
+
+  it('lands both of two sources switched before main answers either', async () => {
+    const view = await renderWith(NotificationSettings)
+    const release = hold(view.bridge)
+
+    await fireEvent.click(view.getByLabelText('Notifications from webhook sources'))
+    await fireEvent.click(view.getByLabelText('Notifications from status accounts'))
+
+    expect(view.bridge.api.Preferences.patch).toHaveBeenLastCalledWith({
+      notifySources: ['probe']
+    })
+    await release()
+  })
+
+  it('lands both of two pins ticked before main answers either', async () => {
+    const view = await renderWith(
+      NotificationSettings,
+      {},
+      { settings: makeSettings({ notifyProbeScope: 'pinned' }) }
+    )
+    const release = hold(view.bridge)
+
+    await fireEvent.click(pinRow(view, bobbin.label).querySelector('input')!)
+    await fireEvent.click(pinRow(view, hydrant.label).querySelector('input')!)
+
+    expect(view.bridge.api.Preferences.patch).toHaveBeenLastCalledWith({
+      pinnedServices: [bobbin.id, hydrant.id]
+    })
+    await release()
   })
 })

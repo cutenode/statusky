@@ -76,7 +76,21 @@ function startOfDay(t: number): number {
   return d.getTime()
 }
 
-/** Group key used to break the feed into "Today" / "Yesterday" / date sections. */
+const weekdayFormatter = new Intl.DateTimeFormat(undefined, { weekday: 'long' })
+const dateFormatter = new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric' })
+const datedYearFormatter = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric'
+})
+
+/**
+ * The heading over a day's posts: "Today", "Yesterday", a weekday, or a date.
+ *
+ * A date outside the current year carries its year. A status account can post rarely
+ * enough that thirty of its posts span more than a year, and "September 10" said twice
+ * in one feed, a year apart, reads as one day split in two.
+ */
 export function dayLabel(iso: string, now: number = Date.now()): string {
   const then = Date.parse(iso)
   if (Number.isNaN(then)) return 'Unknown'
@@ -84,6 +98,25 @@ export function dayLabel(iso: string, now: number = Date.now()): string {
   const days = Math.round((startOfDay(now) - startOfDay(then)) / 86_400_000)
   if (days <= 0) return 'Today'
   if (days === 1) return 'Yesterday'
-  if (days < 7) return new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(then)
-  return new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric' }).format(then)
+  if (days < 7) return weekdayFormatter.format(then)
+  const sameYear = new Date(then).getFullYear() === new Date(now).getFullYear()
+  return (sameYear ? dateFormatter : datedYearFormatter).format(then)
+}
+
+/**
+ * Which local calendar day a post falls on, `2026-09-09`, for telling day groups apart.
+ *
+ * What `dayLabel` says is for reading and this is for keying: one key per day the
+ * label could stand for, so two groups never share one. Anything dated ahead of the
+ * local clock is today's, as `dayLabel` files it, and anything unparseable shares the
+ * one `unknown`.
+ */
+export function dayKey(iso: string, now: number = Date.now()): string {
+  const then = Date.parse(iso)
+  if (Number.isNaN(then)) return 'unknown'
+
+  const day = new Date(Math.min(then, now))
+  const month = String(day.getMonth() + 1).padStart(2, '0')
+  const date = String(day.getDate()).padStart(2, '0')
+  return `${day.getFullYear()}-${month}-${date}`
 }

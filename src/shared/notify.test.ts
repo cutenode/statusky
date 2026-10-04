@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { makeAccount, makePost, makeSettings } from '../test/factories'
 import { PROBE_SOURCE_DID, SERVICES, isCore } from './network'
+import { DEFAULT_PROBE_TARGETS } from './probe-targets'
 import {
   applyFollowUps,
   bannerSound,
@@ -106,6 +107,35 @@ describe('wantsBanner', () => {
       const own = 'feed:feeds.example.test'
       expect(SERVICES.some((service) => service.id === own)).toBe(false)
       expect(wantsBanner(measured(own, 'outage'), probe, makeSettings())).toBe(true)
+    })
+
+    it('keeps core banners to the panels that count', () => {
+      const spindle = SERVICES.find((service) => service.kind === 'spindle')!
+      expect(wantsBanner(measured(spindle.id, 'outage'), probe, makeSettings())).toBe(false)
+      const counted = makeSettings({ countedProbeGroups: ['tangled'] })
+      expect(wantsBanner(measured(spindle.id, 'outage'), probe, counted)).toBe(true)
+      expect(wantsBanner(measured(CORE.id, 'outage'), probe, counted)).toBe(false)
+    })
+
+    it('finds a PDS the user added in the panel it sits in', () => {
+      const own = 'pds:mine.example.test'
+      const probeTargets = {
+        ...structuredClone(DEFAULT_PROBE_TARGETS),
+        pdses: ['mine.example.test']
+      }
+      expect(wantsBanner(measured(own, 'outage'), probe, makeSettings({ probeTargets }))).toBe(true)
+      const withoutPdses = makeSettings({ probeTargets, countedProbeGroups: ['relays'] })
+      expect(wantsBanner(measured(own, 'outage'), probe, withoutPdses)).toBe(false)
+    })
+
+    // An entry whose URI names no service at all: nothing to judge it by but its source.
+    it('gives an entry that names no service the benefit of the doubt', () => {
+      const unnamed = makePost({
+        authorDid: PROBE_SOURCE_DID,
+        uri: 'elsewhere',
+        severity: 'outage'
+      })
+      expect(wantsBanner(unnamed, probe, makeSettings())).toBe(true)
     })
 
     it('keeps to pinned services when asked', () => {

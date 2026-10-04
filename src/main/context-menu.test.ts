@@ -117,6 +117,21 @@ describe('showPostMenu', () => {
     expect(openedExternally).toEqual([post.url])
   })
 
+  // Nothing that builds `post.url` today builds anything else, and this is what keeps a
+  // future one honest: the menu opens links through the same check as everything else.
+  it('refuses to open a link to anywhere but the web', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const post = makePost({ url: 'smb://attacker.test/share' })
+    const { show } = build({ posts: [post] })
+
+    show(post.uri)
+    lastMenu().click('Open in browser')
+
+    expect(openedExternally).toEqual([])
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
   it('marks one update read without opening anything', () => {
     const post = makePost()
     const { show, model } = build({ posts: [post], unread: [post.uri] })

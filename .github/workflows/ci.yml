@@ -1,0 +1,46 @@
+# Everything `npm run build` holds a release to, on every push to main and every pull
+# request: the type-checks, the linter, Prettier and the whole test suite.
+#
+# macOS rather than Linux, because the suite is written from a Mac and leans on it in
+# places it does not say so — a test of the menu bar count, for one, runs on whatever
+# `process.platform` the host has, and the count is macOS-only. Pinning those tests to a
+# platform is the fix; until then this runs them where they were written to pass.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # The same Node a developer's asdf or mise picks up.
+          node-version-file: .tool-versions
+          cache: npm
+
+      # `npm ci` also runs Electron's postinstall, which downloads the binary that
+      # src/test/packaging.test.ts reads the fuse wire out of.
+      - run: npm ci
+
+      # Generates production IPC wiring first (`precheck`), then svelte-check, tsc,
+      # oxlint and `prettier --check`.
+      - run: npm run check
+
+      # Generates production wiring again (`pretest`), and runs every project, the
+      # development-wiring one included.
+      - run: npm test

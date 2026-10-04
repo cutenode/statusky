@@ -1,0 +1,5 @@
+# The preview's fixtures are written by `npm run fixture` from a live network sweep, so
+# every regeneration rewrites thousands of lines that nobody reviews by reading. Keep them
+# out of diffs and out of the repository's language statistics; src/test/fixtures.test.ts
+# holds them to the IPC schemas instead.
+src/renderer/fixtures/*.json -diff linguist-generated

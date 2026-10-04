@@ -324,6 +324,32 @@ describe('compactRead', () => {
     expect(next.cursors[DID_A]).toBe('2026-09-01T00:00:00Z')
     expect(next.above).toEqual([])
   })
+
+  // Folding it in would read everything the source posts until then, before it arrived.
+  it('keeps a read post dated after now as an exception rather than folding it in', () => {
+    const now = Date.parse('2026-09-07T00:00:00Z')
+    const today = post(DID_A, '2026-09-06T00:00:00Z')
+    const future = post(DID_A, '2099-01-01T00:00:00Z')
+    const read: ReadState = {
+      cursors: { [DID_A]: '2026-09-01T00:00:00Z' },
+      above: [today.uri, future.uri]
+    }
+
+    expect(compactRead(read, [future, today], now)).toEqual({
+      cursors: { [DID_A]: today.createdAt },
+      above: [future.uri]
+    })
+  })
+
+  it('folds it in once the clock has caught up with it', () => {
+    const future = post(DID_A, '2099-01-01T00:00:00Z')
+    const read: ReadState = { cursors: { [DID_A]: '2026-09-01T00:00:00Z' }, above: [future.uri] }
+
+    expect(compactRead(read, [future], Date.parse('2099-01-02T00:00:00Z'))).toEqual({
+      cursors: { [DID_A]: future.createdAt },
+      above: []
+    })
+  })
 })
 
 describe('markAllPostsRead', () => {
@@ -334,6 +360,17 @@ describe('markAllPostsRead', () => {
     const read = markAllPostsRead({ cursors, above: [a.uri] }, [a, b])
 
     expect(read).toEqual({ cursors: { [DID_A]: a.createdAt, [DID_B]: b.createdAt }, above: [] })
+  })
+
+  it('reads a post dated after now as an exception, leaving its cursor at the newest before', () => {
+    const now = Date.parse('2026-09-07T00:00:00Z')
+    const today = post(DID_A, '2026-09-06T00:00:00Z')
+    const future = post(DID_A, '2099-01-01T00:00:00Z')
+    const read = markAllPostsRead(readAt({ [DID_A]: '2026-09-01T00:00:00Z' }), [future, today], now)
+
+    expect(read).toEqual({ cursors: { [DID_A]: today.createdAt }, above: [future.uri] })
+    expect(unreadUris([future, today], read)).toEqual([])
+    expect(unreadUris([post(DID_A, '2026-09-08T00:00:00Z')], read)).toHaveLength(1)
   })
 
   it('never rewinds a cursor that is already ahead', () => {
@@ -381,6 +418,39 @@ describe('markReadThrough', () => {
     const broken = post(DID_A, 'not a date')
     const read = readAt(cursors)
     expect(markReadThrough(read, broken.uri, [...posts, broken])).toBe(read)
+  })
+
+  /**
+   * A post dated ahead of the clock, which parsing no longer lets in but a cache written
+   * before that can still hold. Reading through it must not carry every source's cursor
+   * into the future, where nothing that arrives afterwards could ever be unread.
+   */
+  describe('through a post dated after now', () => {
+    const now = Date.parse('2026-09-07T00:00:00Z')
+    const future = post(DID_B, '2099-01-01T00:00:00Z')
+    const between = post(DID_A, '2050-01-01T00:00:00Z')
+    const cached = [future, between, ...posts]
+
+    it('stops every cursor at now', () => {
+      const read = markReadThrough(readAt(cursors), future.uri, cached, now)
+
+      expect(read.cursors).toEqual({
+        [DID_A]: '2026-09-07T00:00:00.000Z',
+        [DID_B]: '2026-09-07T00:00:00.000Z'
+      })
+    })
+
+    it('still reads the post itself and everything between it and now', () => {
+      const read = markReadThrough(readAt(cursors), future.uri, cached, now)
+      expect(unreadUris(cached, read)).toEqual([])
+    })
+
+    it('leaves what arrives after now unread', () => {
+      const read = markReadThrough(readAt(cursors), future.uri, cached, now)
+      const later = post(DID_A, '2026-09-08T00:00:00Z')
+
+      expect(unreadUris([later, ...cached], read)).toEqual([later.uri])
+    })
   })
 })
 

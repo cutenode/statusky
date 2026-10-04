@@ -26,7 +26,15 @@ const text = z.string().min(1)
 export const expectedResponsesSchema = z.object({
   relay: z.object({
     /** A relay's `/xrpc/_health` says `{"status":"ok"}` and nothing else. */
-    healthStatus: text
+    healthStatus: text,
+    /**
+     * The `com.atproto.sync.getHostStatus` statuses that mean a relay is subscribed to a
+     * host. `idle` is a small PDS with nothing to say lately, which is not a problem;
+     * `offline`, `throttled` and `banned` are the relay no longer taking its commits.
+     */
+    carriedHostStatuses: z.array(text).min(1),
+    /** The XRPC error a relay names a host it has never crawled with. */
+    hostNotFound: text
   }),
   /**
    * The framing of `com.atproto.sync.subscribeRepos`: a CBOR header whose `op` is 1 for
@@ -46,7 +54,13 @@ export const expectedResponsesSchema = z.object({
      */
     greeting: text,
     /** The `kind` of a Jetstream event that carries a commit and its `time_us`. */
-    commitKind: text
+    commitKind: text,
+    /**
+     * The `commit.operation` of a record being written for the first time. A sample of
+     * those is what the AppViews are asked for, since an update or a delete names a
+     * record an AppView may already have or no longer serve.
+     */
+    createOperation: text
   }),
   spacedust: z.object({
     /**
@@ -64,7 +78,14 @@ export const expectedResponsesSchema = z.object({
   }),
   appView: z.object({
     /** AppViews that answer their health check with an empty object rather than a version. */
-    versionlessHealth: z.array(text)
+    versionlessHealth: z.array(text),
+    /**
+     * AppViews that index only part of the network by design. W Social's takes its own
+     * PDS's users and accounts `bsky.app` has verified, so a sample of posts from the
+     * whole firehose would find it missing nearly all of them every time, and say nothing
+     * about whether it is keeping up.
+     */
+    partialIndex: z.array(text)
   }),
   dns: z.object({
     /**

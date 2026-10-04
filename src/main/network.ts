@@ -29,12 +29,13 @@
 import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
 import {
   HISTORY_LENGTH,
+  SLOW_FLOOR_MS,
   blankService,
   isControl,
   isReachable,
   medianLatency,
   observedCondition,
-  probeState,
+  observedState,
   servicesFor,
   summarizeNetwork,
   type ProbeEvent,
@@ -43,6 +44,7 @@ import {
 import type {
   NetworkSnapshot,
   NetworkSummary,
+  ProbeGroup,
   ProbeTargets,
   ServiceProbe,
   SweepRestraint
@@ -50,7 +52,10 @@ import type {
 import {
   DEFAULT_PROBE_TIMINGS,
   FreshnessPeers,
+  IndexSample,
+  TargetCensus,
   probeService,
+  vanishedTargets,
   type NewestPosts,
   type ProbeCounters,
   type ProbeTimings,
@@ -60,6 +65,8 @@ import {
 export interface MonitorTimings extends ProbeTimings {
   /** Delay before re-checking a service that just failed. */
   recheckDelayMs: number
+  /** No service reads as slow for itself under this. See `SLOW_FACTOR`. */
+  slowFloorMs: number
   /**
    * How often to look for the connection coming back while offline.
    *
@@ -82,6 +89,16 @@ export interface MonitorTimings extends ProbeTimings {
    * anybody already gentler than it exactly where they put themselves.
    */
   batteryIntervalMs: number
+  /**
+   * How old the last sweep has to be before the machine coming back — woken, unlocked,
+   * switched back to — is a reason to sweep again. See `catchUp`.
+   *
+   * A locked screen is not a sleeping machine: the schedule ran straight through it, and
+   * somebody who locks up for a coffee every half hour should not cost the Atmosphere a
+   * sweep every time they sit back down. Five minutes is about as stale as the dashboard
+   * can be and still read as current.
+   */
+  catchUpMs: number
   /** Least time between two dashboard pushes while a sweep is filling in. */
   throttleMs: number
   /** Consecutive failing observations before a failure is believed. */
@@ -100,8 +117,10 @@ export interface MonitorTimings extends ProbeTimings {
 export const DEFAULT_MONITOR_TIMINGS: MonitorTimings = {
   ...DEFAULT_PROBE_TIMINGS,
   recheckDelayMs: 20_000,
+  slowFloorMs: SLOW_FLOOR_MS,
   offlineRetryMs: 120_000,
   batteryIntervalMs: 30 * 60_000,
+  catchUpMs: 5 * 60_000,
   throttleMs: 150,
   confirmations: 2,
   concurrency: 16
@@ -168,13 +187,23 @@ interface Pending {
 class ConnectionVerdict {
   private online: boolean | null = null
   private readonly waiting: ((online: boolean) => void)[] = []
+  /**
+   * Takes the listener below off the sweep's signal once there is a verdict. That
+   * signal outlives the sweep — it is only replaced when a sweep is abandoned — so a
+   * listener left on it would be one more for every sweep a machine that never sleeps
+   * ever ran.
+   */
+  private readonly listening = new AbortController()
 
   constructor(
     private remaining: number,
     signal: AbortSignal
   ) {
     // An abandoned sweep judges nothing, and must never leave a service waiting.
-    signal.addEventListener('abort', () => this.settle(false), { once: true })
+    signal.addEventListener('abort', () => this.settle(false), {
+      once: true,
+      signal: this.listening.signal
+    })
     if (remaining === 0) this.settle(true)
   }
 
@@ -191,9 +220,10 @@ class ConnectionVerdict {
     return new Promise((resolve) => this.waiting.push(resolve))
   }
 
+  /** Called once: `report` stops at a verdict, and the abort listener goes with one. */
   private settle(online: boolean): void {
-    if (this.online !== null) return
     this.online = online
+    this.listening.abort()
     for (const wake of this.waiting.splice(0)) wake(online)
   }
 }
@@ -220,6 +250,8 @@ export class NetworkMonitor {
   private finishedAt: string | null = null
   /** Freshest newest-post time any AppView has returned per account, for the laggards. */
   private freshest: NewestPosts = new Map()
+  /** The listed accounts, and handles, no AppView could find last time. See `TargetCensus`. */
+  private vanished: ReadonlySet<string> = new Set()
   /** What one sweep leaves for the next: counters to compare, and slow checks' clocks. */
   private readonly tallies = new Map<string, number>()
   private readonly counters: ProbeCounters = {
@@ -234,7 +266,19 @@ export class NetworkMonitor {
   private eventsQueued = false
 
   private interval: ReturnType<typeof setInterval> | null = null
+  /** The next re-check of the rows in `rechecks`. */
   private followUp: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Rows that failed once and are waiting on `followUp` to be seen again, by id.
+   *
+   * Kept here rather than in the timer's closure because more than one sweep can book
+   * one: a sweep that starts while another's re-check is waiting — the user asking, the
+   * machine waking — finishes with failures of its own, and the re-check it books has to
+   * take the waiting ones along rather than replace them.
+   */
+  private readonly rechecks = new Map<string, ServiceDefinition>()
+  /** The next control-only look for the connection, while offline. */
+  private retry: ReturnType<typeof setTimeout> | null = null
   private throttle: ReturnType<typeof setTimeout> | null = null
   /** Sweeps run one at a time, in order. */
   private queue: Promise<void> = Promise.resolve()
@@ -262,6 +306,7 @@ export class NetworkMonitor {
       finishedAt: this.finishedAt,
       offline: this.offline,
       restraint: this.restraint,
+      vanished: vanishedTargets(this.vanished),
       services: this.catalogue.map((definition) => {
         const service = this.services.get(definition.id)!
         return {
@@ -273,8 +318,9 @@ export class NetworkMonitor {
     }
   }
 
-  summary(enabled: boolean): NetworkSummary {
-    return summarizeNetwork(this.snapshot(), enabled)
+  /** The header's and the tray's facts, counting the services in `counted` panels. */
+  summary(enabled: boolean, counted: readonly ProbeGroup[]): NetworkSummary {
+    return summarizeNetwork(this.snapshot(), enabled, counted)
   }
 
   // ------------------------------------------------------------ control
@@ -332,13 +378,39 @@ export class NetworkMonitor {
   }
 
   /**
-   * Put the schedule back. Catching up on what was missed is the caller's to ask for:
-   * a machine that has just woken wants a sweep now, and `src/main/index.ts` runs one.
+   * Put the schedule back. Catching up on what was missed is the caller's to ask for,
+   * with `catchUp`: a machine that has just woken wants a sweep now, and
+   * `src/main/index.ts` asks for one.
    */
   resume(): void {
     if (!this.paused) return
     this.paused = false
     this.schedule()
+  }
+
+  /**
+   * The machine is back — woken, unlocked, switched back to — and what is on screen may
+   * be stale. Sweep now if the schedule would have, by now, and would be allowed to.
+   *
+   * Not `run()`, which is the user asking and is never refused. This is the OS saying
+   * somebody arrived, which it says on every unlock as well as on every wake, and a
+   * sweep for each of those would walk straight past both restraints: a sweep every
+   * time the screen unlocks on battery, and one on a machine too hot to be measuring
+   * from. So it answers to them exactly as the schedule does — never under thermal
+   * pressure, and on battery not until the battery's own interval has passed — and
+   * otherwise only once the last sweep is `catchUpMs` old, or as old as the user's own
+   * interval if that is shorter.
+   */
+  catchUp(): void {
+    if (!this.enabled || !this.transport || this.paused) return
+    if (this.restraint === 'thermal') return
+    const last = this.finishedAt === null ? null : Date.parse(this.finishedAt)
+    const fresh =
+      this.restraint === 'battery'
+        ? this.scheduledIntervalMs()
+        : Math.min(this.intervalMs, this.timings.catchUpMs)
+    if (last !== null && this.now() - last < fresh) return
+    void this.run()
   }
 
   /**
@@ -387,11 +459,13 @@ export class NetworkMonitor {
    * the AppViews say about them now rather than on anything remembered of the old ones.
    */
   retarget(targets: ProbeTargets): void {
+    // Before the rows are rebuilt, while every row a re-check names is still there.
+    this.clearFollowUp()
     this.targets = targets
     if (!this.options.services) this.recatalogue(servicesFor(targets))
     this.freshest = new Map()
+    this.vanished = new Set()
 
-    this.clearFollowUp()
     this.abandon()
     this.running = false
     for (const service of this.services.values()) service.rechecking = false
@@ -429,17 +503,26 @@ export class NetworkMonitor {
   // ------------------------------------------------------------ sweeping
 
   private enqueue(task: () => Promise<void>): Promise<void> {
+    // Whatever was waiting its turn when the sweep ahead of it was abandoned goes with
+    // it. A re-check booked before a lid closed would otherwise start the moment the
+    // abandoned sweep had wound down — as the machine went to sleep, measuring a network
+    // that was going away with it.
+    const generation = this.generation
     // A sweep that throws — a listener failing mid-push, say — is a bug, but it must not
     // take the schedule down with it, or leave the dashboard claiming to be mid-sweep.
-    this.queue = this.queue.then(task).catch((error: unknown) => {
-      this.running = false
-      console.error('A network sweep failed:', error)
-    })
+    this.queue = this.queue
+      .then(() => (generation === this.generation ? task() : undefined))
+      .catch((error: unknown) => {
+        this.running = false
+        console.error('A network sweep failed:', error)
+      })
     return this.queue
   }
 
   private async sweep(requested: readonly ServiceDefinition[], full: boolean): Promise<void> {
-    if (!this.enabled || !this.transport) return
+    // Paused is checked as well as enabled: nothing measured from a machine on its way to
+    // sleep says anything about the Atmosphere.
+    if (!this.enabled || !this.transport || this.paused) return
     const generation = this.generation
     const started = new Date(this.now()).toISOString()
     // Only rows that still exist. `retarget` cancels any re-check that could name a feed
@@ -461,10 +544,9 @@ export class NetworkMonitor {
     this.flushSnapshot()
     if (full) this.options.onSummaryChange()
 
-    const peers = new FreshnessPeers(
-      definitions.filter((definition) => definition.kind === 'appview').length,
-      this.freshest
-    )
+    const appViews = definitions.filter((definition) => definition.kind === 'appview').length
+    const peers = new FreshnessPeers(appViews, this.freshest)
+    const census = new TargetCensus(appViews, this.vanished)
     const connection = new ConnectionVerdict(
       definitions.filter(isControl).length,
       this.controller.signal
@@ -479,6 +561,10 @@ export class NetworkMonitor {
         if (generation === this.generation) this.scheduleSnapshot()
       },
       peers,
+      // Taken afresh every sweep, a re-check's included: a sample is only worth anything
+      // for the few seconds after it was taken.
+      sample: new IndexSample(),
+      census,
       counters: this.counters,
       // Read here, once, rather than at import: a sweep measures whatever was in force
       // when it started, and the next one picks up any change.
@@ -506,7 +592,8 @@ export class NetworkMonitor {
         if (generation !== this.generation) return
 
         const at = new Date(this.now()).toISOString()
-        service.state = probeState(service.checks)
+        // Judged against the history so far, before this observation joins it.
+        service.state = observedState(service.checks, service.history, this.timings.slowFloorMs)
         service.latencyMs = medianLatency(service.checks)
         service.checkedAt = at
         service.rechecking = false
@@ -528,18 +615,20 @@ export class NetworkMonitor {
         if (verdict === 'recheck') {
           service.rechecking = true
           recheck.push(definition)
-        } else if (verdict) {
-          this.file(verdict)
+        } else {
+          // Seen again, here: a re-check another sweep booked for it has nothing left to do.
+          this.rechecks.delete(definition.id)
+          if (verdict) this.file(verdict)
         }
         this.scheduleSnapshot()
       }
     }
 
-    // Two rendezvous happen mid-sweep: every service waits on the control group's
-    // verdict about the connection, and the AppViews wait on each other to compare
-    // indexes. Anything that waits like that has to be already running, or the pool
-    // fills with services waiting on services that never started — so the controls and
-    // the AppViews are never queued, and everything else is.
+    // Rendezvous happen mid-sweep: every service waits on the control group's verdict
+    // about the connection, and the AppViews wait on each other to compare indexes and
+    // which of the listed accounts they have. Anything that waits like that has to be
+    // already running, or the pool fills with services waiting on services that never
+    // started — so the controls and the AppViews are never queued, and everything else is.
     await Promise.all([
       ...definitions.filter((d) => isControl(d) || d.kind === 'appview').map(one),
       pooled(
@@ -552,6 +641,7 @@ export class NetworkMonitor {
 
     // The peers started from what was remembered and only ever moved forward.
     this.freshest = peers.best
+    this.vanished = census.verdict
     if (full) {
       this.running = false
       this.finishedAt = new Date(this.now()).toISOString()
@@ -671,24 +761,48 @@ export class NetworkMonitor {
     })
   }
 
-  /** Book the next look: a control-only retry while offline, or a failure's re-check. */
+  /**
+   * Book the next look: a control-only retry while offline, or a failure's re-check.
+   *
+   * A sweep that finds nothing to re-check leaves alone a re-check another sweep booked,
+   * and one that does find some adds them to it rather than replacing it. Sweeps overlap
+   * that way whenever one starts within a re-check's delay of another finishing, and a
+   * sweep clearing what it did not book is how a first failure ends up waiting out the
+   * whole interval — ten minutes, or thirty on battery — to be confirmed, with its row
+   * saying it is being re-checked the entire time.
+   */
   private scheduleFollowUp(recheck: ServiceDefinition[]): void {
-    this.clearFollowUp()
     if (this.offline) {
-      this.followUp = setTimeout(() => {
-        this.followUp = null
+      // Nothing is re-checked from a machine with no connection, and the full sweep that
+      // follows the connection back measures every one of them again regardless.
+      this.clearFollowUp()
+      this.retry = setTimeout(() => {
+        this.retry = null
         this.retryControls()
       }, this.timings.offlineRetryMs)
-    } else if (recheck.length) {
-      this.followUp = setTimeout(() => {
-        this.followUp = null
-        // The controls ride along, so a connection that dropped in between is noticed
-        // rather than blamed on the services being re-checked.
-        void this.enqueue(() => this.sweep([...recheck, ...this.controls], false))
-      }, this.timings.recheckDelayMs)
-    } else {
+      this.retry.unref?.()
       return
     }
+
+    // Online, so whatever retry was waiting for the connection has its answer.
+    if (this.retry) clearTimeout(this.retry)
+    this.retry = null
+    if (!recheck.length) return
+
+    for (const definition of recheck) this.rechecks.set(definition.id, definition)
+    // Re-armed rather than kept, so the newest failure is given the whole delay to clear
+    // up on its own: the earlier ones only wait a little longer for the company.
+    if (this.followUp) clearTimeout(this.followUp)
+    this.followUp = setTimeout(() => {
+      this.followUp = null
+      const due = [...this.rechecks.values()]
+      this.rechecks.clear()
+      // Every one of them may have been seen again by a sweep in the meantime.
+      if (!due.length) return
+      // The controls ride along, so a connection that dropped in between is noticed
+      // rather than blamed on the services being re-checked.
+      void this.enqueue(() => this.sweep([...due, ...this.controls], false))
+    }, this.timings.recheckDelayMs)
     this.followUp.unref?.()
   }
 
@@ -721,6 +835,7 @@ export class NetworkMonitor {
     this.startedAt = null
     this.finishedAt = null
     this.freshest = new Map()
+    this.vanished = new Set()
     this.flushSnapshot()
     this.options.onSummaryChange()
   }
@@ -770,8 +885,14 @@ export class NetworkMonitor {
     this.interval = null
   }
 
+  /** Cancel every look booked for later — re-checks and retries — and what they were for. */
   private clearFollowUp(): void {
     if (this.followUp) clearTimeout(this.followUp)
-    this.followUp = null
+    if (this.retry) clearTimeout(this.retry)
+    this.followUp = this.retry = null
+    // Every row named here is still on the dashboard: `retarget`, the one thing that
+    // takes rows away, clears this first.
+    for (const id of this.rechecks.keys()) this.services.get(id)!.rechecking = false
+    this.rechecks.clear()
   }
 }

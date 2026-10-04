@@ -43,15 +43,17 @@ export function pathKey(path: TargetPath): string {
 /**
  * The editor's sections, in the order it draws them.
  *
- * The two apps are separate sections although they share `apps` in the document,
+ * The three apps are separate sections although they share `apps` in the document,
  * because they are separate services with nothing else in common.
  */
 export const SECTIONS = [
   { key: 'accounts', label: 'Accounts' },
   { key: 'feeds', label: 'Custom feeds' },
+  { key: 'pdses', label: 'Your PDSes' },
   { key: 'forYou', label: 'For You' },
   { key: 'cdnImages', label: 'CDN images' },
   { key: 'tangled', label: 'Tangled' },
+  { key: 'pckt', label: 'pckt' },
   { key: 'leaflet', label: 'Leaflet' },
   { key: 'offprint', label: 'Offprint' }
 ] as const
@@ -164,9 +166,11 @@ export function compareProbeTargets(before: ProbeTargets, after: ProbeTargets): 
   const changes: Record<SectionKey, string | null> = {
     accounts: compareList(before.accounts, after.accounts, (a) => a.did),
     feeds: compareList(before.feeds, after.feeds, (f) => f.host),
+    pdses: compareList(before.pdses, after.pdses, (host) => host),
     forYou: compareOne(before.forYou, after.forYou),
     cdnImages: compareList(before.cdnImages, after.cdnImages, (i) => `${i.did} ${i.cid}`),
     tangled: compareOne(before.tangled, after.tangled),
+    pckt: compareOne(before.apps.pckt, after.apps.pckt),
     leaflet: compareOne(before.apps.leaflet, after.apps.leaflet),
     offprint: compareOne(before.apps.offprint, after.apps.offprint)
   }

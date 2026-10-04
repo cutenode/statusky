@@ -15,7 +15,10 @@
 <span class={cn('relative flex size-2 shrink-0', className)}>
   {#if pulse && (health === 'incident' || health === 'monitoring')}
     <span
-      class={cn('absolute inline-flex size-full animate-ping rounded-full opacity-60', style.dot)}
+      class={cn(
+        'absolute inline-flex size-full rounded-full opacity-60 motion-safe:animate-ping',
+        style.dot
+      )}
     ></span>
   {/if}
   <span class={cn('relative inline-flex size-2 rounded-full', style.dot, style.glow)}></span>

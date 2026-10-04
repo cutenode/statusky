@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent } from '@testing-library/svelte'
 import { DEFAULT_SETTINGS } from '@shared/defaults'
 import { makeSettings, makeWebhookStatus } from '../../../test/factories'
-import { pushState, renderWith } from '../test/render'
+import { pushState, renderWith, settle } from '../test/render'
 import WebhookPanel from './WebhookPanel.svelte'
 
 const NOW = Date.parse('2026-03-01T12:00:00.000Z')
@@ -78,6 +78,7 @@ describe('the endpoint', () => {
       const { bridge, getByText, container } = await renderWith(WebhookPanel, { now: NOW }, on())
 
       await fireEvent.click(getByText('Copy'))
+      await settle()
 
       expect(bridge.api.Host.copyText).toHaveBeenCalledWith(URL)
       expect(text(container)).toContain('Copied')
@@ -91,6 +92,8 @@ describe('the endpoint', () => {
     try {
       const { getByText, container } = await renderWith(WebhookPanel, { now: NOW }, on())
       await fireEvent.click(getByText('Copy'))
+      await settle()
+      expect(text(container)).toContain('Copied')
 
       await vi.advanceTimersByTimeAsync(2500)
 
@@ -98,6 +101,22 @@ describe('the endpoint', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // "Copied" is the only evidence a copy leaves, so it is said only of one that worked.
+  it('says why a copy failed, rather than that it was copied', async () => {
+    const { bridge, getByText, getByRole, container } = await renderWith(
+      WebhookPanel,
+      { now: NOW },
+      on()
+    )
+    vi.mocked(bridge.api.Host.copyText).mockRejectedValueOnce(new Error('The clipboard is busy'))
+
+    await fireEvent.click(getByText('Copy'))
+    await settle()
+
+    expect(text(container)).not.toContain('Copied')
+    expect(getByRole('alert').textContent).toContain('The clipboard is busy')
   })
 
   it('selects the whole URL on focus, so it can be copied by hand too', async () => {
@@ -116,6 +135,18 @@ describe('the endpoint', () => {
     await fireEvent.click(getByText('New secret'))
 
     expect(bridge.api.Webhook.regenerateSecret).toHaveBeenCalled()
+  })
+
+  it('says why a new secret could not be minted', async () => {
+    const { bridge, getByText, getByRole } = await renderWith(WebhookPanel, { now: NOW }, on())
+    vi.mocked(bridge.api.Webhook.regenerateSecret).mockRejectedValueOnce(
+      new Error('The receiver is restarting')
+    )
+
+    await fireEvent.click(getByText('New secret'))
+    await settle()
+
+    expect(getByRole('alert').textContent).toContain('The receiver is restarting')
   })
 
   it('links to the page a subscription is set up on', async () => {
@@ -253,6 +284,53 @@ describe('the port', () => {
     await fireEvent.keyDown(input, { key: 'Enter' })
 
     expect(bridge.api.Preferences.patch).toHaveBeenCalledWith({ webhookPort: 9000 })
+  })
+
+  // Main keeps the port where it can bind one. The setting not moving left the typed
+  // number in the box, saying a port nothing was listening on.
+  it('shows the port main settled on, not the one typed', async () => {
+    const { bridge, getByLabelText } = await renderWith(
+      WebhookPanel,
+      { now: NOW },
+      { ...on(), settings: makeSettings({ webhookEnabled: true, webhookPort: 1024 }) }
+    )
+    // What main does with a port below the range it binds: it raises it to the floor,
+    // which here is the port already in force, so the setting does not move.
+    vi.mocked(bridge.api.Preferences.patch).mockImplementationOnce(async () => {
+      bridge.push({ settings: bridge.state.settings })
+      return bridge.state.settings
+    })
+    const input = getByLabelText('Webhook port') as HTMLInputElement
+
+    input.value = '80'
+    await fireEvent.change(input)
+    await settle()
+
+    expect(input.value).toBe('1024')
+  })
+
+  it('puts the port back, and says why, when main refuses it', async () => {
+    const { bridge, getByLabelText, getByRole } = await renderWith(WebhookPanel, { now: NOW }, on())
+    vi.mocked(bridge.api.Preferences.patch).mockRejectedValueOnce(new Error('Port 8080 is taken'))
+    const input = getByLabelText('Webhook port') as HTMLInputElement
+
+    input.value = '8080'
+    await fireEvent.change(input)
+    await settle()
+
+    expect(input.value).toBe('7385')
+    expect(getByRole('alert').textContent).toContain('Port 8080 is taken')
+  })
+
+  it('says why the receiver could not be switched on', async () => {
+    const { bridge, getByLabelText, getByRole } = await renderWith(WebhookPanel, { now: NOW })
+    vi.mocked(bridge.api.Preferences.patch).mockRejectedValueOnce(new Error('Not on this network'))
+
+    await fireEvent.click(getByLabelText('Enable the webhook receiver'))
+    await settle()
+
+    expect(getByRole('alert').textContent).toContain('Not on this network')
+    expect(getByLabelText('Enable the webhook receiver').getAttribute('aria-checked')).toBe('false')
   })
 
   it('leaves other keys to the input', async () => {

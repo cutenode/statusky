@@ -4,6 +4,8 @@
   import { Separator } from '$lib/components/ui/separator'
   import { Switch } from '$lib/components/ui/switch'
   import { app } from '$lib/app-state.svelte'
+  import { PendingList, Refusals } from '$lib/requests.svelte'
+  import { cn } from '$lib/utils'
   import {
     formatAccelerator,
     GLOBAL_SHORTCUT_CHOICES,
@@ -13,12 +15,20 @@
     POLL_INTERVAL_CHOICES,
     TRAY_UNREAD_STYLE_CHOICES
   } from '@shared/defaults'
-  import { PROBE_SOURCE_NAME } from '@shared/network'
-  import type { MarkReadTrigger, ThemePreference, TrayUnreadStyle } from '@shared/types'
+  import { PROBE_GROUPS, PROBE_SOURCE_NAME } from '@shared/network'
+  import type {
+    MarkReadTrigger,
+    ProbeGroup,
+    Settings,
+    ThemePreference,
+    TrayUnreadStyle
+  } from '@shared/types'
+  import Check from '@lucide/svelte/icons/check'
   import Download from '@lucide/svelte/icons/download'
   import type { Snippet } from 'svelte'
   import NotificationSettings from './NotificationSettings.svelte'
   import ProbeTargetsPanel from './ProbeTargetsPanel.svelte'
+  import Refused from './Refused.svelte'
   import WebhookPanel from './WebhookPanel.svelte'
 
   /** Ticks the "last delivery" line. Optional so the panel stands alone in tests. */
@@ -50,6 +60,32 @@
     MARK_READ_CHOICES.find((c) => c.value === app.settings.markReadOn) ?? MARK_READ_CHOICES[0]!
   )
 
+  /** Why main refused what each row last asked for, said under that row. */
+  const refusals = new Refusals()
+
+  /** Change a setting for one row's control, and say under that row if main refuses. */
+  function patch(key: string, next: Partial<Settings>): void {
+    void refusals.track(key, app.patchSettings(next))
+  }
+
+  /** Every panel but the control group, which is never judged and so never counts. */
+  const COUNTABLE = PROBE_GROUPS.filter((group) => group.id !== 'internet')
+
+  /** Built on — and drawn from — the last unanswered click, so two quick ones both land. */
+  const counted = new PendingList(() => app.settings.countedProbeGroups)
+
+  function toggleCounted(group: ProbeGroup): void {
+    const before = counted.current
+    const next = before.includes(group)
+      ? before.filter((id) => id !== group)
+      : // Kept in the dashboard's own order, so the setting reads the same way round.
+        COUNTABLE.map(({ id }) => id).filter((id) => id === group || before.includes(id))
+    void refusals.track(
+      'counted',
+      counted.send(next, (list) => app.patchSettings({ countedProbeGroups: list }))
+    )
+  }
+
   /**
    * The value the select uses for "no shortcut".
    *
@@ -63,7 +99,7 @@
   const shortcutLabel = $derived(formatAccelerator(app.settings.globalShortcut, app.platform))
 </script>
 
-{#snippet row(title: string, description: string, control: Snippet)}
+{#snippet row(title: string, description: string, control: Snippet, key: string)}
   <div class="flex items-center justify-between gap-4 py-2">
     <div class="min-w-0">
       <p class="text-[12.5px] font-medium">{title}</p>
@@ -71,6 +107,7 @@
     </div>
     <div class="shrink-0">{@render control()}</div>
   </div>
+  <Refused text={refusals.of(key)} />
 {/snippet}
 
 <div class="scroll-thin h-full min-h-0 overflow-y-auto px-3 pb-4">
@@ -88,10 +125,14 @@
     {#snippet intervalControl()}
       <Select
         type="single"
-        value={String(app.settings.pollIntervalSec)}
-        onValueChange={(value) => void app.patchSettings({ pollIntervalSec: Number(value) })}
+        bind:value={
+          () => String(app.settings.pollIntervalSec),
+          (value) => patch('interval', { pollIntervalSec: Number(value) })
+        }
       >
-        <SelectTrigger class="w-[8.5rem]">{intervalLabel}</SelectTrigger>
+        <SelectTrigger class="w-[8.5rem]" aria-label="How often to check for updates"
+          >{intervalLabel}</SelectTrigger
+        >
         <SelectContent>
           {#each POLL_INTERVAL_CHOICES as choice (choice.value)}
             <SelectItem value={String(choice.value)} label={choice.label} />
@@ -102,7 +143,8 @@
     {@render row(
       'Check for updates',
       'How often to poll the AT Protocol AppView.',
-      intervalControl
+      intervalControl,
+      'interval'
     )}
 
     <Separator />
@@ -110,8 +152,10 @@
     {#snippet markReadControl()}
       <Select
         type="single"
-        value={app.settings.markReadOn}
-        onValueChange={(value) => void app.patchSettings({ markReadOn: value as MarkReadTrigger })}
+        bind:value={
+          () => app.settings.markReadOn,
+          (value) => patch('markRead', { markReadOn: value as MarkReadTrigger })
+        }
       >
         <SelectTrigger class="w-[9.5rem]" aria-label="When to mark updates as read"
           >{markRead.label}</SelectTrigger
@@ -123,7 +167,7 @@
         </SelectContent>
       </Select>
     {/snippet}
-    {@render row('Mark as read', markRead.hint, markReadControl)}
+    {@render row('Mark as read', markRead.hint, markReadControl, 'markRead')}
   </section>
 
   <Separator class="my-3" />
@@ -138,9 +182,10 @@
     {#snippet trayStyleControl()}
       <Select
         type="single"
-        value={app.settings.trayUnreadStyle}
-        onValueChange={(value) =>
-          void app.patchSettings({ trayUnreadStyle: value as TrayUnreadStyle })}
+        bind:value={
+          () => app.settings.trayUnreadStyle,
+          (value) => patch('trayStyle', { trayUnreadStyle: value as TrayUnreadStyle })
+        }
       >
         <SelectTrigger class="w-[9.5rem]" aria-label="How unread updates show in the menu bar"
           >{trayStyle.label}</SelectTrigger
@@ -152,7 +197,7 @@
         </SelectContent>
       </Select>
     {/snippet}
-    {@render row('Unread updates', trayStyle.hint, trayStyleControl)}
+    {@render row('Unread updates', trayStyle.hint, trayStyleControl, 'trayStyle')}
 
     <p class="px-0.5 pt-1 text-[11px] leading-snug text-muted-foreground">
       The icon reports health either way — neutral when everything is operational, amber while
@@ -164,9 +209,10 @@
     {#snippet shortcutControl()}
       <Select
         type="single"
-        value={shortcutValue}
-        onValueChange={(value) =>
-          void app.patchSettings({ globalShortcut: value === NO_SHORTCUT ? '' : value })}
+        bind:value={
+          () => shortcutValue,
+          (value) => patch('shortcut', { globalShortcut: value === NO_SHORTCUT ? '' : value })
+        }
       >
         <SelectTrigger class="w-[9.5rem]" aria-label="Keyboard shortcut to open Statusky"
           >{shortcutLabel}</SelectTrigger
@@ -184,7 +230,8 @@
     {@render row(
       'Summon with a keypress',
       'A shortcut that opens the popover from whatever you are in. Off unless you say.',
-      shortcutControl
+      shortcutControl,
+      'shortcut'
     )}
 
     <!--
@@ -208,15 +255,18 @@
 
     {#snippet networkControl()}
       <Switch
-        checked={app.settings.networkChecks}
-        onCheckedChange={(checked) => void app.patchSettings({ networkChecks: checked })}
+        bind:checked={
+          () => app.settings.networkChecks,
+          (checked) => patch('networkChecks', { networkChecks: checked })
+        }
         aria-label="Run network checks"
       />
     {/snippet}
     {@render row(
       'Measure the network',
       'Probe relays, PDSes and AppViews from this computer, as status.feeds.blue does.',
-      networkControl
+      networkControl,
+      'networkChecks'
     )}
 
     <Separator />
@@ -224,9 +274,11 @@
     {#snippet networkIntervalControl()}
       <Select
         type="single"
-        value={String(app.settings.networkIntervalSec)}
+        bind:value={
+          () => String(app.settings.networkIntervalSec),
+          (value) => patch('networkInterval', { networkIntervalSec: Number(value) })
+        }
         disabled={!app.settings.networkChecks}
-        onValueChange={(value) => void app.patchSettings({ networkIntervalSec: Number(value) })}
       >
         <SelectTrigger class="w-[8.5rem]" aria-label="How often to check the network"
           >{networkIntervalLabel}</SelectTrigger
@@ -241,8 +293,37 @@
     {@render row(
       'Check every',
       'In the background. Opening the popover re-checks anything older than two minutes.',
-      networkIntervalControl
+      networkIntervalControl,
+      'networkInterval'
     )}
+
+    <Separator />
+
+    <div class="py-2">
+      <p class="text-[12.5px] font-medium" id="counted-groups-label">Count in the menu bar</p>
+      <p class="text-[11px] leading-snug text-muted-foreground">
+        Which panels can turn the icon amber or red, and raise banners about core services. The rest
+        are still measured and filed in the feed.
+      </p>
+      <div class="mt-2 flex flex-wrap gap-1.5" role="group" aria-labelledby="counted-groups-label">
+        {#each COUNTABLE as group (group.id)}
+          {@const on = counted.current.includes(group.id)}
+          <Button
+            variant={on ? 'secondary' : 'outline'}
+            size="sm"
+            class={cn('h-6 px-2 text-[11px]', !on && 'text-muted-foreground')}
+            aria-pressed={on}
+            title={group.blurb}
+            disabled={!app.settings.networkChecks}
+            onclick={() => toggleCounted(group.id)}
+          >
+            {#if on}<Check class="size-3" />{/if}
+            {group.title}
+          </Button>
+        {/each}
+      </div>
+      <Refused class="pt-1.5 pb-0" text={refusals.of('counted')} />
+    </div>
 
     <p class="px-0.5 pt-1 text-[11px] leading-snug text-muted-foreground">
       A confirmed outage or recovery is filed in the feed as “{PROBE_SOURCE_NAME}”, which can be
@@ -270,10 +351,11 @@
     {#snippet themeControl()}
       <Select
         type="single"
-        value={app.settings.theme}
-        onValueChange={(value) => void app.patchSettings({ theme: value as ThemePreference })}
+        bind:value={
+          () => app.settings.theme, (value) => patch('theme', { theme: value as ThemePreference })
+        }
       >
-        <SelectTrigger class="w-[8.5rem]">{themeLabel}</SelectTrigger>
+        <SelectTrigger class="w-[8.5rem]" aria-label="Appearance">{themeLabel}</SelectTrigger>
         <SelectContent>
           {#each THEMES as theme (theme.value)}
             <SelectItem value={theme.value} label={theme.label} />
@@ -281,21 +363,24 @@
         </SelectContent>
       </Select>
     {/snippet}
-    {@render row('Appearance', 'Follow the system theme or pin one.', themeControl)}
+    {@render row('Appearance', 'Follow the system theme or pin one.', themeControl, 'theme')}
 
     <Separator />
 
     {#snippet loginControl()}
       <Switch
-        checked={app.settings.launchAtLogin}
-        onCheckedChange={(checked) => void app.patchSettings({ launchAtLogin: checked })}
+        bind:checked={
+          () => app.settings.launchAtLogin,
+          (checked) => patch('launchAtLogin', { launchAtLogin: checked })
+        }
         aria-label="Launch at login"
       />
     {/snippet}
     {@render row(
       'Launch at login',
       'Start Statusky in the menu bar when you sign in.',
-      loginControl
+      loginControl,
+      'launchAtLogin'
     )}
 
     <!--
@@ -333,7 +418,8 @@
       {@render row(
         `Statusky ${app.update.version} is available`,
         'Nothing on this machine updates Statusky for you — these builds come from a download page rather than a package repository. Fetch the new one and replace this copy.',
-        downloadControl
+        downloadControl,
+        'download'
       )}
     {:else if app.update.stage === 'ready'}
       <Separator />

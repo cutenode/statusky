@@ -108,6 +108,28 @@ describe('the timeline', () => {
     expect(getByText('Today')).toBeTruthy()
   })
 
+  // A rare poster's thirty posts can reach back more than a year. Grouped by heading,
+  // the 10th of September twice over was one key twice, which Svelte throws on.
+  it('keeps the same date in two years apart, a year apart', async () => {
+    const dated = (rkey: string, createdAt: string): ReturnType<typeof makePost> =>
+      makePost({ authorDid: status.did, authorHandle: status.handle, rkey, text: rkey, createdAt })
+    const posts = [
+      dated('recent', '2025-09-10T12:00:00Z'),
+      dated('between', '2025-01-20T12:00:00Z'),
+      dated('older', '2024-09-10T12:00:00Z')
+    ]
+
+    const { getByText } = await renderWith(
+      TimelinePanel,
+      { now: NOW },
+      { accounts, posts, unread: [] }
+    )
+
+    expect(getByText('older')).toBeTruthy()
+    expect(getByText(/September 10, 2025/)).toBeTruthy()
+    expect(getByText(/September 10, 2024/)).toBeTruthy()
+  })
+
   it('offers no filters — this is the view you read and leave', async () => {
     const { queryByText } = await renderWith(TimelinePanel, { now: NOW }, populated)
     expect(queryByText('All')).toBeNull()

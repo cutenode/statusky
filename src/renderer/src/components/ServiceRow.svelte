@@ -1,5 +1,6 @@
 <script lang="ts">
   import { slide } from 'svelte/transition'
+  import { transitionMs } from '$lib/motion.svelte'
   import { PROBE_STATE_STYLE } from '$lib/severity'
   import { cn } from '$lib/utils'
   import {
@@ -9,7 +10,8 @@
     formatLatency,
     humanDuration,
     isControl,
-    splitHost
+    splitHost,
+    usualLatency
   } from '@shared/network'
   import type { ProbeCheck, ServiceProbe } from '@shared/types'
   import ChevronDown from '@lucide/svelte/icons/chevron-down'
@@ -22,6 +24,7 @@
     expanded = false,
     highlighted = false,
     offline = false,
+    counted = true,
     ontoggle
   }: {
     service: ServiceProbe
@@ -34,6 +37,8 @@
     offline?: boolean
     /** Just revealed from a notification or a feed entry: draw the eye to it. */
     highlighted?: boolean
+    /** Whether its panel counts in the menu bar. See `Settings.countedProbeGroups`. */
+    counted?: boolean
     ontoggle(): void
   } = $props()
 
@@ -49,8 +54,13 @@
     // A service with a friendly name ("Discover feed") is not split like a hostname.
     service.label === service.host ? splitHost(service.host) : [service.label, '']
   )
-  const passed = $derived(service.checks.filter((check) => check.ok === true).length)
-  const settled = $derived(service.checks.filter((check) => check.ok !== null).length)
+  /** The checks the verdict rests on: all of them, bar any whose target has gone. */
+  const judged = $derived(service.checks.filter((check) => check.excused === undefined))
+  const excused = $derived(service.checks.length - judged.length)
+  const passed = $derived(judged.filter((check) => check.ok === true).length)
+  const settled = $derived(judged.filter((check) => check.ok !== null).length)
+  /** What the row usually answers in, for a slow one to be read against. */
+  const usual = $derived(service.state === 'slow' ? usualLatency(service.history) : null)
 
   /** Still waiting after the point where status.feeds.blue calls a service slow. */
   const waitingLong = $derived(
@@ -75,7 +85,7 @@
       }
     }
     if (service.state === 'partial') {
-      return { text: `${passed} of ${service.checks.length} passing`, tone: style.text }
+      return { text: `${passed} of ${judged.length} passing`, tone: style.text }
     }
     if (service.state === 'slow' && service.latencyMs !== null) {
       return { text: `Slow · ${formatLatency(service.latencyMs)}`, tone: style.text }
@@ -88,11 +98,15 @@
     if (isControl(service)) {
       return { text: 'Control check: judges your connection', tone: 'text-muted-foreground' }
     }
-    if (community && (service.condition === 'down' || service.condition === 'partial')) {
+    if (
+      (community || !counted) &&
+      (service.condition === 'down' || service.condition === 'partial')
+    ) {
       const lasted = service.since ? now - Date.parse(service.since) : 0
       const span = lasted < 60_000 ? 'since just now' : `for ${humanDuration(lasted)}`
       const state = service.condition === 'down' ? 'Unreachable' : 'Partly failing'
-      return { text: `${state} ${span} · best effort, so not counted`, tone: style.text }
+      const why = community ? 'best effort, so not counted' : 'not counted in the menu bar'
+      return { text: `${state} ${span} · ${why}`, tone: style.text }
     }
     if (muted) {
       return { text: 'Judged again once you are back online', tone: 'text-muted-foreground' }
@@ -122,11 +136,13 @@
 
   function result(check: ProbeCheck): { dot: string; duration: string } {
     const dot =
-      check.ok === true
-        ? 'bg-sev-resolved'
-        : check.ok === false
-          ? 'bg-sev-outage'
-          : 'animate-pulse bg-muted-foreground/40'
+      check.excused !== undefined
+        ? 'bg-muted-foreground/50'
+        : check.ok === true
+          ? 'bg-sev-resolved'
+          : check.ok === false
+            ? 'bg-sev-outage'
+            : 'bg-muted-foreground/40 motion-safe:animate-pulse'
     const duration =
       check.ok === null ? '…' : check.durationMs === null ? '—' : formatLatency(check.durationMs)
     return { dot, duration }
@@ -160,8 +176,10 @@
         community
       </span>
     {/if}
-    <span data-verdict class={cn('shrink-0 text-[11px] tabular-nums', verdict.tone)}
-      >{verdict.text}</span
+    <span
+      data-verdict
+      class={cn('shrink-0 text-[11px] tabular-nums', verdict.tone)}
+      title={usual === null ? undefined : `Usually ${formatLatency(usual)}`}>{verdict.text}</span
     >
     <ChevronDown
       class={cn(
@@ -172,7 +190,7 @@
   </button>
 
   {#if expanded}
-    <div class="px-3 pt-1 pb-3" in:slide={{ duration: 180 }}>
+    <div class="px-3 pt-1 pb-3" in:slide={{ duration: transitionMs(180) }}>
       <UptimeStrip history={service.history} />
 
       <ul class="mt-2.5 overflow-hidden rounded-lg bg-muted/45 py-1">
@@ -199,18 +217,34 @@
               >
             </div>
             {#if failure}
+              {@const pardoned = check.excused !== undefined}
               <!-- Why it failed reads as the check's second line, wrapping rather than cut. -->
               <p
                 data-failure
                 title={check.durationMs === null
                   ? check.error
                   : `${check.error} · after ${duration}`}
-                class="selectable pl-3.5 text-[10.5px] leading-snug text-pretty text-sev-outage/85"
+                class={cn(
+                  'selectable pl-3.5 text-[10.5px] leading-snug text-pretty',
+                  pardoned ? 'text-muted-foreground' : 'text-sev-outage'
+                )}
               >
-                {#if failure.code}<span class="font-mono font-medium text-sev-outage tabular-nums"
-                    >{failure.code}</span
+                {#if failure.code}<span
+                    class={cn(
+                      'font-mono font-medium tabular-nums',
+                      pardoned ? 'text-muted-foreground' : 'text-sev-outage'
+                    )}>{failure.code}</span
                   >{' '}{/if}{failure.text}
               </p>
+              {#if pardoned}
+                <!-- The target's news, not the service's: said, and not held against it. -->
+                <p
+                  data-excused
+                  class="pl-3.5 text-[10.5px] leading-snug text-pretty text-sev-degraded"
+                >
+                  {check.excused}
+                </p>
+              {/if}
             {/if}
           </li>
         {/each}
@@ -224,9 +258,9 @@
         {/if}
         {#if service.checks.length}
           <span class="shrink-0 text-muted-foreground tabular-nums">
-            {settled < service.checks.length
-              ? `${settled} of ${service.checks.length} answered`
-              : `${passed} of ${service.checks.length} passed`}
+            {settled < judged.length
+              ? `${settled} of ${judged.length} answered`
+              : `${passed} of ${judged.length} passed`}{excused ? ` · ${excused} excused` : ''}
           </span>
         {/if}
       </div>
@@ -238,6 +272,14 @@
   /* A revealed row glows once, so the eye lands on it after the scroll. */
   .highlighted {
     animation: reveal 1.8s ease-out;
+  }
+
+  /* Asked for less motion, it is lit for as long as the glow would last, and then not. */
+  @media (prefers-reduced-motion: reduce) {
+    .highlighted {
+      animation: none;
+      background: color-mix(in oklch, var(--primary) 12%, transparent);
+    }
   }
 
   @keyframes reveal {

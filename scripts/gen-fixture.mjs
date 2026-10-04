@@ -183,7 +183,7 @@ const state = {
     deliveries: 3,
     lastDeliveryAt: new Date().toISOString()
   },
-  network: summarizeNetwork(network, true),
+  network: summarizeNetwork(network, true, DEFAULT_SETTINGS.countedProbeGroups),
   version: '0.1.0-preview',
   loginItem: { registered: false, error: null },
   shortcut: { registered: false, error: null },

@@ -61,7 +61,11 @@
       const networkListeners = new Set()
       const revealListeners = new Set()
       const pushNetwork = () => {
-        state.network = summarizeNetwork(network, state.settings.networkChecks)
+        state.network = summarizeNetwork(
+          network,
+          state.settings.networkChecks,
+          state.settings.countedProbeGroups
+        )
         for (const listener of networkListeners) listener(structuredClone(network))
         push()
       }
@@ -110,6 +114,37 @@
         )
         const appview = serviceById('appview:public.api.bsky.app')
         Object.assign(appview, { state: 'slow', latencyMs: 16400 })
+        // In a panel the defaults leave out of the menu bar: filed, but not counted.
+        const spindle = serviceById('spindle:spindle.tangled.sh')
+        Object.assign(spindle, {
+          state: 'down',
+          condition: 'down',
+          since: minutesAgo(25),
+          latencyMs: null,
+          checks: spindle.checks.map((check) => ({
+            ...check,
+            ok: false,
+            error: 'Connection refused',
+            durationMs: 40
+          }))
+        })
+        // An account the AppViews are asked about, deleted out from under the checks.
+        const gone = effectiveProbeTargets(state.settings.probeTargets).accounts[0]
+        network.vanished = [{ did: gone.did, part: 'account' }]
+        for (const service of network.services.filter((s) => s.kind === 'appview')) {
+          service.checks = service.checks.map((check) =>
+            check.target?.includes(encodeURIComponent(gone.did)) ||
+            check.target?.includes(gone.handle)
+              ? {
+                  ...check,
+                  ok: false,
+                  error: 'HTTP 400 · Profile not found',
+                  excused:
+                    'No AppView has this account any more: it was deleted, deactivated or suspended. Replace it in Settings'
+                }
+              : check
+          )
+        }
       } else if (scenario === 'offline') {
         network.offline = true
         for (const service of network.services) {
@@ -128,6 +163,7 @@
           startedAt: null,
           finishedAt: null,
           offline: false,
+          vanished: [],
           services: network.services.map((s) => ({
             ...s,
             state: 'pending',
@@ -138,7 +174,11 @@
           }))
         }
       }
-      state.network = summarizeNetwork(network, state.settings.networkChecks)
+      state.network = summarizeNetwork(
+        network,
+        state.settings.networkChecks,
+        state.settings.countedProbeGroups
+      )
 
       /** A pretend sweep: every check goes back to pending and settles at its own pace. */
       let sweeping = null
@@ -226,6 +266,12 @@
             const wasChecking = state.settings.networkChecks
             Object.assign(state.settings, patch)
             if (!wasChecking && state.settings.networkChecks) setTimeout(sweep)
+            // Which panels count changes the header and the tray, as it does in main.
+            state.network = summarizeNetwork(
+              network,
+              state.settings.networkChecks,
+              state.settings.countedProbeGroups
+            )
             // The receiver only exists while it is switched on, as in the real app.
             state.webhook = {
               ...state.webhook,

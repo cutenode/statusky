@@ -70,6 +70,66 @@ describe('RichText', () => {
     }
   )
 
+  /**
+   * Left to Chromium a middle click is "open in a new tab", which in Electron is a popup
+   * request that never passes through `onclick` and reaches main with whatever the href
+   * says. It is taken here instead, and opened the way a left click is.
+   */
+  it.each([
+    [
+      'link',
+      { kind: 'link', text: 'here', uri: 'https://status.bsky.app/' },
+      'https://status.bsky.app/'
+    ],
+    [
+      'mention',
+      { kind: 'mention', text: '@x', did: 'did:plc:abc' },
+      'https://bsky.app/profile/did:plc:abc'
+    ],
+    ['tag', { kind: 'tag', text: '#x', tag: 'outage' }, 'https://bsky.app/hashtag/outage']
+  ] as [string, RichSegment, string][])(
+    'opens a %s in the real browser on a middle click, instead of as a popup',
+    async (_kind, segment, expected) => {
+      const { bridge, getByRole } = await renderWith(RichText, {
+        segments: [segment],
+        text: segment.text
+      })
+
+      const event = new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 })
+      await fireEvent(getByRole('link'), event)
+
+      expect(bridge.api.Host.openExternal).toHaveBeenCalledWith(expected)
+      expect(event.defaultPrevented).toBe(true)
+    }
+  )
+
+  it('does nothing a browser would with any other button, and opens nothing', async () => {
+    const segments: RichSegment[] = [
+      { kind: 'link', text: 'here', uri: 'https://status.bsky.app/' }
+    ]
+    const { bridge, getByRole } = await renderWith(RichText, { segments, text: 'here' })
+
+    const event = new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 2 })
+    await fireEvent(getByRole('link'), event)
+
+    expect(bridge.api.Host.openExternal).not.toHaveBeenCalled()
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  // A link dragged out of the popover is a URL dropped wherever the cursor ends up.
+  it('makes no link draggable', async () => {
+    const segments: RichSegment[] = [
+      { kind: 'link', text: 'here', uri: 'https://status.bsky.app/' },
+      { kind: 'mention', text: '@x', did: 'did:plc:abc' },
+      { kind: 'tag', text: '#x', tag: 'outage' }
+    ]
+    const { getAllByRole } = await renderWith(RichText, { segments, text: '' })
+
+    const links = getAllByRole('link') as HTMLAnchorElement[]
+    expect(links).toHaveLength(3)
+    expect(links.map((link) => link.getAttribute('draggable'))).toEqual(['false', 'false', 'false'])
+  })
+
   it('preserves newlines and renders every segment in order', async () => {
     const segments: RichSegment[] = [
       { kind: 'text', text: 'Line one\nLine two ' },

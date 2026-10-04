@@ -107,6 +107,32 @@ describe('an images embed', () => {
     await fireEvent.click(getByRole('button'))
     expect(bridge.api.Host.openExternal).toHaveBeenCalledWith('https://cdn.bsky.app/full-0.jpg')
   })
+
+  // The same blob attached twice has the same URL. Keyed by it, the second one was a
+  // repeated key, which Svelte throws on — in production too — taking the feed with it.
+  it('draws the same picture attached twice, twice', async () => {
+    const image = { thumb: 'same-thumb.jpg', fullsize: 'same-full.jpg', alt: 'Status graph' }
+    const embed: PostEmbed = { kind: 'images', images: [image, image] }
+
+    const { getAllByRole } = await renderWith(EmbedCard, { embed })
+
+    expect(getAllByRole('button', { name: 'Status graph' })).toHaveLength(2)
+  })
+
+  it('names an image button by its alt text, or by its place when it has none', async () => {
+    const embed: PostEmbed = {
+      kind: 'images',
+      images: [
+        { thumb: 't0.jpg', fullsize: 'f0.jpg', alt: 'Error rate graph' },
+        { thumb: 't1.jpg', fullsize: 'f1.jpg', alt: '' }
+      ]
+    }
+
+    const { getByRole } = await renderWith(EmbedCard, { embed })
+
+    expect(getByRole('button', { name: 'Error rate graph' })).toBeTruthy()
+    expect(getByRole('button', { name: 'Image 2 of 2' })).toBeTruthy()
+  })
 })
 
 describe('a quoted record embed', () => {

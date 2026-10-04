@@ -20,19 +20,21 @@
  */
 import { decode, decodeFirst, toBytes } from '../shared/cbor'
 import { EXPECTED_RESPONSES } from '../shared/expected-responses'
+import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
 import {
   AUTHOR_FEED_LIMIT,
   CATALOGUE,
   CURSOR_LAG_MS,
   FIREHOSE_FRESH_MS,
   FIREHOSE_WINDOW_MS,
+  INDEX_GRACE_MS,
   INDEX_LAG_MS,
   REQUEST_TIMEOUT_MS,
   SLOW_CHECK_EVERY_MS,
   humanDuration,
   type ServiceDefinition
 } from '../shared/network'
-import type { ProbeCheck, ProbeCheckKind, ProbeTargets } from '../shared/types'
+import type { ProbeCheck, ProbeCheckKind, ProbeTargets, VanishedTarget } from '../shared/types'
 
 /** Listeners are always added with a signal, which is how they are all removed at once. */
 interface ListenerOptions {
@@ -68,6 +70,8 @@ export interface ProbeTimings {
   firehoseWindowMs: number
   firehoseFreshMs: number
   indexLagMs: number
+  /** How long an AppView is given to index the sampled posts before it is asked for them. */
+  indexGraceMs: number
   /** How far a service's own consumer cursor may trail the clock. */
   cursorLagMs: number
   /** How long a check too expensive for every sweep waits between runs. */
@@ -79,6 +83,7 @@ export const DEFAULT_PROBE_TIMINGS: ProbeTimings = {
   firehoseWindowMs: FIREHOSE_WINDOW_MS,
   firehoseFreshMs: FIREHOSE_FRESH_MS,
   indexLagMs: INDEX_LAG_MS,
+  indexGraceMs: INDEX_GRACE_MS,
   cursorLagMs: CURSOR_LAG_MS,
   slowCheckEveryMs: SLOW_CHECK_EVERY_MS
 }
@@ -107,6 +112,10 @@ export interface ProbeContext {
   changed(): void
   /** Where AppViews compare their newest posts. */
   peers: FreshnessPeers
+  /** The brand-new posts every AppView in the sweep is asked for. */
+  sample: IndexSample
+  /** Where AppViews compare which of the listed accounts they could not find. */
+  census: TargetCensus
   /** What the last sweep left behind: counters to compare against, and clocks. */
   counters: ProbeCounters
   /**
@@ -166,6 +175,13 @@ class Check {
     this.settle(false, error, timed)
   }
 
+  /** Stop holding a failure against the service, for this reason. See `ProbeCheck.excused`. */
+  excuse(reason: string): void {
+    if (this.record.ok !== false || this.record.excused !== undefined) return
+    this.record.excused = reason
+    this.ctx.changed()
+  }
+
   private settle(ok: boolean, error: string | null, timed: boolean): void {
     if (this.record.ok !== null) return
     this.record.ok = ok
@@ -201,6 +217,19 @@ function xrpc(host: string, nsid: string, params: Record<string, string | number
 /** A plain path on a host, for the services that answer outside `/xrpc`. */
 function http(host: string, path = '/'): string {
   return new URL(path, `https://${host}`).toString()
+}
+
+/**
+ * A path out of the probe targets, on `host` — or null if it would lead anywhere else.
+ *
+ * The schema refuses the paths that do, but a path is still somebody's input, and the
+ * URL parser resolves `//elsewhere/…` and `/\elsewhere/…` against a host by leaving it
+ * for `elsewhere`. So it is checked again here, where the request is aimed, and nothing
+ * that reaches the probes by some other route can point a check at another machine.
+ */
+function onHost(host: string, path: string): string | null {
+  const url = new URL(path, `https://${host}`)
+  return url.host === host ? url.toString() : null
 }
 
 /** A nested JSON property, or undefined if the path does not lead to one. */
@@ -474,7 +503,56 @@ async function request(
   } finally {
     clearTimeout(timer)
     ctx.signal.removeEventListener('abort', cancel)
+    // Hang up, whatever was left unread. Every early verdict above — a status, a content
+    // type — is reached without reading the body, and a body nobody reads holds its
+    // request open until the garbage collector gets round to it: during an outage, that
+    // is every failing service's error page at once. Once the body has been read, this
+    // does nothing.
+    controller.abort()
   }
+}
+
+/**
+ * Ask somebody else about a service, and file the check only if they answered.
+ *
+ * A relay's opinion of a PDS is worth having — it is whether that PDS's commits are
+ * reaching anybody — but it is the relay's opinion, and when the relay itself is down
+ * every PDS asking it would go partial at once, one outage filed as eighteen. So the
+ * check is only added once the answer is about the service: `judge` returns null for
+ * anything else, and so does every failure that never got as far as a body. The relay's
+ * own row is where its troubles are reported.
+ */
+async function secondHand(
+  checks: ProbeCheck[],
+  ctx: ProbeContext,
+  label: string,
+  target: string,
+  judge: (body: unknown) => Verdict | null,
+  options?: RequestOptions
+): Promise<void> {
+  const record: ProbeCheck = {
+    label,
+    target,
+    kind: 'http',
+    ok: null,
+    error: null,
+    durationMs: null
+  }
+  let answered = false
+  await request(
+    ctx,
+    new Check(record, ctx),
+    (body) => {
+      const verdict = judge(body)
+      if (verdict === null) return false
+      answered = true
+      return verdict
+    },
+    options
+  )
+  if (!answered) return
+  checks.push(record)
+  ctx.changed()
 }
 
 /**
@@ -812,6 +890,223 @@ export class FreshnessPeers {
 /** Newest post time for each account, by DID. */
 export type NewestPosts = ReadonlyMap<string, number>
 
+/** What one AppView said about one listed account, when it said anything definite. */
+export type Sighting = 'present' | 'missing'
+
+/** How the census names one part of one account: `account did:plc:…`, `handle did:plc:…`. */
+function censusKey(part: VanishedTarget['part'], did: string): string {
+  return `${part} ${did}`
+}
+
+/** The census's verdict, as the snapshot carries it. */
+export function vanishedTargets(keys: ReadonlySet<string>): VanishedTarget[] {
+  return [...keys].toSorted().map((key) => {
+    const space = key.indexOf(' ')
+    return { part: key.slice(0, space) as VanishedTarget['part'], did: key.slice(space + 1) }
+  })
+}
+
+/**
+ * Where the AppViews in one sweep compare which of the listed accounts they could not
+ * find, so that an account that has gone is reported as gone rather than as five
+ * AppViews all failing at once.
+ *
+ * Two things can go: the account itself (its profile), or the handle it was listed
+ * under (the handle no longer resolves to it). Either is judged vanished when no AppView
+ * has it and at least two indexes say plainly that they do not — a 4xx about the
+ * account, never a timeout or a 5xx, which are the AppView's own trouble and say nothing
+ * either way.
+ *
+ * Indexes, not hostnames: `api.bsky.app` and `public.api.bsky.app` are one index behind
+ * two names, and when it loses an account it says so twice, which is still one witness.
+ * An AppView that indexes only part of the network by design does not get a say about
+ * what is missing at all — its "Profile not found" is its policy, not news — though one
+ * that has an account still proves it exists. See `probeAppView`.
+ *
+ * One index alone cannot tell a deleted account from a gap of its own, so a sweep of
+ * one (a re-check) never concludes anything new. What an earlier census concluded stands
+ * until an AppView has the account again: an AppView that times out says nothing either
+ * way, and a re-check of one that does is no reason to forget the account is gone.
+ */
+export class TargetCensus {
+  private remaining: number
+  private readonly present = new Set<string>()
+  /** For each thing missing, the indexes that said so. */
+  private readonly missing = new Map<string, Set<string>>()
+  private readonly waiting: (() => void)[] = []
+  private reported = false
+
+  constructor(
+    expected: number,
+    private readonly previous: ReadonlySet<string> = new Set()
+  ) {
+    this.remaining = expected
+  }
+
+  /** The accounts judged vanished: this sweep's verdict, or the last one's before any report. */
+  get verdict(): ReadonlySet<string> {
+    if (!this.reported) return this.previous
+    const vanished = new Set<string>()
+    for (const key of this.previous) {
+      if (!this.present.has(key)) vanished.add(key)
+    }
+    for (const [key, indexes] of this.missing) {
+      if (!this.present.has(key) && indexes.size >= 2) vanished.add(key)
+    }
+    return vanished
+  }
+
+  /**
+   * Report what the AppView in front of `index` found, and wait for every other AppView
+   * in the sweep to do the same. Resolves with the accounts judged vanished.
+   */
+  report(index: string, sightings: ReadonlyMap<string, Sighting>): Promise<ReadonlySet<string>> {
+    this.reported = true
+    for (const [key, sighting] of sightings) {
+      if (sighting === 'present') {
+        this.present.add(key)
+        continue
+      }
+      const indexes = this.missing.get(key) ?? new Set()
+      indexes.add(index)
+      this.missing.set(key, indexes)
+    }
+    this.remaining--
+    return new Promise((resolve) => {
+      this.waiting.push(() => resolve(this.verdict))
+      if (this.remaining <= 0) for (const wake of this.waiting.splice(0)) wake()
+    })
+  }
+}
+
+/** What an excused check says about the account it asked after. */
+const ACCOUNT_GONE =
+  'No AppView has this account any more: it was deleted, deactivated or suspended. Replace it in Settings'
+const HANDLE_GONE =
+  'No AppView resolves this handle to this account any more: it has changed. Replace it in Settings'
+
+/** A handle that resolved, to an account other than the one it was listed with. */
+const WRONG_DID = 'Resolved to the wrong DID'
+
+/**
+ * Whether a failed lookup is an AppView saying the account is not there, as opposed to
+ * failing to answer. Rate limits are the AppView's business, not the account's.
+ */
+function saysMissing(error: string | null): boolean {
+  return /^HTTP (400|404|410)\b/.test(error ?? '')
+}
+
+// ------------------------------------------------------------------ AppView indexing
+
+/** Posts created moments ago, taken off the firehose for the AppViews to be asked for. */
+export interface PostSample {
+  /** Their AT-URIs. */
+  uris: string[]
+  /** When the sample was complete, in epoch milliseconds: every post is at least this old. */
+  takenAt: number
+}
+
+/**
+ * One sample of brand-new posts per sweep, shared by every AppView in it.
+ *
+ * The newest-post comparison can only say an AppView is fifteen minutes behind its
+ * peers, because it waits on a few accounts to post. Asking every AppView for posts that
+ * appeared on the firehose seconds ago says how far behind its indexer is right now, and
+ * does it in one request. The sample is taken once, lazily, by whichever AppView asks
+ * first, so a sweep that measures no AppView opens no stream for it.
+ *
+ * When no sample can be had — the Jetstream is down, or this machine is offline — the
+ * AppViews simply go without the check. That Jetstream's own row reports why, and an
+ * AppView should not be marked down for a stream it does not own.
+ */
+export class IndexSample {
+  private taking: Promise<PostSample | null> | null = null
+
+  take(ctx: ProbeContext): Promise<PostSample | null> {
+    this.taking ??= collectPosts(ctx)
+    return this.taking
+  }
+}
+
+/** Read up to `CATALOGUE.indexSample.size` fresh post creates off a Jetstream. */
+function collectPosts(ctx: ProbeContext): Promise<PostSample | null> {
+  const { jetstream, size } = CATALOGUE.indexSample
+  const { commitKind, createOperation } = EXPECTED_RESPONSES.jetstream
+  const { firehoseWindowMs, firehoseFreshMs } = ctx.timings
+
+  return new Promise((resolve) => {
+    const listening = new AbortController()
+    const { signal } = listening
+    const uris: string[] = []
+    let socket: ProbeSocket | null = null
+
+    const finish = (): void => {
+      if (signal.aborted) return
+      listening.abort()
+      clearTimeout(timer)
+      try {
+        socket?.close()
+      } catch {
+        // Closing a socket that never opened can throw; it is going away regardless.
+      }
+      resolve(uris.length && !ctx.signal.aborted ? { uris, takenAt: ctx.now() } : null)
+    }
+
+    const timer = setTimeout(finish, firehoseWindowMs)
+    if (ctx.signal.aborted) return finish()
+    ctx.signal.addEventListener('abort', finish, { signal })
+
+    try {
+      socket = ctx.transport.openSocket(
+        `wss://${jetstream}/subscribe?wantedCollections=app.bsky.feed.post`
+      )
+    } catch {
+      return finish()
+    }
+    socket.binaryType = 'arraybuffer'
+    socket.addEventListener('error', finish, { signal })
+    socket.addEventListener('close', finish, { signal })
+    socket.addEventListener(
+      'message',
+      (event) => {
+        let body: unknown
+        try {
+          body = readJsonFrame('data' in event ? event.data : undefined)
+        } catch {
+          return
+        }
+        if (field(body, 'kind') !== commitKind) return
+        if (field(body, 'commit', 'operation') !== createOperation) return
+        const did = field(body, 'did')
+        const collection = field(body, 'commit', 'collection')
+        const rkey = field(body, 'commit', 'rkey')
+        const us = numberField(body, 'time_us')
+        if (typeof did !== 'string' || typeof collection !== 'string') return
+        if (typeof rkey !== 'string' || us === null) return
+        // Anything older is a replay, and would measure how long ago it was first seen.
+        if (ctx.now() - us / 1000 >= firehoseFreshMs) return
+        uris.push(`at://${did}/${collection}/${rkey}`)
+        if (uris.length >= size) finish()
+      },
+      { signal }
+    )
+  })
+}
+
+/** Resolve after `ms`, or as soon as `signal` aborts. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const done = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    signal.addEventListener('abort', done, { once: true })
+  })
+}
+
 /** Newest `createdAt` across a set of `getAuthorFeed` responses, or null if none parse. */
 export function newestPostTime(bodies: unknown[]): number | null {
   let newest: number | null = null
@@ -834,8 +1129,7 @@ function probeRelay(host: string, checks: ProbeCheck[], ctx: ProbeContext): Prom
   const health = addCheck(checks, ctx, '_health', xrpc(host, '_health'))
   // One host is all this asserts — that the route answers with a list. Left unbounded it
   // returns two hundred, which is seventeen kilobytes per relay per sweep for a question
-  // answered by a hundred and seventeen bytes. The whole list is worth having, but on the
-  // directory's clock rather than this one: see `src/main/directory.ts`.
+  // answered by a hundred and seventeen bytes.
   const hosts = addCheck(
     checks,
     ctx,
@@ -901,7 +1195,138 @@ function probePds(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promis
   return Promise.all([
     request(ctx, health, (body) => isObject(body) && typeof body.version === 'string'),
     request(ctx, describe, (body) => isObject(body) && typeof body.did === 'string'),
-    readRepository()
+    readRepository(),
+    askRelayAbout(host, checks, ctx)
+  ])
+}
+
+const CARRIED_HOST_STATUSES: ReadonlySet<string> = new Set(
+  EXPECTED_RESPONSES.relay.carriedHostStatuses
+)
+
+/**
+ * Whether Bluesky's relay is still subscribed to this PDS.
+ *
+ * A PDS can answer every request perfectly while nobody is listening to it: a relay that
+ * has throttled, banned or lost track of a host stops passing its commits on, and its
+ * users' posts stop appearing anywhere else. Nothing asked of the PDS itself can show
+ * that. Seven of the eight relays in the catalogue answer `getHostStatus`; the one asked
+ * is `CATALOGUE.hostStatusRelay`, and a relay that cannot answer at all leaves no check
+ * here — see `secondHand`.
+ */
+function askRelayAbout(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<void> {
+  const relay = CATALOGUE.hostStatusRelay
+  return secondHand(
+    checks,
+    ctx,
+    'getHostStatus',
+    xrpc(relay, 'com.atproto.sync.getHostStatus', { hostname: host }),
+    (body) => {
+      const status = field(body, 'status')
+      if (typeof status === 'string') {
+        return CARRIED_HOST_STATUSES.has(status) || `${relay} marks this host ${status}`
+      }
+      if (field(body, 'error') === EXPECTED_RESPONSES.relay.hostNotFound) {
+        return `${relay} does not carry this host`
+      }
+      return null
+    },
+    // Unknown hosts are a 404 with a reason, and the reason is the answer.
+    { allow: [404] }
+  )
+}
+
+/**
+ * Bluesky's entryway, which is not a PDS anybody's repository lives on: it is where the
+ * accounts on Bluesky's PDSes sign in and refresh their sessions, and the OAuth
+ * authorisation server every app sends them to. `listRepos` there wants a login, so the
+ * checks are the ones an anonymous client can make: health, the server's own
+ * description, and the OAuth metadata an app reads before anything else.
+ */
+function probeEntryway(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
+  const health = addCheck(checks, ctx, '_health', xrpc(host, '_health'))
+  const describe = addCheck(
+    checks,
+    ctx,
+    'describeServer',
+    xrpc(host, 'com.atproto.server.describeServer')
+  )
+  const oauth = addCheck(
+    checks,
+    ctx,
+    'OAuth metadata',
+    http(host, '/.well-known/oauth-authorization-server')
+  )
+  const origin = `https://${host}`
+  return Promise.all([
+    request(ctx, health, (body) => typeof field(body, 'version') === 'string'),
+    request(
+      ctx,
+      describe,
+      (body) => field(body, 'did') === `did:web:${host}` || 'Server names a different DID'
+    ),
+    request(ctx, oauth, (body) => {
+      if (field(body, 'issuer') !== origin) return 'OAuth metadata names a different issuer'
+      return (
+        typeof field(body, 'token_endpoint') === 'string' || 'OAuth metadata has no token endpoint'
+      )
+    })
+  ])
+}
+
+/**
+ * The PLC directory: health, one DID document resolved, and whether operations are
+ * still being written.
+ *
+ * The last is the one that matters most and the one a health endpoint cannot give. A
+ * directory that has stopped accepting operations goes on resolving every DID it
+ * already has, so reads alone would call it well while no account could be created and
+ * no handle changed. New operations arrive every second or so, so asking the export for
+ * the first one after five minutes ago always finds one while it is writing.
+ */
+function probePlc(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
+  const { did, handle } = CATALOGUE.anchor
+  const window = ctx.timings.cursorLagMs
+  const since = new Date(ctx.now() - window).toISOString()
+  const health = addCheck(checks, ctx, '_health', http(host, '/_health'))
+  const resolve = addCheck(checks, ctx, 'resolve', http(host, `/${did}`))
+  const recent = addCheck(
+    checks,
+    ctx,
+    'newest operation',
+    http(host, `/export?count=1&after=${encodeURIComponent(since)}`)
+  )
+  return Promise.all([
+    request(ctx, health, (body) => typeof field(body, 'version') === 'string'),
+    request(ctx, resolve, (body) => {
+      if (field(body, 'id') !== did) return 'DID document names a different DID'
+      const aliases = field(body, 'alsoKnownAs')
+      return (
+        (Array.isArray(aliases) && aliases.includes(`at://${handle}`)) ||
+        'DID document no longer names its handle'
+      )
+    }),
+    // JSON Lines, one operation per line: read as text, so an empty answer is an answer.
+    request(
+      ctx,
+      recent,
+      (body) => {
+        const line = typeof body === 'string' ? body.split('\n').find((l) => l.trim()) : undefined
+        if (line === undefined) return `No operations in the last ${humanDuration(window)}`
+        let operation: unknown
+        try {
+          operation = JSON.parse(line)
+        } catch {
+          return 'Export was unreadable'
+        }
+        const created = field(operation, 'createdAt')
+        return (
+          (typeof created === 'string' && !Number.isNaN(Date.parse(created))) ||
+          'Export was unreadable'
+        )
+      },
+      { as: 'text' }
+    )
   ])
 }
 
@@ -909,6 +1334,15 @@ function probePds(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promis
 const VERSIONLESS_APPVIEWS: ReadonlySet<string> = new Set(
   EXPECTED_RESPONSES.appView.versionlessHealth
 )
+
+/** AppViews that index only part of the network, so a sample of all of it says nothing. */
+const PARTIAL_INDEX_APPVIEWS: ReadonlySet<string> = new Set(EXPECTED_RESPONSES.appView.partialIndex)
+
+/** Each AppView's index, by the host whose index it is; see `CATALOGUE.sharedIndexes`. */
+const SHARED_INDEXES: ReadonlyMap<string, string> = new Map(Object.entries(CATALOGUE.sharedIndexes))
+
+/** What an AppView that returned no post times at all is failed with. */
+const NO_POST_TIMES = 'No valid post timestamps returned'
 
 /**
  * status.feeds.blue's AppView checks, over one list of accounts rather than three.
@@ -947,22 +1381,60 @@ function probeAppView(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
   const freshness = addCheck(checks, ctx, 'newest post', null, 'derived')
 
   const hasDid = (body: unknown): boolean => isObject(body) && typeof body.did === 'string'
+  /** Whether this AppView indexes only part of the network, by design. */
+  const partial = PARTIAL_INDEX_APPVIEWS.has(host)
+
+  const judgeIndexing = async (): Promise<void> => {
+    if (partial) return
+    const sample = await ctx.sample.take(ctx)
+    if (!sample || ctx.signal.aborted) return
+    const url = new URL(xrpc(host, 'app.bsky.feed.getPosts'))
+    for (const uri of sample.uris) url.searchParams.append('uris', uri)
+    const indexing = addCheck(checks, ctx, 'indexing', url.toString())
+    // Shown waiting from here, so the row says what it is waiting for; timed from the
+    // request, so the wait is never read as latency.
+    await sleep(sample.takenAt + ctx.timings.indexGraceMs - ctx.now(), ctx.signal)
+    if (ctx.signal.aborted) return indexing.fail('Cancelled', { timed: false })
+    await request(ctx, indexing, (body) => {
+      const posts = field(body, 'posts')
+      if (!Array.isArray(posts)) return false
+      const wanted = new Set(sample.uris)
+      const found = posts.filter((post) => wanted.has(field(post, 'uri') as string)).length
+      // Half, not all: a post deleted or taken down in the meantime is served by nobody,
+      // and one in twenty of any sample is. An indexer that is behind finds almost none.
+      if (found * 2 >= sample.uris.length) return true
+      const age = humanDuration(ctx.now() - sample.takenAt)
+      return `Found ${found} of ${sample.uris.length} posts from ${age} ago`
+    })
+  }
+
+  const profileRuns = profiles.map((check) => request(ctx, check, hasDid))
+  const handleRuns = handles.map(({ account, check }) =>
+    request(ctx, check, (body) => {
+      const did = field(body, 'did')
+      // No DID at all is a malformed answer; somebody else's is a wrong one.
+      if (typeof did !== 'string') return false
+      return did === account.did || WRONG_DID
+    })
+  )
+  const feedRuns = feeds.map(({ did, check }) =>
+    request(ctx, check, (b) => isObject(b) && Array.isArray(b.feed)).then(
+      (body) => [did, body] as const
+    )
+  )
 
   const judgeFreshness = async (): Promise<void> => {
     // An account this AppView has not indexed answers "Profile not found", which its
     // getAuthorFeed check already reports, and leaves nothing here to compare.
     const mine = new Map<string, number>()
-    await Promise.all(
-      feeds.map(async ({ did, check }) => {
-        const body = await request(ctx, check, (b) => isObject(b) && Array.isArray(b.feed))
-        const newest = newestPostTime([body])
-        if (newest !== null) mine.set(did, newest)
-      })
-    )
+    for (const [did, body] of await Promise.all(feedRuns)) {
+      const newest = newestPostTime([body])
+      if (newest !== null) mine.set(did, newest)
+    }
     if (mine.size === 0) {
       // Every AppView reports, even one with nothing to say, or its peers would wait forever.
       void ctx.peers.report(mine)
-      return freshness.fail('No valid post timestamps returned')
+      return freshness.fail(NO_POST_TIMES)
     }
 
     // Judged only on the accounts it returned posts for, against the others' newest from
@@ -981,6 +1453,58 @@ function probeAppView(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
       freshness.pass()
     }
   }
+  const freshnessRun = judgeFreshness()
+
+  /**
+   * Excuse the lookups of any account no AppView has. Every AppView reports, whatever it
+   * found, or the others would wait for it forever.
+   */
+  const judgeCensus = async (): Promise<void> => {
+    await Promise.all([...profileRuns, ...handleRuns])
+    const sightings = new Map<string, Sighting>()
+    // An AppView that leaves most of the network out on purpose answers "not found" for
+    // accounts that are perfectly well, so only what it does have counts.
+    const missing = (key: string): void => {
+      if (!partial) sightings.set(key, 'missing')
+    }
+    accounts.forEach(({ did }, index) => {
+      const profile = profiles[index]!.record
+      if (profile.ok) sightings.set(censusKey('account', did), 'present')
+      else if (saysMissing(profile.error)) missing(censusKey('account', did))
+      // A handle that now resolves to somebody else has moved just as surely.
+      const handle = handles[index]!.check.record
+      if (handle.ok) sightings.set(censusKey('handle', did), 'present')
+      else if (saysMissing(handle.error) || handle.error === WRONG_DID) {
+        missing(censusKey('handle', did))
+      }
+    })
+    const vanished = await ctx.census.report(SHARED_INDEXES.get(host) ?? host, sightings)
+    if (!vanished.size) return
+    await freshnessRun
+    // Only a failure that says the account is not there is excused: this AppView timing
+    // out or erroring is still this AppView's trouble, whatever became of the account.
+    const excuse = (check: Check, reason: string): void => {
+      if (saysMissing(check.record.error) || check.record.error === WRONG_DID) check.excuse(reason)
+    }
+    accounts.forEach(({ did }, index) => {
+      if (vanished.has(censusKey('account', did))) {
+        for (const check of [profiles[index]!, handles[index]!.check, feeds[index]!.check]) {
+          excuse(check, ACCOUNT_GONE)
+        }
+      } else if (vanished.has(censusKey('handle', did))) {
+        excuse(handles[index]!.check, HANDLE_GONE)
+      }
+    })
+    // With every account gone there are no posts to compare, and that is the accounts'
+    // news too — but only then, and only that failure: an AppView with one account left
+    // to read is still expected to read it.
+    if (
+      freshness.record.error === NO_POST_TIMES &&
+      accounts.every(({ did }) => vanished.has(censusKey('account', did)))
+    ) {
+      freshness.excuse(ACCOUNT_GONE)
+    }
+  }
 
   return Promise.all([
     request(ctx, health, (body) =>
@@ -988,16 +1512,11 @@ function probeAppView(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
         ? isObject(body)
         : isObject(body) && typeof body.version === 'string'
     ),
-    ...profiles.map((check) => request(ctx, check, hasDid)),
-    ...handles.map(({ account, check }) =>
-      request(ctx, check, (body) => {
-        const did = field(body, 'did')
-        // No DID at all is a malformed answer; somebody else's is a wrong one.
-        if (typeof did !== 'string') return false
-        return did === account.did || 'Resolved to the wrong DID'
-      })
-    ),
-    judgeFreshness()
+    ...profileRuns,
+    ...handleRuns,
+    judgeCensus(),
+    freshnessRun,
+    judgeIndexing()
   ])
 }
 
@@ -1285,9 +1804,9 @@ function probeForYou(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pro
       },
       { as: 'text', allow: [503] }
     ),
-    // Second-hand, the way `probeFleet` reads the relay's opinion of everybody else:
-    // whether the feed works in the app is this AppView's verdict and nobody else's, so
-    // it is worth one request — at the cost of an AppView outage marking this row too.
+    // Second-hand: whether the feed works in the app is this AppView's verdict and nobody
+    // else's, so it is worth one request — at the cost of an AppView outage marking this
+    // row too.
     request(ctx, generator, (body) => {
       if (field(body, 'view', 'did') !== did) return 'Generator record points elsewhere'
       if (field(body, 'isValid') !== true) return 'Bluesky calls the generator invalid'
@@ -1314,15 +1833,24 @@ function probeTangledAppview(
   // is served as the entity `&middot;` rather than the character, and a check has no
   // business knowing which.
   const repoTitle = repoPath.slice(1)
-  const goGet = addCheck(checks, ctx, 'go-get', http(host, goGetPath))
-  const page = addCheck(checks, ctx, 'repo page', http(host, repoPath))
+  const goGet = addCheck(checks, ctx, 'go-get', onHost(host, goGetPath))
+  const page = addCheck(checks, ctx, 'repo page', onHost(host, repoPath))
+  /** Ask, unless the path led somewhere other than this host; see `onHost`. */
+  const ask = (
+    check: Check,
+    validate: (body: unknown) => Verdict,
+    options: RequestOptions
+  ): Promise<unknown> => {
+    if (check.target !== null) return request(ctx, check, validate, options)
+    check.fail(`Path leads off ${host}`, { timed: false })
+    return Promise.resolve(null)
+  }
   // The appview serves HTML and nothing else — there is no `/xrpc` mount on it at all —
   // so the checks are a string match on a 92-byte static route and one on the real page,
   // which is the only thing that exercises routing, the database, identity resolution
   // and the render together.
   return Promise.all([
-    request(
-      ctx,
+    ask(
       goGet,
       (body) =>
         typeof body === 'string' && body.includes(goImportMarker) && body.includes(repoTitle)
@@ -1330,8 +1858,7 @@ function probeTangledAppview(
           : 'Unexpected go-import meta',
       { as: 'text' }
     ),
-    request(
-      ctx,
+    ask(
       page,
       (body) => {
         if (typeof body !== 'string') return 'Unexpected response'
@@ -1468,20 +1995,153 @@ function probeSpindle(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
 
 // ------------------------------------------------------------------ apps
 
+/** A publication the catalogue already knows the host of: the checked-in one. */
+interface KnownPublication {
+  publication: string
+  host: string
+}
+
+/** Why a publication's own record could not say where it is served. */
+const NO_PUBLICATION_URL = 'Publication record names no URL it is served at'
+
+/** A host a publication may be read from: a name, with a dot in it, never an address. */
+const PUBLIC_HOST = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*[a-z0-9]$/
+
+/**
+ * Read a `site.standard.publication`'s well-known route where the publication is served,
+ * and check that it names the publication back.
+ *
+ * pckt and Offprint both answer that route on the publication's own host rather than on
+ * theirs, so the check is only as good as knowing the host. The checked-in publication's
+ * is in the catalogue. A replacement's is nowhere but in its own record — its `url` —
+ * which is read through Slingshot: it hands back any record in the Atmosphere in one
+ * request, with no DID to resolve first. Asking the catalogue's host about somebody
+ * else's publication, as this once did, could only ever fail.
+ *
+ * That makes Slingshot a dependency of a replaced target's check, so its trouble is kept
+ * its own, the way `secondHand` keeps a relay's: a record Slingshot says is not there is
+ * the target's news and fails the check, but Slingshot not answering leaves the check out
+ * of the sweep, and Slingshot's own row says why.
+ *
+ * The record is somebody else's, and so is the URL in it. Only an `https` URL on a
+ * public name, on the standard port, is followed: anything else — an address, a port,
+ * `localhost` — would let a publication's owner point this machine at its own network.
+ */
+function readPublication(
+  checks: ProbeCheck[],
+  ctx: ProbeContext,
+  publication: string,
+  known: KnownPublication
+): Promise<unknown> {
+  const route = `.well-known/${EXPECTED_RESPONSES.standardSite.publicationCollection}`
+  const read = (check: Check): Promise<unknown> =>
+    request(
+      ctx,
+      check,
+      (body) =>
+        (typeof body === 'string' && body.trim() === publication) || 'Publication did not resolve',
+      { as: 'text' }
+    )
+
+  // Added before anything is awaited, so the row lists it where it always has.
+  if (publication === known.publication) {
+    return read(addCheck(checks, ctx, 'publication', http(known.host, `/${route}`)))
+  }
+
+  return (async () => {
+    const where = await locatePublication(ctx, publication)
+    if (where === null) return
+    const check = addCheck(checks, ctx, 'publication', 'url' in where ? where.url : null)
+    if ('error' in where) return check.fail(where.error, { timed: false })
+    await read(check)
+  })()
+}
+
+/**
+ * Where a publication's well-known route is, from the publication's own record: its
+ * `url`, read through Slingshot. Null when Slingshot could not say. See `readPublication`.
+ */
+async function locatePublication(
+  ctx: ProbeContext,
+  uri: string
+): Promise<{ url: string } | { error: string } | null> {
+  // `at://<did>/<collection>/<rkey>`, exactly: the schema holds a publication to that.
+  const [repo, collection, rkey] = uri.slice('at://'.length).split('/') as [string, string, string]
+  const lookup = new Check(
+    {
+      label: 'publication record',
+      target: xrpc(CATALOGUE.microcosm.slingshot, 'com.atproto.repo.getRecord', {
+        repo,
+        collection,
+        rkey
+      }),
+      kind: 'http',
+      ok: null,
+      error: null,
+      durationMs: null
+    },
+    ctx
+  )
+  let named: unknown
+  await request(ctx, lookup, (body) => {
+    named = field(body, 'value', 'url')
+    return true
+  })
+  if (!lookup.passed) {
+    return saysMissing(lookup.record.error) ? { error: 'Publication record is gone' } : null
+  }
+
+  let base: URL
+  try {
+    base = new URL(typeof named === 'string' ? named : '')
+  } catch {
+    return { error: NO_PUBLICATION_URL }
+  }
+  if (base.protocol !== 'https:' || base.port !== '' || !PUBLIC_HOST.test(base.hostname)) {
+    return { error: NO_PUBLICATION_URL }
+  }
+  // The route hangs off the publication's own URL, path and all: a publication can live
+  // under a path on a host it shares with others.
+  const path = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`
+  const route = `.well-known/${EXPECTED_RESPONSES.standardSite.publicationCollection}`
+  return { url: new URL(`${path}${route}`, base.origin).toString() }
+}
+
 function probePckt(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
   const up = addCheck(checks, ctx, 'up', http(host, '/up'))
+  // Resolves a blog's subdomain out of the database, as a reader's first request to it
+  // does: a subdomain it does not know answers 404.
+  const lookup = readPublication(checks, ctx, ctx.targets.apps.pckt.publication, {
+    publication: DEFAULT_PROBE_TARGETS.apps.pckt.publication,
+    host: CATALOGUE.apps.pckt.publicationHost
+  })
+  const lag = addCheck(checks, ctx, 'index lag', null, 'derived')
 
   // Four hundred and seventy-nine bytes, and the most generous health endpoint found
-  // anywhere: it also reports the search index, queue worker, failed jobs, queue depths
-  // and the consumer's lag. Only what serving pages needs is judged here.
-  return request(ctx, up, (body) => {
+  // anywhere: it also reports the search index, queue worker, failed jobs and queue
+  // depths. Those are left unjudged — they read as unwell while pckt serves pages and
+  // keeps current, which would hold the row at partial — and `up` judges only what
+  // serving pages needs. The consumer's staleness is the exception, being the one
+  // number in there that says whether what pckt shows is current.
+  const health = request(ctx, up, (body) => {
     if (field(body, 'status') !== EXPECTED_RESPONSES.pckt.status) {
       return 'Application reports it is not ok'
     }
     if (field(body, 'checks', 'database') !== true) return 'Database is unreachable'
     if (field(body, 'checks', 'cache') !== true) return 'Cache is unreachable'
     return true
+  }).then((body) => {
+    // A body that failed the health check is not worth reading further: the numbers in
+    // it describe an application that has already said it is not well.
+    if (!up.passed) return lag.fail('Skipped because up failed', { timed: false })
+    // `jetstream.cursor` is relative to the stream, not the epoch, so it is only good
+    // for movement; `stale_seconds` is the one that can be read against the clock.
+    const stale = numberField(body, 'jetstream', 'stale_seconds')
+    if (stale === null) return lag.fail('Consumer reported no staleness', { timed: false })
+    judgeCursor(ctx, lag, ctx.now() - stale * 1000, 'Index')
   })
+
+  return Promise.all([health, lookup])
 }
 
 /**
@@ -1569,17 +2229,8 @@ function probeLeaflet(host: string, checks: ProbeCheck[], ctx: ProbeContext): Pr
 }
 
 function probeOffprint(host: string, checks: ProbeCheck[], ctx: ProbeContext): Promise<unknown> {
-  const { publicationHost } = CATALOGUE.apps.offprint
-  const { publication } = ctx.targets.apps.offprint
   const { upMarker } = EXPECTED_RESPONSES.offprint
-  const collection = EXPECTED_RESPONSES.standardSite.publicationCollection
   const up = addCheck(checks, ctx, 'up', http(host, '/up'))
-  const lookup = addCheck(
-    checks,
-    ctx,
-    'publication',
-    http(publicationHost, `/.well-known/${collection}`)
-  )
 
   return Promise.all([
     // Laravel's own health route, which does not touch the database — process liveness
@@ -1592,13 +2243,10 @@ function probeOffprint(host: string, checks: ProbeCheck[], ctx: ProbeContext): P
     ),
     // Resolves a custom-domain mapping out of the database: a subdomain it does not know
     // redirects instead of answering.
-    request(
-      ctx,
-      lookup,
-      (body) =>
-        (typeof body === 'string' && body.trim() === publication) || 'Publication did not resolve',
-      { as: 'text' }
-    )
+    readPublication(checks, ctx, ctx.targets.apps.offprint.publication, {
+      publication: DEFAULT_PROBE_TARGETS.apps.offprint.publication,
+      host: CATALOGUE.apps.offprint.publicationHost
+    })
   ])
 }
 
@@ -1619,6 +2267,9 @@ export async function probeService(
     case 'pds':
       await probePds(service.host, checks, ctx)
       break
+    case 'entryway':
+      await probeEntryway(service.host, checks, ctx)
+      break
     case 'appview':
       await probeAppView(service.host, checks, ctx)
       break
@@ -1630,6 +2281,9 @@ export async function probeService(
       break
     case 'cdn':
       await probeCdn(service.host, checks, ctx)
+      break
+    case 'plc':
+      await probePlc(service.host, checks, ctx)
       break
     case 'internet':
       await probeInternet(service.id, checks, ctx)

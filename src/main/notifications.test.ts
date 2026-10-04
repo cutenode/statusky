@@ -7,6 +7,8 @@ import {
   BURST_WINDOW_MS,
   createNotifier,
   explainFailure,
+  isRetained,
+  MAX_RETAINED_NOTIFICATIONS,
   notifyDigest,
   notifyPosts,
   notifySupported,
@@ -314,6 +316,22 @@ describe('an OS that answers oddly', () => {
     expect(openedExternally).toEqual([])
   })
 
+  // Nothing that builds `post.url` today builds anything else; this is what keeps a
+  // future one honest. The banner still does everything else a click does.
+  it('opens nothing for a link to anywhere but the web', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const post = makePost({ url: 'search-ms:query=x&crumb=location:\\\\attacker.test\\x' })
+    const onOpened = vi.fn()
+    notifyPosts([post], settings, banner({ onOpened }))
+
+    notifications.at(-1)!.click()
+
+    expect(onOpened).toHaveBeenCalledWith(post)
+    expect(openedExternally).toEqual([])
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
   it('names a pushed source without an @ it does not have', () => {
     notifyPosts(
       [makePost({ authorDid: 'webhook:pg', authorHandle: 'status.bsky.app' })],
@@ -327,6 +345,69 @@ describe('an OS that answers oddly', () => {
   it('does not require an onFailed handler to be given', () => {
     Notification.supported = false
     expect(() => notifyPosts([makePost()], settings, banner())).not.toThrow()
+  })
+})
+
+/**
+ * A banner that has gone up is still clickable for as long as it sits in Notification
+ * Center, and a click on one whose JS side has been collected does nothing at all. So
+ * being shown is not the end of a banner's life: it is held until it is clicked, one of
+ * its buttons is pressed, it is closed, or the OS refuses it — and no more than
+ * `MAX_RETAINED_NOTIFICATIONS` are held at once.
+ */
+describe('holding on to a banner', () => {
+  /** Raise one banner and wait for the OS to put it up. */
+  async function raised(): Promise<(typeof notifications)[number]> {
+    notifyPosts([makePost()], settings, banner())
+    const notification = notifications.at(-1)!
+    await vi.waitFor(() => expect(notification.shown).toBe(true))
+    await Promise.resolve()
+    return notification
+  }
+
+  it('keeps a banner after the OS has shown it', async () => {
+    expect(isRetained(await raised())).toBe(true)
+  })
+
+  it('keeps a banner the OS never answered about, which may well be on screen', async () => {
+    vi.useFakeTimers()
+    try {
+      Notification.neverAnswers = true
+      const pending = notifyTest(settings)
+      await vi.advanceTimersByTimeAsync(5_000)
+      await pending
+
+      expect(isRetained(notifications.at(-1)!)).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['clicked', (n: (typeof notifications)[number]) => n.click()],
+    ['answered with a button', (n: (typeof notifications)[number]) => n.act(0)],
+    ['closed', (n: (typeof notifications)[number]) => n.emit('close', {})]
+  ])('lets go of a banner once it is %s', async (_how, finish) => {
+    const notification = await raised()
+    finish(notification)
+    expect(isRetained(notification)).toBe(false)
+  })
+
+  it('lets go of a banner the OS refused', async () => {
+    Notification.failWith = 'UNErrorDomain error 1'
+    await expect(notifyTest(settings)).rejects.toThrow()
+    expect(isRetained(notifications.at(-1)!)).toBe(false)
+  })
+
+  it('lets go of the oldest once it is holding as many as it will', async () => {
+    Notification.neverAnswers = true
+    for (let i = 0; i <= MAX_RETAINED_NOTIFICATIONS; i++) {
+      notifyPosts([makePost()], settings, banner())
+    }
+
+    const all = notifications.slice(-(MAX_RETAINED_NOTIFICATIONS + 1))
+    expect(isRetained(all[0]!)).toBe(false)
+    expect(all.slice(1).every((notification) => isRetained(notification))).toBe(true)
   })
 })
 

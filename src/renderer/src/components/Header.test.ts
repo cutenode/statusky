@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, within } from '@testing-library/svelte'
 import { HEALTH_LABEL } from '@shared/status'
 import { SERVICES, probeAccount, probePost } from '@shared/network'
@@ -10,7 +10,7 @@ import {
   makeSettings,
   makeSnapshot
 } from '../../../test/factories'
-import { pushNetwork, pushState, renderWith } from '../test/render'
+import { pushNetwork, pushState, renderWith, settle } from '../test/render'
 import Header from './Header.svelte'
 
 const NOW = Date.parse('2026-01-01T12:00:00Z')
@@ -35,7 +35,7 @@ describe('the health summary', () => {
     )
 
     expect(getByRole('heading', { level: 1 }).textContent?.trim()).toBe(HEALTH_LABEL.incident)
-    expect(container.querySelector('.animate-ping')).not.toBeNull()
+    expect(container.querySelector('[class*="animate-ping"]')).not.toBeNull()
   })
 
   it('reports no data before the first sync', async () => {
@@ -382,8 +382,32 @@ describe('the tabs', () => {
 
     // Both on the timeline, which shows everything; only the post on the feed, where
     // the measurement is not listed.
-    expect(within(tab(getByRole, /Timeline/)).getByLabelText('2 unread')).toBeTruthy()
-    expect(within(tab(getByRole, /^Feed$/)).getByLabelText('1 unread')).toBeTruthy()
+    expect(within(tab(getByRole, /Timeline/)).getByText('2 unread')).toBeTruthy()
+    expect(within(tab(getByRole, /^Feed$/)).getByText('1 unread')).toBeTruthy()
+  })
+
+  // The tab's name is its label, so a count in it went unheard: it is the description.
+  it('says each count to a screen reader as the tab’s description', async () => {
+    const post = makePost({ authorDid: account.did })
+    const { getByRole } = await renderWith(
+      Header,
+      { now: NOW },
+      {
+        accounts: [account],
+        posts: [post],
+        unread: [post.uri],
+        network: makeNetworkSummary({ health: 'down', down: ['a'] })
+      }
+    )
+
+    expect(getByRole('tab', { name: 'Feed', description: '1 unread' })).toBeTruthy()
+    expect(getByRole('tab', { name: 'Network', description: '1 with problems' })).toBeTruthy()
+  })
+
+  it('points at no description when there is nothing to count', async () => {
+    const { getByRole } = await renderWith(Header, { now: NOW })
+    expect(tab(getByRole, /^Feed$/).hasAttribute('aria-describedby')).toBe(false)
+    expect(tab(getByRole, /Network/).hasAttribute('aria-describedby')).toBe(false)
   })
 
   it('names each tab in a tooltip, since only the selected one spells itself out', async () => {
@@ -414,22 +438,17 @@ describe('the tabs', () => {
       'All reachable'
     ]
   ])('%s on the network tab', async (_name, network, label) => {
-    const { getByRole, getByText, queryByLabelText } = await renderWith(
-      Header,
-      { now: NOW },
-      { network }
-    )
-    const networkTab = tab(getByRole, /Network/)
-    const badge = queryByLabelText(label) ?? getByText(label)
-    expect(networkTab.contains(badge)).toBe(true)
+    const { getByRole, getByText } = await renderWith(Header, { now: NOW }, { network })
+    const networkTab = getByRole('tab', { name: 'Network', description: label })
+    expect(networkTab.contains(getByText(label))).toBe(true)
   })
 
   it.each([
     [makeNetworkSummary({ health: 'down', down: ['a'] }), 'bg-sev-outage'],
     [makeNetworkSummary({ health: 'degraded', degraded: ['a'] }), 'bg-sev-investigating']
   ])('colours the problem count by how bad it is: %o', async (network, colour) => {
-    const { getByLabelText } = await renderWith(Header, { now: NOW }, { network })
-    expect(getByLabelText('1 with problems').className).toContain(colour)
+    const { getByText } = await renderWith(Header, { now: NOW }, { network })
+    expect(getByText('1 with problems').parentElement!.className).toContain(colour)
   })
 
   it('shows nothing on the network tab before anything is known', async () => {
@@ -473,5 +492,105 @@ describe('refreshing on the network tab', () => {
     )
     await fireEvent.click(getByRole('tab', { name: /Network/ }))
     expect((getByLabelText('Run network checks') as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+/**
+ * A tab list is one stop on the way through the page, with the arrow keys to choose
+ * within it — not three stops that only a mouse can tell apart.
+ */
+describe('the tabs from the keyboard', () => {
+  it('makes the open tab the one stop, and the others reachable by arrow', async () => {
+    const { getByRole } = await renderWith(Header, { now: NOW })
+
+    expect(tab(getByRole, /Timeline/).tabIndex).toBe(0)
+    expect(tab(getByRole, /^Feed$/).tabIndex).toBe(-1)
+    expect(tab(getByRole, /Network/).getAttribute('aria-controls')).toBe('view')
+  })
+
+  it('keeps the stop on the tab a detour goes back to', async () => {
+    const { getByRole, getByLabelText } = await renderWith(Header, { now: NOW })
+    await fireEvent.click(tab(getByRole, /^Feed$/))
+    await fireEvent.click(getByLabelText('Settings'))
+
+    expect(tab(getByRole, /^Feed$/).tabIndex).toBe(0)
+  })
+
+  it.each([
+    ['ArrowRight', 'timeline', 'feed'],
+    ['ArrowRight', 'network', 'timeline'],
+    ['ArrowLeft', 'timeline', 'network'],
+    ['ArrowLeft', 'feed', 'timeline'],
+    ['Home', 'network', 'timeline'],
+    ['End', 'timeline', 'network']
+  ] as const)('%s from %s opens %s, and moves focus there', async (key, from, to) => {
+    const { getByRole } = await renderWith(Header, { now: NOW })
+    nav.open(from)
+    await settle()
+    const tabs = getByRole('tablist').querySelectorAll<HTMLElement>('[role="tab"]')
+    const start = [...tabs].find((node) => node.getAttribute('aria-selected') === 'true')!
+
+    await fireEvent.keyDown(start, { key })
+
+    expect(nav.view).toBe(to)
+    expect(document.activeElement?.getAttribute('aria-selected')).toBe('true')
+    expect(document.activeElement?.getAttribute('aria-label')?.toLowerCase()).toBe(to)
+  })
+
+  it('leaves every other key alone', async () => {
+    const { getByRole } = await renderWith(Header, { now: NOW })
+    const event = new KeyboardEvent('keydown', {
+      key: 'ArrowDown',
+      bubbles: true,
+      cancelable: true
+    })
+
+    await fireEvent(tab(getByRole, /Timeline/), event)
+
+    expect(nav.view).toBe('timeline')
+    expect(event.defaultPrevented).toBe(false)
+  })
+})
+
+describe('a button main refuses', () => {
+  it('says why under the header when a refresh is refused', async () => {
+    const { bridge, getByLabelText, getByRole } = await renderWith(Header, { now: NOW })
+    vi.mocked(bridge.api.Feed.refresh).mockRejectedValueOnce(new Error('Already refreshing'))
+
+    await fireEvent.click(getByLabelText('Refresh now'))
+    await settle()
+
+    expect(getByRole('alert').textContent).toContain('Already refreshing')
+  })
+
+  it('says so for a sweep main will not start, and forgets it once one starts', async () => {
+    const { bridge, getByLabelText, getByRole, queryByRole } = await renderWith(Header, {
+      now: NOW
+    })
+    await fireEvent.click(getByRole('tab', { name: /Network/ }))
+    vi.mocked(bridge.api.Network.run).mockRejectedValueOnce(new Error('Not allowed'))
+
+    await fireEvent.click(getByLabelText('Run network checks'))
+    await settle()
+    expect(getByRole('alert').textContent).toContain('Not allowed')
+
+    await fireEvent.click(getByLabelText('Run network checks'))
+    await settle()
+    expect(queryByRole('alert')).toBeNull()
+  })
+
+  it('says why everything could not be marked read', async () => {
+    const post = makePost({ authorDid: account.did })
+    const { bridge, getByLabelText, getByRole } = await renderWith(
+      Header,
+      { now: NOW },
+      { accounts: [account], posts: [post], unread: [post.uri] }
+    )
+    vi.mocked(bridge.api.Feed.markAllRead).mockRejectedValueOnce(new Error('Try again'))
+
+    await fireEvent.click(getByLabelText('Mark all as read'))
+    await settle()
+
+    expect(getByRole('alert').textContent).toContain('Try again')
   })
 })

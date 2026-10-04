@@ -1,13 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { CATALOGUE, SERVICES, servicesFor, type ServiceDefinition } from '../shared/network'
+import {
+  CATALOGUE,
+  SERVICES,
+  probeState,
+  servicesFor,
+  type ServiceDefinition
+} from '../shared/network'
 import { DEFAULT_PROBE_TARGETS } from '../shared/probe-targets'
 import type { ProbeCheck, ProbeTargets } from '../shared/types'
 import { commitFrame, errorFrame, frame } from '../test/cbor'
-import { FakeNetwork, FakeSocket, jetstreamEvent, spacedustLink, tid } from '../test/network'
+import {
+  FakeNetwork,
+  FakeSocket,
+  jetstreamEvent,
+  spacedustLink,
+  tid,
+  type HttpFailure
+} from '../test/network'
 import {
   DEFAULT_PROBE_TIMINGS,
   FreshnessPeers,
+  IndexSample,
+  TargetCensus,
   describeError,
+  vanishedTargets,
+  type Sighting,
   newestPostTime,
   probeService,
   readFrame,
@@ -31,7 +48,8 @@ afterEach(() => {
 const QUICK: ProbeTimings = {
   ...DEFAULT_PROBE_TIMINGS,
   requestTimeoutMs: 2_000,
-  firehoseWindowMs: 60
+  firehoseWindowMs: 60,
+  indexGraceMs: 0
 }
 
 interface Probe {
@@ -67,6 +85,8 @@ function context(overrides: Partial<ProbeContext> = {}): ProbeContext & { change
       changes++
     },
     peers: new FreshnessPeers(1),
+    sample: new IndexSample(),
+    census: new TargetCensus(1),
     counters: memoryCounters(),
     targets: DEFAULT_PROBE_TARGETS,
     changes: () => changes,
@@ -104,6 +124,16 @@ function answer(host: string, path: string, body: unknown): void {
 /** A fresh Spacedust link frame with some of it replaced. */
 function link(changes: Record<string, unknown>): string {
   return JSON.stringify({ ...JSON.parse(spacedustLink()), ...changes })
+}
+
+/** The labels of the checks excused on a row. */
+function excused(checks: ProbeCheck[]): string[] {
+  return checks.filter((c) => c.excused !== undefined).map((c) => c.label)
+}
+
+/** One AppView's sightings, as it reports them to a census. */
+function sightings(entries: [string, Sighting][]): Map<string, Sighting> {
+  return new Map(entries)
 }
 
 function daysAgo(days: number): Date {
@@ -352,6 +382,23 @@ describe('any HTTP check', () => {
     expect(checks[0]).toMatchObject({ ok: false, error, durationMs: expect.any(Number) })
   })
 
+  // A body nobody reads holds its request open until it is garbage collected.
+  it.each([
+    ['a status it never read the body of', { kind: 'http', status: 503 }],
+    [
+      'a content type it never read past',
+      { kind: 'respond', body: '<html>', contentType: 'text/html' }
+    ],
+    [
+      'an answer it read to the end',
+      { kind: 'respond', body: '{}', contentType: 'application/json' }
+    ]
+  ] as const)('hangs up after %s', async (_name, failure) => {
+    network.fail(host, failure)
+    await probe(id)
+    expect(network.requestsTo(host).map((request) => request.signal?.aborted)).toEqual([true])
+  })
+
   it.each([
     [
       'quotes the reason an XRPC error gives',
@@ -479,13 +526,14 @@ describe('a PDS', () => {
   const id = 'pds:eurosky.social'
   const host = 'eurosky.social'
 
-  it('passes health, server description, and a real read of one repository', async () => {
+  it('passes health, server description, a real read of one repository, and the relay', async () => {
     const { checks } = await probe(id)
     expect(checks.map((c) => [c.label, c.ok])).toEqual([
       ['_health', true],
       ['describeServer', true],
       ['listRepos', true],
-      ['listRecords', true]
+      ['listRecords', true],
+      ['getHostStatus', true]
     ])
     // The first *active* repository, never an inactive one.
     expect(check(checks, 'listRecords').target).toBe(
@@ -547,6 +595,170 @@ describe('a PDS', () => {
       target: expect.stringContaining('repo=did%3Aplc%3Arepo')
     })
   })
+
+  describe('as Bluesky’s relay sees it', () => {
+    it('asks the relay whether it still carries this host', async () => {
+      const { checks } = await probe(id)
+      expect(check(checks, 'getHostStatus').target).toBe(
+        'https://bsky.network/xrpc/com.atproto.sync.getHostStatus?hostname=eurosky.social'
+      )
+      // Asked of the relay, not of the PDS.
+      expect(network.requestsTo(host).map((r) => r.path)).not.toContain(
+        '/xrpc/com.atproto.sync.getHostStatus'
+      )
+    })
+
+    // A small PDS with nothing to say lately is still being listened to.
+    it('takes an idle host as carried', async () => {
+      network.setHostStatus(host, 'idle')
+      const { checks } = await probe(id)
+      expect(check(checks, 'getHostStatus').ok).toBe(true)
+    })
+
+    it.each(['throttled', 'banned', 'offline'])(
+      'fails a host the relay marks %s',
+      async (status) => {
+        network.setHostStatus(host, status)
+        const { checks } = await probe(id)
+        expect(check(checks, 'getHostStatus')).toMatchObject({
+          ok: false,
+          error: `bsky.network marks this host ${status}`
+        })
+        // Everything asked of the PDS itself still passed: the row reads as partial.
+        expect(probeState(checks)).toBe('partial')
+      }
+    )
+
+    it('fails a host the relay has never heard of', async () => {
+      network.setHostStatus(host, null)
+      const { checks } = await probe(id)
+      expect(check(checks, 'getHostStatus')).toMatchObject({
+        ok: false,
+        error: 'bsky.network does not carry this host'
+      })
+    })
+
+    it.each<[string, HttpFailure]>([
+      ['a server error', { kind: 'http', status: 502 }],
+      ['a failed connection', { kind: 'network', message: 'net::ERR_CONNECTION_REFUSED' }],
+      [
+        'a route it does not have',
+        {
+          kind: 'respond',
+          body: '{"error":"MethodNotImplemented"}',
+          contentType: 'application/json',
+          status: 501
+        }
+      ],
+      ['an answer about nothing', { kind: 'respond', body: '{}', contentType: 'application/json' }]
+    ])('leaves the check out when the relay answers with %s', async (_name, failure) => {
+      network.fail('bsky.network', failure)
+      const { checks } = await probe(id)
+      // The relay's own row says what is wrong with it; the PDS is not blamed.
+      expect(checks.map((c) => c.label)).toEqual([
+        '_health',
+        'describeServer',
+        'listRepos',
+        'listRecords'
+      ])
+      expect(probeState(checks)).toBe('live')
+    })
+  })
+})
+
+describe('Bluesky’s entryway', () => {
+  const id = 'entryway:bsky.social'
+
+  it('checks health, the server’s own description and its OAuth metadata', async () => {
+    const { checks } = await probe(id)
+    expect(checks.map((c) => [c.label, c.ok])).toEqual([
+      ['_health', true],
+      ['describeServer', true],
+      ['OAuth metadata', true]
+    ])
+    expect(check(checks, 'OAuth metadata').target).toBe(
+      'https://bsky.social/.well-known/oauth-authorization-server'
+    )
+  })
+
+  it.each([
+    [
+      '/xrpc/com.atproto.server.describeServer',
+      { did: 'did:web:elsewhere.example' },
+      'describeServer',
+      'Server names a different DID'
+    ],
+    [
+      '/.well-known/oauth-authorization-server',
+      { issuer: 'https://elsewhere.example', token_endpoint: 'https://elsewhere.example/t' },
+      'OAuth metadata',
+      'OAuth metadata names a different issuer'
+    ],
+    [
+      '/.well-known/oauth-authorization-server',
+      { issuer: 'https://bsky.social' },
+      'OAuth metadata',
+      'OAuth metadata has no token endpoint'
+    ]
+  ])('fails when %s answers %o', async (path, body, label, error) => {
+    answer('bsky.social', path, body)
+    const { checks } = await probe(id)
+    expect(check(checks, label)).toMatchObject({ ok: false, error })
+  })
+})
+
+describe('the PLC directory', () => {
+  const id = 'plc:plc.directory'
+
+  it('checks health, one DID document, and that operations are still being written', async () => {
+    const { checks } = await probe(id)
+    expect(checks.map((c) => [c.label, c.ok])).toEqual([
+      ['_health', true],
+      ['resolve', true],
+      ['newest operation', true]
+    ])
+    expect(check(checks, 'resolve').target).toBe(`https://plc.directory/${CATALOGUE.anchor.did}`)
+  })
+
+  it('asks for the first operation since five minutes ago', async () => {
+    const now = Date.parse('2026-09-30T16:00:00.000Z')
+    const { checks } = await probe(id, { now: () => now })
+    const url = new URL(check(checks, 'newest operation').target!)
+    expect(url.pathname).toBe('/export')
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      count: '1',
+      after: '2026-09-30T15:55:00.000Z'
+    })
+  })
+
+  it.each([
+    ['nothing at all', '', 'No operations in the last 5 minutes'],
+    ['a blank line', '\n', 'No operations in the last 5 minutes'],
+    ['something that is not JSON', 'nope\n', 'Export was unreadable'],
+    ['an operation with no date', '{"did":"did:plc:x"}\n', 'Export was unreadable']
+  ])('fails the export when it answers with %s', async (_name, body, error) => {
+    network.fail(
+      'plc.directory',
+      { kind: 'respond', body, contentType: 'application/jsonlines' },
+      '/export'
+    )
+    const { checks } = await probe(id)
+    expect(check(checks, 'newest operation')).toMatchObject({ ok: false, error })
+    // Reads still work, which is exactly the failure this check exists for.
+    expect(check(checks, 'resolve').ok).toBe(true)
+  })
+
+  it.each([
+    [
+      { id: 'did:plc:somebodyelse', alsoKnownAs: ['at://bsky.app'] },
+      'DID document names a different DID'
+    ],
+    [{ id: CATALOGUE.anchor.did, alsoKnownAs: [] }, 'DID document no longer names its handle']
+  ])('fails a DID document that reads %o', async (body, error) => {
+    answer('plc.directory', `/${CATALOGUE.anchor.did}`, body)
+    const { checks } = await probe(id)
+    expect(check(checks, 'resolve')).toMatchObject({ ok: false, error })
+  })
 })
 
 describe('an AppView', () => {
@@ -562,7 +774,8 @@ describe('an AppView', () => {
       ...each('getProfile'),
       ...each('resolveHandle'),
       ...each('getAuthorFeed'),
-      'newest post'
+      'newest post',
+      'indexing'
     ])
     expect(checks.every((c) => c.ok)).toBe(true)
     expect(check(checks, 'newest post')).toMatchObject({ kind: 'derived', target: null })
@@ -572,9 +785,175 @@ describe('an AppView', () => {
    * Three lists became one, so every account is now asked about all three ways. Which
    * accounts the defaults hold is src/shared/probe-targets.test.ts's business.
    */
-  it('makes three requests per account, plus its health check', async () => {
+  it('makes three requests per account, plus its health and indexing checks', async () => {
     await probe(id)
-    expect(network.requestsTo(host)).toHaveLength(1 + 3 * DEFAULT_PROBE_TARGETS.accounts.length)
+    expect(network.requestsTo(host)).toHaveLength(2 + 3 * DEFAULT_PROBE_TARGETS.accounts.length)
+  })
+
+  describe('asked for posts that are seconds old', () => {
+    const { jetstream } = CATALOGUE.indexSample
+    const stream = (): FakeSocket[] =>
+      network.sockets.filter((socket) => new URL(socket.url).hostname === jetstream)
+
+    it('asks for the posts it took off Bluesky’s Jetstream, in one request', async () => {
+      const { checks } = await probe(id)
+      expect(stream()).toHaveLength(1)
+      expect(stream()[0]!.url).toBe(
+        `wss://${jetstream}/subscribe?wantedCollections=app.bsky.feed.post`
+      )
+      const indexing = check(checks, 'indexing')
+      expect(indexing).toMatchObject({ kind: 'http', ok: true })
+      const url = new URL(indexing.target!)
+      expect(url.pathname).toBe('/xrpc/app.bsky.feed.getPosts')
+      expect(url.searchParams.getAll('uris')).toEqual([
+        expect.stringMatching(/^at:\/\/did:plc:someone\/app\.bsky\.feed\.post\/[2-7a-z]{13}$/)
+      ])
+    })
+
+    it('fails an AppView that has not indexed them yet', async () => {
+      network.unindex(host, 'did:plc:someone')
+      const { checks } = await probe(id)
+      expect(check(checks, 'indexing')).toMatchObject({
+        ok: false,
+        error: 'Found 0 of 1 posts from 0 seconds ago'
+      })
+      // The accounts it is asked about are all there: the row is behind, not broken.
+      expect(probeState(checks)).toBe('partial')
+    })
+
+    it('passes with half the sample, since some posts are gone before anybody asks', async () => {
+      const posts = [0, 1, 2, 3].map((n) =>
+        JSON.stringify({
+          did: n % 2 ? 'did:plc:gone' : 'did:plc:someone',
+          kind: 'commit',
+          time_us: Date.now() * 1000,
+          commit: { operation: 'create', collection: 'app.bsky.feed.post', rkey: tid() }
+        })
+      )
+      network.unindex(host, 'did:plc:gone')
+      const transport: ProbeTransport = {
+        fetch: network.fetch,
+        openSocket: (url) => {
+          if (new URL(url).hostname !== jetstream) return network.openSocket(url)
+          const socket = new FakeSocket(url)
+          queueMicrotask(() => {
+            socket.open()
+            for (const post of posts) socket.emit(post)
+          })
+          return socket
+        }
+      }
+      const { checks } = await probe(id, { transport })
+      expect(new URL(check(checks, 'indexing').target!).searchParams.getAll('uris')).toHaveLength(4)
+      expect(check(checks, 'indexing').ok).toBe(true)
+    })
+
+    it('does not count the wait as the AppView’s latency', async () => {
+      const { checks } = await probe(id, { timings: { ...QUICK, indexGraceMs: 120 } })
+      expect(check(checks, 'indexing').ok).toBe(true)
+      expect(check(checks, 'indexing').durationMs).toBeLessThan(120)
+    })
+
+    it('takes one sample for every AppView in the sweep', async () => {
+      const ctx = context({ peers: new FreshnessPeers(2) })
+      const views = ['appview:api.bsky.app', 'appview:api.eurosky.network']
+      const results = await Promise.all(
+        views.map(async (view) => {
+          const checks: ProbeCheck[] = []
+          await probeService(service(view), checks, ctx)
+          return check(checks, 'indexing').target
+        })
+      )
+      expect(stream()).toHaveLength(1)
+      const asked = results.map((target) => new URL(target!).searchParams.getAll('uris'))
+      expect(asked[0]).toEqual(asked[1])
+    })
+
+    it.each<[string, Parameters<FakeNetwork['setFirehose']>[1]]>([
+      ['says nothing', 'silent'],
+      ['only replays old posts', 'stale'],
+      ['cannot be reached', 'socket-error'],
+      ['cannot even be opened', 'throws']
+    ])('goes without the check when the Jetstream %s', async (_name, behaviour) => {
+      network.setFirehose(jetstream, behaviour)
+      const { checks } = await probe(id)
+      expect(checks.map((c) => c.label)).not.toContain('indexing')
+      expect(probeState(checks)).toBe('live')
+    })
+
+    it('leaves out an AppView that only indexes part of the network', async () => {
+      const { checks } = await probe('appview:appview.wsocial.eu')
+      expect(checks.map((c) => c.label)).not.toContain('indexing')
+      // Nothing is sampled on its behalf either.
+      expect(stream()).toHaveLength(0)
+    })
+
+    it('stops waiting when the sweep is abandoned', async () => {
+      const controller = new AbortController()
+      const checks: ProbeCheck[] = []
+      const pending = probeService(
+        service(id),
+        checks,
+        context({ signal: controller.signal, timings: { ...QUICK, indexGraceMs: 60_000 } })
+      )
+      // The check is filed the moment the sample is in, and then waits out the grace.
+      await vi.waitFor(() => expect(checks.map((c) => c.label)).toContain('indexing'))
+      controller.abort()
+      await pending
+      expect(check(checks, 'indexing')).toMatchObject({ ok: false, error: 'Cancelled' })
+    })
+
+    it('hangs up as soon as it has the posts it wants', async () => {
+      const { size } = CATALOGUE.indexSample
+      const transport: ProbeTransport = {
+        fetch: network.fetch,
+        openSocket: (url) => {
+          if (new URL(url).hostname !== jetstream) return network.openSocket(url)
+          const socket = new FakeSocket(url)
+          queueMicrotask(() => {
+            socket.open()
+            for (let n = 0; n <= size; n++) socket.emit(jetstreamEvent())
+          })
+          return socket
+        }
+      }
+      // A window long enough that only having the posts can end it.
+      const { checks } = await probe(id, {
+        transport,
+        timings: { ...QUICK, firehoseWindowMs: 60_000 }
+      })
+      expect(new URL(check(checks, 'indexing').target!).searchParams.getAll('uris')).toHaveLength(
+        size
+      )
+    })
+
+    it('passes over what it cannot read on the way to a post', async () => {
+      const transport: ProbeTransport = {
+        fetch: network.fetch,
+        openSocket: (url) => {
+          if (new URL(url).hostname !== jetstream) return network.openSocket(url)
+          const socket = new FakeSocket(url)
+          queueMicrotask(() => {
+            socket.open()
+            socket.emit(new Uint8Array([0xff, 0x00]).buffer)
+            socket.emit('{"kind":')
+            // Not a commit, not a new record, and a commit with no record key.
+            socket.emit(JSON.stringify({ kind: 'identity', did: 'did:plc:someone' }))
+            socket.emit(
+              JSON.stringify({ ...JSON.parse(jetstreamEvent()), commit: { operation: 'update' } })
+            )
+            socket.emit(JSON.stringify({ ...JSON.parse(jetstreamEvent()), did: 7 }))
+            const event = JSON.parse(jetstreamEvent()) as { commit: Record<string, unknown> }
+            socket.emit(JSON.stringify({ ...event, commit: { ...event.commit, rkey: null } }))
+            socket.emit(jetstreamEvent())
+          })
+          return socket
+        }
+      }
+      const { checks } = await probe(id, { transport })
+      expect(new URL(check(checks, 'indexing').target!).searchParams.getAll('uris')).toHaveLength(1)
+      expect(check(checks, 'indexing').ok).toBe(true)
+    })
   })
 
   it('looks each account up by DID and by handle, and reads its feed by DID', async () => {
@@ -790,6 +1169,161 @@ describe('an AppView', () => {
     it('is still caught falling behind on them', async () => {
       const checks = await compare(new Date(Date.now() - 4 * 3_600_000).toISOString())
       expect(check(checks, 'newest post').error).toBe('Newest post trails other AppViews by 1 hour')
+    })
+  })
+
+  describe('asked about an account that has gone', () => {
+    const [gone] = DEFAULT_PROBE_TARGETS.accounts
+    const both = ['appview:api.bsky.app', 'appview:api.eurosky.network']
+
+    async function sweep(
+      views: string[] = both,
+      census = new TargetCensus(views.length),
+      chosen = DEFAULT_PROBE_TARGETS
+    ): Promise<{ rows: ProbeCheck[][]; census: TargetCensus }> {
+      const ctx = context({ peers: new FreshnessPeers(views.length), census, targets: chosen })
+      const rows = await Promise.all(
+        views.map(async (view) => {
+          const checks: ProbeCheck[] = []
+          await probeService(service(view), checks, ctx)
+          return checks
+        })
+      )
+      return { rows, census }
+    }
+
+    it('excuses its lookups on every AppView, rather than failing them all', async () => {
+      for (const view of both) network.unindex(service(view).host, gone!.did)
+      const { rows, census } = await sweep()
+      for (const checks of rows) {
+        expect(excused(checks)).toEqual(['getProfile', 'resolveHandle', 'getAuthorFeed'])
+        expect(checks.find((c) => c.excused)!).toMatchObject({
+          ok: false,
+          error: 'HTTP 400 · Profile not found',
+          excused: expect.stringContaining('No AppView has this account any more')
+        })
+        expect(probeState(checks)).toBe('live')
+      }
+      expect(vanishedTargets(census.verdict)).toEqual([
+        { part: 'account', did: gone!.did },
+        { part: 'handle', did: gone!.did }
+      ])
+    })
+
+    it('still holds it against the one AppView that lacks what the others have', async () => {
+      network.unindex('api.bsky.app', gone!.did)
+      const { rows, census } = await sweep()
+      expect(excused(rows[0]!)).toEqual([])
+      expect(probeState(rows[0]!)).toBe('partial')
+      expect(census.verdict.size).toBe(0)
+    })
+
+    it('excuses only the handle of an account that is still there under another', async () => {
+      const renamed = DEFAULT_PROBE_TARGETS.accounts.map((account) =>
+        account.did === gone!.did ? { ...account, handle: 'renamed.example.test' } : account
+      )
+      network.useTargets(targets({ accounts: renamed }))
+      const { rows, census } = await sweep()
+      for (const checks of rows) {
+        expect(excused(checks)).toEqual(['resolveHandle'])
+        expect(checks.find((c) => c.excused)!.excused).toContain('it has changed')
+        expect(probeState(checks)).toBe('live')
+      }
+      expect(vanishedTargets(census.verdict)).toEqual([{ part: 'handle', did: gone!.did }])
+    })
+
+    it('excuses nothing an AppView failed to answer for itself', async () => {
+      const three = [...both, 'appview:api.blacksky.community']
+      for (const view of both) network.unindex(service(view).host, gone!.did)
+      network.fail(
+        'api.blacksky.community',
+        { kind: 'http', status: 502 },
+        '/xrpc/app.bsky.actor.getProfile'
+      )
+      const { rows, census } = await sweep(three)
+      // A 502 says nothing about the account either way, so the two that answered decide.
+      expect(vanishedTargets(census.verdict)).toContainEqual({ part: 'account', did: gone!.did })
+      expect(excused(rows[0]!)).toContain('getProfile')
+      const blacksky = rows[2]!.filter((c) => c.label === 'getProfile')
+      expect(blacksky.every((c) => c.error === 'HTTP 502' && c.excused === undefined)).toBe(true)
+    })
+
+    it('keeps the last full census through a re-check of one AppView, and only then', async () => {
+      for (const view of both) network.unindex(service(view).host, gone!.did)
+      const { census } = await sweep()
+
+      const recheck = await sweep(['appview:api.bsky.app'], new TargetCensus(1, census.verdict))
+      expect(excused(recheck.rows[0]!)).toContain('getProfile')
+
+      // One AppView on its own cannot tell a deleted account from a gap in its own index.
+      const alone = await sweep(['appview:api.bsky.app'])
+      expect(excused(alone.rows[0]!)).toEqual([])
+    })
+
+    it('keeps the account gone through a re-check that cannot reach it', async () => {
+      for (const view of both) network.unindex(service(view).host, gone!.did)
+      const { census } = await sweep()
+
+      network.fail('api.bsky.app', { kind: 'http', status: 502 }, '/xrpc/app.bsky.actor.getProfile')
+      const recheck = await sweep(['appview:api.bsky.app'], new TargetCensus(1, census.verdict))
+      // A 502 says nothing about the account, which is no reason to forget it has gone.
+      expect(vanishedTargets(recheck.census.verdict)).toContainEqual({
+        part: 'account',
+        did: gone!.did
+      })
+    })
+
+    it('hears Bluesky’s two hostnames as the one index they are', async () => {
+      const bluesky = ['appview:api.bsky.app', 'appview:public.api.bsky.app']
+      for (const view of bluesky) network.unindex(service(view).host, gone!.did)
+      const { rows, census } = await sweep(bluesky)
+      expect(census.verdict.size).toBe(0)
+      for (const checks of rows) expect(excused(checks)).toEqual([])
+    })
+
+    it('gives an AppView that leaves accounts out by design no say in what is gone', async () => {
+      const views = ['appview:api.bsky.app', 'appview:appview.wsocial.eu']
+      for (const view of views) network.unindex(service(view).host, gone!.did)
+      const { census } = await sweep(views)
+      expect(census.verdict.size).toBe(0)
+    })
+
+    it('still excuses that AppView once the others agree the account has gone', async () => {
+      const views = [...both, 'appview:appview.wsocial.eu']
+      for (const view of views) network.unindex(service(view).host, gone!.did)
+      const { rows } = await sweep(views)
+      expect(excused(rows[2]!)).toEqual(['getProfile', 'resolveHandle', 'getAuthorFeed'])
+      expect(probeState(rows[2]!)).toBe('live')
+    })
+
+    it('excuses the newest post too, once every account listed has gone', async () => {
+      const alone = targets({ accounts: [gone!] })
+      network.useTargets(alone)
+      for (const view of both) network.unindex(service(view).host, gone!.did)
+      const { rows } = await sweep(both, undefined, alone)
+      for (const checks of rows) {
+        expect(check(checks, 'newest post')).toMatchObject({
+          ok: false,
+          error: 'No valid post timestamps returned',
+          excused: expect.stringContaining('No AppView has this account any more')
+        })
+        expect(probeState(checks)).toBe('live')
+      }
+    })
+
+    it('holds the newest post against an AppView with an account left to read', async () => {
+      const [, quiet] = DEFAULT_PROBE_TARGETS.accounts
+      const pair = targets({ accounts: [gone!, quiet!] })
+      network.useTargets(pair)
+      for (const view of both) {
+        network.unindex(service(view).host, gone!.did)
+        network.setNewestPost(service(view).host, null, quiet!.did)
+      }
+      const { rows } = await sweep(both, undefined, pair)
+      for (const checks of rows) {
+        expect(check(checks, 'newest post').excused).toBeUndefined()
+        expect(probeState(checks)).toBe('partial')
+      }
     })
   })
 
@@ -1209,24 +1743,71 @@ describe('the indexes that report their own cursor', () => {
     })
   })
 
-  it('reads pckt’s health from /up', async () => {
+  it('reads pckt’s health and its index lag from one response, and looks up a blog', async () => {
     const { checks } = await probe('pckt:pckt.blog')
-    expect(checks.map((c) => [c.label, c.kind, c.ok])).toEqual([['up', 'http', true]])
+    expect(checks.map((c) => [c.label, c.kind, c.ok])).toEqual([
+      ['up', 'http', true],
+      ['publication', 'http', true],
+      ['index lag', 'derived', true]
+    ])
     expect(check(checks, 'up').target).toBe('https://pckt.blog/up')
+    expect(check(checks, 'publication').target).toBe(
+      'https://notes.pckt.blog/.well-known/site.standard.publication'
+    )
   })
+
+  it('fails pckt when its blog does not resolve, and reads it as partial', async () => {
+    // What a subdomain pckt does not know answers with.
+    network.fail(
+      'notes.pckt.blog',
+      { kind: 'respond', status: 404, body: '<html>Not found</html>', contentType: 'text/html' },
+      '/.well-known/site.standard.publication'
+    )
+    const { checks } = await probe('pckt:pckt.blog')
+    expect(check(checks, 'up').ok).toBe(true)
+    expect(check(checks, 'publication').ok).toBe(false)
+    expect(probeState(checks)).toBe('partial')
+  })
+
+  /** pckt's `/up` with everything that is judged well, and then whatever `changes` says. */
+  const pcktSays = (changes: Record<string, unknown>): void =>
+    answer('pckt.blog', '/up', {
+      status: 'ok',
+      checks: { database: true, cache: true },
+      jetstream: { cursor: 1, stale_seconds: 1 },
+      ...changes
+    })
 
   it.each([
     [{ status: 'maintenance' }, 'Application reports it is not ok'],
     [{ checks: { database: false, cache: true } }, 'Database is unreachable'],
     [{ checks: { database: true, cache: false } }, 'Cache is unreachable']
   ])('names which of pckt’s dependencies is unwell when /up reads %o', async (changes, error) => {
-    answer('pckt.blog', '/up', {
-      status: 'ok',
-      checks: { database: true, cache: true },
-      ...changes
-    })
+    pcktSays(changes)
     const { checks } = await probe('pckt:pckt.blog')
     expect(check(checks, 'up')).toMatchObject({ ok: false, error })
+    // An application that has said it is not well is not read any further.
+    expect(check(checks, 'index lag')).toMatchObject({
+      ok: false,
+      error: 'Skipped because up failed'
+    })
+  })
+
+  it.each([
+    [{ jetstream: { cursor: 1 } }, 'Consumer reported no staleness'],
+    [{ jetstream: { cursor: 1, stale_seconds: 20 * 60 } }, 'Index trails by 20 minutes']
+  ])('judges pckt’s index lag from %o', async (changes, error) => {
+    pcktSays(changes)
+    const { checks } = await probe('pckt:pckt.blog')
+    expect(check(checks, 'up').ok).toBe(true)
+    expect(check(checks, 'index lag')).toMatchObject({ ok: false, error, durationMs: null })
+  })
+
+  // What pckt said on 30 September 2026, while serving pages and a second behind.
+  it('holds nothing against pckt’s search index or its failed jobs', async () => {
+    pcktSays({ typesense: false, failed_jobs_last_hour: 112, horizon: { running: true } })
+    const { checks } = await probe('pckt:pckt.blog')
+    expect(checks.every((c) => c.ok)).toBe(true)
   })
 
   it('skips UFOs’ index lag when there is no cursor to read it from', async () => {
@@ -1315,7 +1896,8 @@ describe('Tangled', () => {
       ['_health', true],
       ['describeServer', true],
       ['listRepos', true],
-      ['listRecords', true]
+      ['listRecords', true],
+      ['getHostStatus', true]
     ])
   })
 
@@ -1728,6 +2310,24 @@ describe('what a sweep is asked to read', () => {
       expect(check(checks, 'repo page')).toMatchObject({ ok: false, error: 'Unexpected page' })
     })
 
+    // The schema refuses these. A document that reached the probes some other way must
+    // still not be able to aim a check at another machine.
+    it.each([
+      ['a second slash', '//127.0.0.1:631/x?go-get=1'],
+      ['a backslash', '/\\evil.example/x?go-get=1']
+    ])('asks nothing of a host the path names with %s', async (_name, goGetPath) => {
+      const { checks } = await probe('tangled-appview:tangled.org', {
+        targets: targets({ tangled: { ...tangled, goGetPath } })
+      })
+      expect(check(checks, 'go-get')).toMatchObject({
+        target: null,
+        ok: false,
+        error: 'Path leads off tangled.org',
+        durationMs: null
+      })
+      expect(network.requests.map((request) => request.host)).toEqual(['tangled.org'])
+    })
+
     it('asks Bobbin for the listed repository, and the spindle for the listed owner', async () => {
       const { checks: bobbin } = await probe('bobbin:api.tangled.org', {
         targets: targets({ tangled })
@@ -1744,14 +2344,12 @@ describe('what a sweep is asked to read', () => {
     })
   })
 
-  it('reads the Leaflet and Offprint documents it is given', async () => {
+  it('reads the Leaflet documents it is given', async () => {
     const apps = {
+      ...structuredClone(DEFAULT_PROBE_TARGETS.apps),
       leaflet: {
         publication: { did: 'did:plc:writer', rkey: '3aaaaaaaaaaaa' },
         feed: { did: 'did:plc:busy', rkey: '3bbbbbbbbbbbb' }
-      },
-      offprint: {
-        publication: 'at://did:plc:writer/site.standard.publication/3cccccccccccc'
       }
     }
     network.useTargets(targets({ apps }))
@@ -1763,20 +2361,105 @@ describe('what a sweep is asked to read', () => {
     expect(check(leaflet, 'newest document').target).toBe(
       'https://leaflet.pub/lish/did:plc:busy/3bbbbbbbbbbbb/atom'
     )
-
-    const { checks: offprint } = await probe('offprint:offprint.app', {
-      targets: targets({ apps })
-    })
-    expect(check(offprint, 'publication').ok).toBe(true)
   })
 
-  it('fails Offprint when the publication listed is not the one the host serves', async () => {
-    const apps = {
-      ...structuredClone(DEFAULT_PROBE_TARGETS.apps),
-      offprint: { publication: 'at://did:plc:writer/site.standard.publication/3cccccccccccc' }
-    }
-    const { checks } = await probe('offprint:offprint.app', { targets: targets({ apps }) })
-    expect(check(checks, 'publication').error).toBe('Publication did not resolve')
+  /**
+   * pckt and Offprint answer a publication's well-known route on the publication's own
+   * host, which only the publication's record knows. Asking the catalogue's blog about
+   * somebody else's publication could only ever fail.
+   */
+  describe.each([
+    ['pckt', 'pckt:pckt.blog', 'notes.pckt.blog'],
+    ['offprint', 'offprint:offprint.app', 'news.offprint.app']
+  ] as const)('a %s publication of the user’s choosing', (app, id, catalogued) => {
+    const publication = 'at://did:plc:writer/site.standard.publication/3cccccccccccc'
+    const chosen = (): ProbeTargets =>
+      targets({ apps: { ...structuredClone(DEFAULT_PROBE_TARGETS.apps), [app]: { publication } } })
+    const lookups = (): string[] =>
+      network.requestsTo(CATALOGUE.microcosm.slingshot).map((request) => request.url)
+
+    it('asks the checked-in one’s host straight away, and Slingshot nothing', async () => {
+      const { checks } = await probe(id)
+      expect(check(checks, 'publication')).toMatchObject({
+        target: `https://${catalogued}/.well-known/site.standard.publication`,
+        ok: true
+      })
+      expect(lookups()).toEqual([])
+    })
+
+    it('reads where it is served from its record, and asks there', async () => {
+      network.publish(publication, 'https://writer.example')
+      const { checks } = await probe(id, { targets: chosen() })
+      expect(lookups()).toEqual([
+        `https://${CATALOGUE.microcosm.slingshot}/xrpc/com.atproto.repo.getRecord?` +
+          'repo=did%3Aplc%3Awriter&collection=site.standard.publication&rkey=3cccccccccccc'
+      ])
+      expect(check(checks, 'publication')).toMatchObject({
+        target: 'https://writer.example/.well-known/site.standard.publication',
+        ok: true
+      })
+    })
+
+    it('follows a publication that lives under a path', async () => {
+      network.publish(publication, 'https://writer.example/notes')
+      const { checks } = await probe(id, { targets: chosen() })
+      expect(check(checks, 'publication')).toMatchObject({
+        target: 'https://writer.example/notes/.well-known/site.standard.publication',
+        ok: true
+      })
+    })
+
+    it('fails when the host it names serves some other publication', async () => {
+      network.publish(publication, `https://${catalogued}`)
+      const { checks } = await probe(id, { targets: chosen() })
+      expect(check(checks, 'publication').error).toBe('Publication did not resolve')
+    })
+
+    it('fails, untimed, when the record has gone', async () => {
+      const { checks } = await probe(id, { targets: chosen() })
+      expect(check(checks, 'publication')).toMatchObject({
+        target: null,
+        ok: false,
+        error: 'Publication record is gone',
+        durationMs: null
+      })
+    })
+
+    it('leaves the check out when Slingshot cannot say, rather than blame the app', async () => {
+      network.fail(CATALOGUE.microcosm.slingshot, { kind: 'http', status: 502 })
+      const { checks } = await probe(id, { targets: chosen() })
+      expect(checks.map((c) => c.label)).not.toContain('publication')
+      expect(probeState(checks)).toBe('live')
+    })
+
+    // Somebody else's record, so somebody else's URL: none of these is followed.
+    it.each([
+      ['no URL at all', ''],
+      ['plain HTTP', 'http://writer.example'],
+      ['an address', 'https://127.0.0.1'],
+      ['localhost', 'https://localhost'],
+      ['a port', 'https://writer.example:8443']
+    ])('refuses a record naming %s', async (_name, url) => {
+      network.publish(publication, url)
+      const { checks } = await probe(id, { targets: chosen() })
+      expect(check(checks, 'publication')).toMatchObject({
+        target: null,
+        ok: false,
+        error: 'Publication record names no URL it is served at'
+      })
+      expect(network.requests.map((request) => request.host)).not.toContain('127.0.0.1')
+    })
+
+    it('refuses a record that names no URL at all', async () => {
+      answer(CATALOGUE.microcosm.slingshot, '/xrpc/com.atproto.repo.getRecord', {
+        uri: publication,
+        value: { $type: 'site.standard.publication', name: 'A blog' }
+      })
+      const { checks } = await probe(id, { targets: chosen() })
+      expect(check(checks, 'publication').error).toBe(
+        'Publication record names no URL it is served at'
+      )
+    })
   })
 })
 
@@ -1859,6 +2542,69 @@ describe('newestPostTime', () => {
 
   it('is null when nothing parses', () => {
     expect(newestPostTime([{ feed: [] }])).toBeNull()
+  })
+})
+
+describe('TargetCensus', () => {
+  it('calls something gone once two indexes say so and none disagree', async () => {
+    const census = new TargetCensus(3)
+    const [a, b, c] = await Promise.all([
+      census.report('one', sightings([['account did:plc:x', 'missing']])),
+      census.report('two', sightings([['account did:plc:x', 'missing']])),
+      // An AppView that could not answer abstains.
+      census.report('three', sightings([]))
+    ])
+    for (const verdict of [a, b, c]) expect([...verdict]).toEqual(['account did:plc:x'])
+  })
+
+  it('believes any AppView that still has it', async () => {
+    const census = new TargetCensus(3)
+    await Promise.all([
+      census.report('one', sightings([['account did:plc:x', 'missing']])),
+      census.report('two', sightings([['account did:plc:x', 'missing']])),
+      census.report('three', sightings([['account did:plc:x', 'present']]))
+    ])
+    expect(census.verdict.size).toBe(0)
+  })
+
+  it('hears one index once, however many names it answers to', async () => {
+    const census = new TargetCensus(2)
+    await Promise.all([
+      census.report('api.bsky.app', sightings([['account did:plc:x', 'missing']])),
+      census.report('api.bsky.app', sightings([['account did:plc:x', 'missing']]))
+    ])
+    expect(census.verdict.size).toBe(0)
+  })
+
+  it('answers with the last verdict until somebody reports', () => {
+    const previous = new Set(['handle did:plc:x'])
+    expect(new TargetCensus(2, previous).verdict).toBe(previous)
+  })
+
+  it('keeps the last verdict through a sweep that cannot say either way', async () => {
+    const census = new TargetCensus(1, new Set(['account did:plc:x']))
+    // A re-check of one AppView, timing out on the account.
+    await census.report('one', sightings([]))
+    expect([...census.verdict]).toEqual(['account did:plc:x'])
+  })
+
+  it('lets the last verdict go the moment an AppView has the account again', async () => {
+    const census = new TargetCensus(1, new Set(['account did:plc:x', 'handle did:plc:y']))
+    await census.report('one', sightings([['account did:plc:x', 'present']]))
+    expect([...census.verdict]).toEqual(['handle did:plc:y'])
+  })
+
+  it('waits for every AppView before answering', async () => {
+    const census = new TargetCensus(2)
+    let answered = false
+    const first = census.report('one', sightings([['account did:plc:x', 'missing']])).then((v) => {
+      answered = true
+      return v
+    })
+    await Promise.resolve()
+    expect(answered).toBe(false)
+    await census.report('two', sightings([['account did:plc:x', 'missing']]))
+    expect([...(await first)]).toEqual(['account did:plc:x'])
   })
 })
 

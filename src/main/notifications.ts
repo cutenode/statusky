@@ -1,4 +1,4 @@
-import { Notification, shell } from 'electron'
+import { Notification } from 'electron'
 import { probeServiceId } from '../shared/network'
 import {
   bannerSound,
@@ -10,6 +10,7 @@ import {
 import { SEVERITY_LABEL } from '../shared/status'
 import { sourceLabel } from '../shared/webhook'
 import type { Settings, StatusPost } from '../shared/types'
+import { openInBrowser } from './external'
 
 /** macOS truncates notification bodies aggressively; keep them scannable. */
 const MAX_BODY = 220
@@ -27,11 +28,52 @@ function truncate(text: string, max: number): string {
 }
 
 /**
- * Electron's `Notification` is a thin wrapper around a native object: once the
- * last JS reference goes away the banner can be collected before the OS has
- * shown it. Hold every live notification here until it resolves.
+ * Electron's `Notification` is a thin wrapper around a native object, and the click,
+ * close and action handlers live on the JS side of it. Once the last JS reference goes
+ * the wrapper can be collected — and a banner still sitting in Notification Center or
+ * the Action Center goes on being clickable, and is then clicked into nothing: it opens
+ * no post, marks nothing read, and its buttons do nothing at all. Being *shown* is
+ * therefore not the end of a banner's life but the start of it, so each one is held
+ * here until the user has done something with it — clicked it, pressed one of its
+ * buttons, or closed it — or the OS has refused it.
  */
 const live = new Set<Notification>()
+
+/**
+ * The most banners held at once.
+ *
+ * `close` is not promised on every platform for every way a banner can go — Electron
+ * says as much — so a banner that is swept away unseen may never say so, and without a
+ * ceiling a machine left running for a month would hold every banner of the month. A
+ * Set iterates in the order things were added, so the ones let go are the oldest: the
+ * ones furthest down Notification Center, and the least likely still to be clicked.
+ * Fifty is well past the number of this app's banners anybody leaves unanswered, so in
+ * practice what is let go is what had already been swept away.
+ */
+export const MAX_RETAINED_NOTIFICATIONS = 50
+
+/** Hold `notification` until the user or the OS has finished with it. See `live`. */
+function retain(notification: Notification): void {
+  live.add(notification)
+  for (const oldest of live) {
+    if (live.size <= MAX_RETAINED_NOTIFICATIONS) break
+    live.delete(oldest)
+  }
+
+  const release = (): void => {
+    live.delete(notification)
+  }
+  notification.once('click', release)
+  notification.once('action', release)
+  notification.once('close', release)
+  notification.once('failed', release)
+}
+
+/** Whether a banner is still being held on to. For tests; nothing in the app asks. */
+export function isRetained(notification: object): boolean {
+  const held: ReadonlySet<object> = live
+  return held.has(notification)
+}
 
 export interface NotificationDeps {
   /** The banner itself was clicked: open what it is about, and deal with it. */
@@ -150,9 +192,13 @@ export function explainFailure(raw: string): string {
  *
  * `failed` (darwin, win32) is the only signal that Notification Center dropped
  * the banner — an unauthorised app gets no other feedback — so never ignore it.
+ *
+ * Settling says only whether the banner went up. It does not let go of it, which is
+ * `retain`'s to decide: a banner that went up is exactly the one that can still be
+ * clicked.
  */
 function show(notification: Notification): Promise<void> {
-  live.add(notification)
+  retain(notification)
 
   return new Promise<void>((resolve, reject) => {
     let settled = false
@@ -160,7 +206,6 @@ function show(notification: Notification): Promise<void> {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      live.delete(notification)
       fn()
     }
 
@@ -209,8 +254,9 @@ export function notifyPosts(posts: StatusPost[], settings: Settings, deps: Notif
 
     notification.on('click', () => {
       deps.onOpened(post)
-      // A pushed update need not link anywhere; marking it read is still the point.
-      if (post.url) void shell.openExternal(post.url)
+      // A pushed update need not link anywhere; marking it read is still the point. One
+      // that does goes through the same check as every other link this app opens.
+      if (post.url) void openInBrowser(post.url)
     })
 
     // The index is read off the event object rather than the deprecated positional

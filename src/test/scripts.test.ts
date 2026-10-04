@@ -13,10 +13,30 @@ import { describe, expect, it } from 'vitest'
  * name and nothing else: `pretest` does nothing for `test:node`. So rather than listing
  * today's scripts, this walks every script the way npm would run it, and fails as soon as
  * one reaches a wiring-sensitive tool without the right generation on the way.
+ *
+ * The same walk holds packaging to one more rule, because it is the other thing a script
+ * can quietly skip: nothing reaches `electron-forge package`, `make` or `release` unless
+ * the type-checks, the linter, Prettier and the whole test suite have all passed earlier
+ * in that same run. A release is the one build that leaves this machine, and nothing
+ * else stands between it and a user — there is no reviewer on the far side of
+ * `npm run release`.
  */
 
 type Scripts = Readonly<Record<string, string>>
 type Environment = 'development' | 'production'
+
+/**
+ * What has to have passed, earlier in the same run, before anything is packaged — named
+ * by the command that establishes it.
+ */
+type Gate = 'svelte-check' | 'tsc' | 'oxlint' | 'prettier --check' | 'vitest run'
+const RELEASE_GATES: readonly Gate[] = [
+  'svelte-check',
+  'tsc',
+  'oxlint',
+  'prettier --check',
+  'vitest run'
+]
 
 /**
  * What one run has established so far. An absent environment means "whatever an earlier
@@ -29,6 +49,8 @@ interface Ledger {
   out?: Environment
   /** Whether anything in this run has generated the wiring or depended on it. */
   touched: boolean
+  /** The release gates this run has passed through so far. */
+  passed: ReadonlySet<Gate>
 }
 
 /** Thrown at the first command that would run on the wrong wiring, or cannot be followed. */
@@ -40,8 +62,9 @@ class Violation extends Error {
 
 /**
  * Every script someone might run that would reach the app, a build, a package or a test run
- * on the wrong IPC wiring, as "trail: reason". Pre and post hooks are checked as part of
- * the script they belong to rather than on their own, because that is how npm runs them.
+ * on the wrong IPC wiring, or package a build that was never checked and tested, as
+ * "trail: reason". Pre and post hooks are checked as part of the script they belong to
+ * rather than on their own, because that is how npm runs them.
  */
 function checkScripts(scripts: Scripts): string[] {
   const problems: string[] = []
@@ -49,7 +72,7 @@ function checkScripts(scripts: Scripts): string[] {
     const target = /^(?:pre|post)(.+)$/.exec(name)?.[1]
     if (target !== undefined && Object.hasOwn(scripts, target)) continue
     try {
-      runScript(scripts, name, [], true, { touched: false }, [])
+      runScript(scripts, name, [], true, { touched: false, passed: new Set() }, [])
     } catch (error) {
       if (!(error instanceof Violation)) throw error
       problems.push(error.message)
@@ -203,8 +226,12 @@ const NPM_SHORTHANDS = new Map([
   ['start', 'start']
 ])
 
-/** The Electron Forge subcommands that take what is in out/ and turn it into artifacts. */
-const FORGE_PACKAGING = new Set(['package', 'make', 'publish'])
+/**
+ * The Electron Forge subcommands that take what is in out/ and turn it into artifacts.
+ * Forge 8 renamed `publish` to `release` and keeps `publish` as a deprecated alias, so
+ * both are here.
+ */
+const FORGE_PACKAGING = new Set(['package', 'make', 'release', 'publish'])
 
 function runCommand(
   scripts: Scripts,
@@ -241,6 +268,9 @@ function runCommand(
     return { ...ledger, ipc: isEnvironment(named) ? named : undefined, touched: true }
   }
 
+  const gate = gateOf(argv)
+  const passed = gate === undefined ? ledger.passed : new Set([...ledger.passed, gate])
+
   const vite = locate(argv, 'electron-vite')
   if (vite !== -1) {
     const command = subcommand(argv, vite)
@@ -265,16 +295,17 @@ function runCommand(
 
   if (locate(argv, 'vitest') !== -1) {
     expectWiring(ledger.ipc, 'production', shown, trail)
-    return { ...ledger, touched: true }
+    return { ...ledger, passed, touched: true }
   }
 
   const forge = locate(argv, 'electron-forge')
   if (forge !== -1) {
     if (FORGE_PACKAGING.has(subcommand(argv, forge) ?? '')) {
       // Forge packages out/ and never reads src/ipc, so regenerating the wiring is not
-      // enough on its own: out/ has to have been built from production wiring. `publish`
+      // enough on its own: out/ has to have been built from production wiring. `release`
       // packages and makes on its way to uploading, so it is no different from `make`.
       expectBuild(ledger.out, 'production', shown, trail)
+      expectGates(ledger.passed, shown, trail)
       return { ...ledger, touched: true }
     }
     // Everything else Forge can be told to do either scaffolds a project or runs the app
@@ -287,7 +318,35 @@ function runCommand(
     throw new Violation(trail, `${shown} is not an electron-forge command this check knows`)
   }
 
-  return ledger
+  return { ...ledger, passed }
+}
+
+/**
+ * The release gate a command passes through, if it is one. Only a command that fails on
+ * what it finds counts: `prettier --write` formats rather than checks, and a Vitest run
+ * narrowed to one project, one file or one test name has not run the suite. Narrowing
+ * is read off the words after `run`: a flag counts as a flag, and anything else as a
+ * filter, so a flag that takes a value has to be written `--flag=value` to be read as one.
+ */
+function gateOf(argv: readonly string[]): Gate | undefined {
+  if (locate(argv, 'svelte-check') !== -1) return 'svelte-check'
+  if (locate(argv, 'tsc') !== -1) return 'tsc'
+  if (locate(argv, 'oxlint') !== -1) return 'oxlint'
+
+  const prettier = locate(argv, 'prettier')
+  if (prettier !== -1) {
+    const checks = argv.slice(prettier + 1).some((word) => word === '--check' || word === '-c')
+    return checks ? 'prettier --check' : undefined
+  }
+
+  const vitest = locate(argv, 'vitest')
+  if (vitest !== -1 && subcommand(argv, vitest) === 'run') {
+    const rest = argv.slice(argv.indexOf('run', vitest) + 1)
+    const narrowed = rest.some((word) => !word.startsWith('-') || /^--project(?:=|$)/.test(word))
+    return narrowed ? undefined : 'vitest run'
+  }
+
+  return undefined
 }
 
 /** `npm run x -- a`, `npm test`, `npm start`: the script npm runs, and what it passes on. */
@@ -355,10 +414,22 @@ function expectBuild(
   )
 }
 
+function expectGates(passed: ReadonlySet<Gate>, shown: string, trail: readonly string[]): void {
+  const missing = RELEASE_GATES.filter((gate) => !passed.has(gate))
+  if (missing.length === 0) return
+  throw new Violation(
+    trail,
+    `${shown} packages without ${missing.map((gate) => `\`${gate}\``).join(', ')} passing first`
+  )
+}
+
 const generate = (environment: Environment) => `node scripts/generate-ipc.mjs ${environment}`
 
+/** Every release gate, in one script body. Vitest needs production wiring generated first. */
+const GATES = 'svelte-check && tsc --noEmit && oxlint && prettier --check . && vitest run'
+
 describe('the scripts in package.json', () => {
-  it('never run, build, package or test the app on the wrong IPC wiring', () => {
+  it('never run, build, package or test the app on the wrong IPC wiring, nor package it unchecked', () => {
     const { scripts } = JSON.parse(
       readFileSync(join(import.meta.dirname, '../../package.json'), 'utf8')
     ) as { scripts: Record<string, string> }
@@ -539,13 +610,13 @@ describe('checkScripts', () => {
       expect(
         checkScripts({
           prebuild: generate('production'),
-          build: 'electron-vite build',
+          build: `${GATES} && electron-vite build`,
           dist: 'npm run build && electron-forge make --platform=darwin'
         })
       ).toEqual([])
     })
 
-    it.each(['package', 'make', 'publish'])(
+    it.each(['package', 'make', 'release', 'publish'])(
       'refuses to %s an out/ nothing in the run built',
       (command) => {
         expect(checkScripts({ dist: `electron-forge ${command}` })).toEqual([
@@ -581,6 +652,79 @@ describe('checkScripts', () => {
       ).toEqual([
         'start: `electron-vite preview --skipBuild` uses out/ without building it from development IPC wiring first'
       ])
+    })
+  })
+
+  describe('release gates', () => {
+    it('refuses to package a build nothing in the run checked or tested', () => {
+      expect(
+        checkScripts({
+          prebuild: generate('production'),
+          build: 'electron-vite build',
+          dist: 'npm run build && electron-forge make'
+        })
+      ).toEqual([
+        'dist: `electron-forge make` packages without `svelte-check`, `tsc`, `oxlint`, `prettier --check`, `vitest run` passing first'
+      ])
+    })
+
+    it('finds the gates through npm run, npm test and their hooks', () => {
+      expect(
+        checkScripts({
+          'check:types': 'svelte-check --threshold warning && tsc -p tsconfig.node.json --noEmit',
+          lint: 'oxlint',
+          'format:check': 'prettier --check .',
+          check: 'npm run check:types && npm run lint && npm run format:check',
+          pretest: generate('production'),
+          test: 'vitest run',
+          prebuild: generate('production'),
+          build: 'npm run check && npm test && electron-vite build',
+          release: 'npm run build && electron-forge release'
+        })
+      ).toEqual([])
+    })
+
+    it.each([
+      [
+        'Prettier writing rather than checking',
+        GATES.replace('prettier --check .', 'prettier --write .'),
+        '`prettier --check`'
+      ],
+      [
+        'one project of the suite',
+        GATES.replace('vitest run', 'vitest run --project node'),
+        '`vitest run`'
+      ],
+      ['one file of the suite', GATES.replace('vitest run', 'vitest run src/main'), '`vitest run`'],
+      ['one test name', GATES.replace('vitest run', 'vitest run -t tray'), '`vitest run`']
+    ])('does not count %s', (_name, gates, missing) => {
+      expect(
+        checkScripts({
+          prebuild: generate('production'),
+          build: `${gates} && electron-vite build`,
+          dist: 'npm run build && electron-forge package'
+        })
+      ).toEqual([`dist: \`electron-forge package\` packages without ${missing} passing first`])
+    })
+
+    it('counts a whole run with flags that do not narrow it', () => {
+      expect(
+        checkScripts({
+          prebuild: generate('production'),
+          build: `${GATES} --reporter=dot --coverage && electron-vite build`,
+          dist: 'npm run build && electron-forge package'
+        })
+      ).toEqual([])
+    })
+
+    it('only counts a gate that passes before the packaging does', () => {
+      expect(
+        checkScripts({
+          prebuild: generate('production'),
+          build: 'svelte-check && tsc && oxlint && prettier --check . && electron-vite build',
+          dist: 'npm run build && electron-forge make && vitest run'
+        })
+      ).toEqual(['dist: `electron-forge make` packages without `vitest run` passing first'])
     })
   })
 

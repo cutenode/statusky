@@ -1,7 +1,26 @@
 import { join } from 'node:path'
-import { BrowserWindow, app, dialog, screen, shell } from 'electron'
+import { BrowserWindow, app, dialog, screen } from 'electron'
+import { openInBrowser } from './external'
 import { computePopoverPosition, type Rect } from './position'
 import { APP_INDEX, APP_ORIGIN } from './protocol'
+
+/**
+ * Where electron-vite's dev server is serving the popover from, or null when the popover
+ * should load its own build over `app://statusky`.
+ *
+ * Never anything but null in a packaged build, whatever the environment says. The
+ * variable is how `npm run dev` points the window at the dev server, and nothing about it
+ * stops it reaching a shipped app as well: anything that can set an environment variable
+ * for the process could otherwise put a page of its choosing in a frameless, always-on-top
+ * window that appears on every workspace and looks exactly like Statusky. The IPC origin
+ * check would still refuse that page everything, but it would not need IPC to ask the
+ * user for a password. src/main/index.ts asks the same question before it decides whether
+ * to serve the built renderer at all.
+ */
+export function devServerUrl(): string | null {
+  if (app.isPackaged) return null
+  return process.env.ELECTRON_RENDERER_URL || null
+}
 
 const WIDTH = 440
 const HEIGHT = 640
@@ -90,21 +109,26 @@ export class PopoverWindow {
 
     window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 
-    // Anything the page tries to open goes to the user's real browser.
+    // Anything the page tries to open goes to the user's real browser — if it is a web
+    // page at all. A middle click the page does not catch (RichText.svelte does) lands
+    // here without passing through any click handler, carrying whatever scheme the
+    // link's href says; `openInBrowser` is the check.
     window.webContents.setWindowOpenHandler(({ url }) => {
-      void shell.openExternal(url)
+      void openInBrowser(url)
       return { action: 'deny' }
     })
     // The popover is a single page: it never navigates itself. Anything that tries is
     // either a link the user clicked or a page trying to move somewhere it should not
-    // be trusted from, and either way it belongs in the real browser.
+    // be trusted from, so it is always cancelled, and only ever reaches the real browser
+    // through the same check as a popup does. The page it is already on is the one
+    // exception, because that is a reload rather than a navigation away.
     // The URL is read off the event rather than the deprecated positional argument.
     window.webContents.on('will-navigate', (event) => {
       const { url } = event
       if (url === window.webContents.getURL()) return
       event.preventDefault()
       if (url.startsWith(APP_ORIGIN)) return
-      void shell.openExternal(url)
+      void openInBrowser(url)
     })
 
     if (!app.isPackaged) {
@@ -154,7 +178,7 @@ export class PopoverWindow {
 
     // `app://statusky` rather than `file://` so the IPC origin check has something
     // real to check. See src/main/protocol.ts.
-    void window.loadURL(process.env.ELECTRON_RENDERER_URL ?? APP_INDEX)
+    void window.loadURL(devServerUrl() ?? APP_INDEX)
 
     return window
   }

@@ -138,7 +138,7 @@ export type NotificationSound = 'all' | 'urgent' | 'never'
  * Which services the network checks may raise a banner about.
  *
  * `core` is the Atmosphere proper, the same services that are allowed to set the tray's
- * health (see `ProbeTier`). `all` adds community infrastructure. `pinned` is only the
+ * health: core tier (see `ProbeTier`), in a panel `Settings.countedProbeGroups` keeps. `all` adds community infrastructure. `pinned` is only the
  * services the user has starred on the dashboard, for someone who runs a PDS and cares
  * about that and nothing else.
  */
@@ -235,6 +235,17 @@ export interface Settings {
   notificationShowBody: boolean
   /** Service ids starred on the dashboard. See `ProbeNotifyScope`. */
   pinnedServices: string[]
+  /**
+   * The dashboard's panels whose services count: towards the header, the tray icon, and
+   * the banners `ProbeNotifyScope` `core` allows.
+   *
+   * Everything is measured and filed in the feed whatever this says. What it decides is
+   * which failures speak for the network *to this person*: somebody who has never opened
+   * Tangled has no use for an amber menu bar because a spindle is down. Community
+   * infrastructure never counts, whichever panel it is in (see `ProbeTier`), and the
+   * control group is never judged at all.
+   */
+  countedProbeGroups: ProbeGroup[]
   theme: ThemePreference
   launchAtLogin: boolean
   /** How unread updates are announced in the menu bar. */
@@ -391,10 +402,12 @@ export type ProbeGroup =
 export type ProbeKind =
   | 'relay'
   | 'pds'
+  | 'entryway'
   | 'appview'
   | 'feed'
   | 'constellation'
   | 'cdn'
+  | 'plc'
   | 'internet'
   | 'jetstream'
   | 'spacedust'
@@ -444,6 +457,13 @@ export interface ProbeCheck {
   ok: boolean | null
   /** Why it failed, worded for people. */
   error: string | null
+  /**
+   * Why a failure is not held against the service, when it is not: the thing it asked
+   * about is gone, rather than the service being broken. Every AppView saying an account
+   * does not exist is the account's news. An excused check is shown with its failure and
+   * this beside it, and left out of the service's state. See `TargetCensus`.
+   */
+  excused?: string
   /**
    * How long it took. Null while in flight, for a check that was never started — a
    * derived one, or one skipped because a check it depends on failed — and for a failure
@@ -528,7 +548,22 @@ export interface NetworkSnapshot {
    * ten-minute setting reads as the app being broken.
    */
   restraint: SweepRestraint | null
+  /**
+   * Listed accounts, or their handles, that no AppView could find at the last sweep that
+   * asked: deleted, deactivated or renamed out from under the checks. See `TargetCensus`.
+   */
+  vanished: VanishedTarget[]
   services: ServiceProbe[]
+}
+
+/**
+ * One of the listed accounts as no AppView knows it any more. `account` is the account
+ * itself gone — deleted, deactivated, suspended. `handle` is the account still there
+ * under a handle other than the one listed, so resolving the listed one fails.
+ */
+export interface VanishedTarget {
+  did: string
+  part: 'account' | 'handle'
 }
 
 export type NetworkHealth = 'off' | 'unknown' | 'operational' | 'degraded' | 'down' | 'offline'
@@ -549,10 +584,13 @@ export interface NetworkSummary {
   /** Labels of core services confirmed partly failing. */
   degraded: string[]
   /**
-   * Labels of community services in trouble. Shown on the dashboard and filed in the
-   * feed, but deliberately kept out of `health`: see `ProbeTier`.
+   * Labels of services in trouble that do not count: community infrastructure, and
+   * anything in a panel left out of `Settings.countedProbeGroups`. Shown on the dashboard
+   * and filed in the feed, but deliberately kept out of `health`.
    */
-  community: string[]
+  uncounted: string[]
+  /** Mirrored from `NetworkSnapshot.vanished`, for Settings to point at. */
+  vanished: VanishedTarget[]
   running: boolean
   lastSweepAt: string | null
   /**
@@ -608,10 +646,12 @@ export interface ProbeImage {
  * Everything the network checks read that somebody could delete or edit out from under
  * them: particular accounts, feeds, images, repositories and documents.
  *
- * Hostnames are not in here. They are the services themselves, and live in `CATALOGUE`
- * in src/shared/network.ts; these are only the things each service is asked about. The
- * checked-in defaults are `src/shared/probeTargets.json`, and a user may replace the
- * whole document through `Settings.probeTargets` when one of them disappears.
+ * Hostnames are mostly not in here. They are the services themselves, and live in
+ * `CATALOGUE` in src/shared/network.ts; these are only the things each service is asked
+ * about. Two lists are the exception, because each entry in them is a dashboard row of
+ * the user's own choosing: `feeds`, and `pdses`. The checked-in defaults are
+ * `src/shared/probeTargets.json`, and a user may replace the whole document through
+ * `Settings.probeTargets` when one of them disappears.
  */
 export interface ProbeTargets {
   /**
@@ -622,6 +662,14 @@ export interface ProbeTargets {
    */
   accounts: ProbeAccount[]
   feeds: ProbeFeed[]
+  /**
+   * PDS hosts the user wants watched as well as the catalogue's: their own, typically.
+   * Each is a row of its own, probed like any other PDS — including whether Bluesky's
+   * relay still carries it, which is the question somebody running a PDS asks first
+   * when their posts stop showing up. Empty by default. Hosts the catalogue already
+   * measures are not measured twice.
+   */
+  pdses: string[]
   forYou: {
     /** What the generator record points at, and what an AppView resolves before calling. */
     did: string
@@ -649,6 +697,10 @@ export interface ProbeTargets {
     ownerDid: string
   }
   apps: {
+    pckt: {
+      /** What the blog host's well-known route answers with: an AT-URI. */
+      publication: string
+    }
     leaflet: {
       /** A published document, whose well-known route is a 77-byte index read. */
       publication: ProbeRecord

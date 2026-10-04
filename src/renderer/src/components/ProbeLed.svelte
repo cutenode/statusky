@@ -28,7 +28,7 @@
   {#if ping}
     <span
       class={cn(
-        'absolute inline-flex size-full animate-ping rounded-full opacity-60',
+        'absolute inline-flex size-full rounded-full opacity-60 motion-safe:animate-ping',
         rechecking ? 'bg-sev-investigating' : style.dot
       )}
     ></span>
@@ -38,7 +38,7 @@
       'relative inline-flex size-2 rounded-full transition-[background-color,box-shadow] duration-500',
       style.dot,
       style.glow,
-      state === 'pending' && !still && 'animate-pulse'
+      state === 'pending' && !still && 'motion-safe:animate-pulse'
     )}
   ></span>
 </span>

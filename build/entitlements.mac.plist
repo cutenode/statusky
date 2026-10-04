@@ -2,15 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
   <dict>
-    <!-- V8 compiles JavaScript at runtime; the hardened runtime blocks that
-         without these two. Required for notarisation to succeed. -->
+    <!-- A Developer ID build: the app and every helper inside it.
+
+         V8 compiles JavaScript as it runs, in the main process and in every
+         renderer, and the hardened runtime refuses that without this. It is the
+         only exception Electron asks for, and the only one this file grants.
+         Every other exception would be one more way into a signed process; see
+         the entitlements note in forge.config.ts. -->
     <key>com.apple.security.cs.allow-jit</key>
-    <true/>
-    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-    <true/>
-    <!-- Electron loads its own frameworks and any unpacked native modules;
-         also required for ad-hoc signed local builds to launch at all. -->
-    <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
   </dict>
 </plist>

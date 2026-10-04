@@ -170,6 +170,30 @@ export function postPermalink(handle: string, uri: string): string {
 }
 
 /**
+ * When a post was made, as far as anybody can know it.
+ *
+ * `createdAt` is whatever the author's client wrote into the record, and nothing checks
+ * it: a post dated 2099 is a valid post. Taken at its word it would sit at the top of the
+ * feed until then, and carry any cursor moved onto it into a future where nothing is
+ * ever news again — the source's notification cursor, and through *Mark this and
+ * everything older as read* every source's read cursor. `indexedAt` is the AppView's own
+ * clock, and a post cannot have been made after the AppView first saw it, so the earlier
+ * of the two is the answer. That is the rule the AppView sorts its own feeds by (its
+ * `sortAt`), for the same reason.
+ *
+ * Only ever earlier, never later: a client whose clock is slow writes a `createdAt` that
+ * is behind, which is harmless and is kept. A `createdAt` that is not a string falls back
+ * to the index time, and to the epoch when there is not even that; one that does not
+ * parse is passed through as it always was, and every reader already treats it as
+ * having no time at all.
+ */
+function postedAt(claimed: unknown, indexedAt: string | undefined): string {
+  if (typeof claimed !== 'string') return indexedAt ?? new Date(0).toISOString()
+  if (indexedAt !== undefined && Date.parse(claimed) > Date.parse(indexedAt)) return indexedAt
+  return claimed
+}
+
+/**
  * Convert an AppView post view into our flat shape.
  * Returns null for anything that is not a first-party `app.bsky.feed.post`.
  */
@@ -182,8 +206,7 @@ export function normalizePost(raw: RawPost | undefined): StatusPost | null {
   const { text: rawText, createdAt: rawCreatedAt, facets } = raw.record
   const text = typeof rawText === 'string' ? rawText : ''
   const handle = raw.author.handle ?? raw.author.did
-  const createdAt =
-    typeof rawCreatedAt === 'string' ? rawCreatedAt : (raw.indexedAt ?? new Date(0).toISOString())
+  const createdAt = postedAt(rawCreatedAt, raw.indexedAt)
 
   return {
     uri: raw.uri,

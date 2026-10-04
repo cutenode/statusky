@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button'
   import { app } from '$lib/app-state.svelte'
+  import { Refusals } from '$lib/requests.svelte'
   import { cn } from '$lib/utils'
   import { PROBE_GROUPS, formatLatency, isControl, isReachable } from '@shared/network'
   import { sinceTime } from '@shared/time'
@@ -8,6 +9,7 @@
   import Power from '@lucide/svelte/icons/power'
   import WifiOff from '@lucide/svelte/icons/wifi-off'
   import ReachabilityRing from './ReachabilityRing.svelte'
+  import Refused from './Refused.svelte'
 
   let { now, onjump }: { now: number; onjump(group: ProbeGroup): void } = $props()
 
@@ -33,10 +35,15 @@
     return { settled, total: checks.length }
   })
 
-  /** Observed failing, but not confirmed yet: the monitor is re-checking them. */
-  const suspect = $derived(
-    atmosphere.filter((s) => s.state === 'down' || s.state === 'partial' || s.rechecking).length
-  )
+  /**
+   * Observed failing, but not confirmed yet: the monitor is re-checking them.
+   *
+   * Only what is being re-checked. A failure already confirmed in a panel that does not
+   * count — `summary.uncounted` — is red on its row too, and counted in here it read as
+   * "Re-checking" for as long as the outage lasted, which nothing was.
+   */
+  const suspect = $derived(atmosphere.filter((s) => s.rechecking).length)
+  const uncounted = $derived(summary.uncounted)
 
   const medianLatency = $derived.by(() => {
     const times = atmosphere
@@ -79,6 +86,16 @@
       return {
         title: `Re-checking ${suspect} service${suspect === 1 ? '' : 's'}`,
         tone: 'warn'
+      }
+    }
+    // Said, but quietly: left out of the menu bar, so not an alarm here either.
+    if (uncounted.length) {
+      return {
+        title:
+          uncounted.length === 1
+            ? `${uncounted[0]} is failing, not counted`
+            : `${uncounted.length} uncounted services failing`,
+        tone: 'quiet'
       }
     }
     return { title: 'The Atmosphere is reachable', tone: 'good' }
@@ -154,6 +171,18 @@
   const tone = $derived(TONE[verdict.tone])
 
   /**
+   * What a screen reader is told, and when: once as a sweep starts, and once with the
+   * verdict when it is over. The progress line changes with every answer, several times
+   * a second through a sweep, and announced as it went it drowned out everything else.
+   */
+  const announcement = $derived(
+    snapshot.running ? 'Checking the Atmosphere…' : `${verdict.title}. ${detail}`
+  )
+
+  /** Why main would not switch the checks on, said under the button that asked. */
+  const refusals = new Refusals()
+
+  /**
    * Each Atmosphere group's tally, doubling as a way to jump down the list. The control
    * group is left out, as it is from the ring: it measures the user, not the network.
    */
@@ -192,7 +221,7 @@
           {verdict.title}
         </h2>
       </div>
-      <p class="mt-1 text-[11.5px] leading-snug text-muted-foreground" aria-live="polite">
+      <p class="mt-1 text-[11.5px] leading-snug text-muted-foreground">
         {detail}
       </p>
       {#if enabled && !snapshot.running && !snapshot.offline && meta}
@@ -209,13 +238,15 @@
       <Button
         size="sm"
         class="shrink-0"
-        onclick={() => void app.patchSettings({ networkChecks: true })}
+        onclick={() => void refusals.track('enable', app.patchSettings({ networkChecks: true }))}
       >
         <Power class="size-3.5" />
         Turn on
       </Button>
     {/if}
   </div>
+  <Refused class="pt-2 pb-0" text={refusals.of('enable')} />
+  <p class="sr-only" aria-live="polite">{announcement}</p>
 
   {#if enabled && groups.length}
     <div class="mt-2.5 flex flex-wrap gap-1">
@@ -269,6 +300,13 @@
     background-size: 60px 100%;
     background-repeat: no-repeat;
     animation: sheen 1.1s linear infinite;
+  }
+
+  /* The bar still fills as answers come in; only the shine running along it stops. */
+  @media (prefers-reduced-motion: reduce) {
+    .progress {
+      animation: none;
+    }
   }
 
   @keyframes sheen {

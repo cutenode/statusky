@@ -10,7 +10,7 @@
       "muted": false,
       "builtin": true,
       "kind": "atproto",
-      "addedAt": "2026-09-20T19:32:37.334Z"
+      "addedAt": "2026-09-30T19:43:57.255Z"
     },
     {
       "did": "did:plc:njxo6cs5a6jjk4c2z6dhecsc",
@@ -22,7 +22,7 @@
       "muted": false,
       "builtin": true,
       "kind": "atproto",
-      "addedAt": "2026-09-20T19:32:37.334Z"
+      "addedAt": "2026-09-30T19:43:57.255Z"
     },
     {
       "did": "webhook:preview-page",
@@ -32,7 +32,7 @@
       "description": "Degraded",
       "notify": "default",
       "muted": false,
-      "addedAt": "2026-09-20T19:32:37.334Z",
+      "addedAt": "2026-09-30T19:43:57.255Z",
       "builtin": false,
       "kind": "webhook"
     },
@@ -44,16 +44,16 @@
       "description": "Outages and recoveries measured from this computer.",
       "notify": "default",
       "muted": false,
-      "addedAt": "2026-09-20T19:32:37.334Z",
+      "addedAt": "2026-09-30T19:43:57.255Z",
       "builtin": true,
       "kind": "probe"
     }
   ],
   "posts": [
     {
-      "uri": "probe:network/relay:europe.firehose.network/1789923400808",
+      "uri": "probe:network/relay:europe.firehose.network/1790788088190",
       "cid": "",
-      "rkey": "1789923400808",
+      "rkey": "1790788088190",
       "authorDid": "probe:network",
       "authorHandle": "Network checks",
       "authorDisplayName": "Network checks",
@@ -66,8 +66,8 @@
         }
       ],
       "embed": null,
-      "createdAt": "2026-09-20T16:56:40.808Z",
-      "indexedAt": "2026-09-20T16:56:40.808Z",
+      "createdAt": "2026-09-30T17:08:08.190Z",
+      "indexedAt": "2026-09-30T17:08:08.190Z",
       "severity": "resolved",
       "replyCount": 0,
       "repostCount": 0,
@@ -75,9 +75,9 @@
       "url": ""
     },
     {
-      "uri": "probe:network/relay:europe.firehose.network/1789921960808",
+      "uri": "probe:network/relay:europe.firehose.network/1790786648190",
       "cid": "",
-      "rkey": "1789921960808",
+      "rkey": "1790786648190",
       "authorDid": "probe:network",
       "authorHandle": "Network checks",
       "authorDisplayName": "Network checks",
@@ -90,13 +90,332 @@
         }
       ],
       "embed": null,
-      "createdAt": "2026-09-20T16:32:40.808Z",
-      "indexedAt": "2026-09-20T16:32:40.808Z",
+      "createdAt": "2026-09-30T16:44:08.190Z",
+      "indexedAt": "2026-09-30T16:44:08.190Z",
       "severity": "outage",
       "replyCount": 0,
       "repostCount": 0,
       "likeCount": 0,
       "url": ""
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mwormbs23q2f",
+      "cid": "bafyreieaybqjgpk2p4rjzf6hjh4mhabwhlpbpotgruoe3zbagctbxkqp4y",
+      "rkey": "3mwormbs23q2f",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "This incident has been resolved.\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "This incident has been resolved.\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-29T21:30:32Z",
+      "indexedAt": "2026-09-29T21:30:33.160Z",
+      "severity": "resolved",
+      "replyCount": 4,
+      "repostCount": 22,
+      "likeCount": 91,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mwormbs23q2f"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mwoo2plzue2z",
+      "cid": "bafyreieaidkwh4nj2qwvwc6pqm7pl3jntbtrfhix2amusynzng5s54dyv4",
+      "rkey": "3mwoo2plzue2z",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "The fix has been applied and we are monitoring the result\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "The fix has been applied and we are monitoring the result\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-29T20:27:02Z",
+      "indexedAt": "2026-09-29T20:27:03.460Z",
+      "severity": "monitoring",
+      "replyCount": 5,
+      "repostCount": 18,
+      "likeCount": 92,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mwoo2plzue2z"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mwon7wyekh2i",
+      "cid": "bafyreidpfw4f6mrznrrugzgz6tooxoiknxdapu5fwflgj3paipgtwsspby",
+      "rkey": "3mwon7wyekh2i",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "We made a change that caused the site to go down again. We are undoing that change and monitoring.\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "We made a change that caused the site to go down again. We are undoing that change and monitoring.\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-29T20:12:03Z",
+      "indexedAt": "2026-09-29T20:12:04.094Z",
+      "severity": "monitoring",
+      "replyCount": 25,
+      "repostCount": 47,
+      "likeCount": 201,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mwon7wyekh2i"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mwomkr4qy62e",
+      "cid": "bafyreih4ozw7regoz3yuhzt6wwnytdl3x24ra5cwdvrdglpdppepwyep7e",
+      "rkey": "3mwomkr4qy62e",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "A fix has been implemented and we are monitoring the results\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "A fix has been implemented and we are monitoring the results\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-29T20:00:13Z",
+      "indexedAt": "2026-09-29T20:00:13.464Z",
+      "severity": "monitoring",
+      "replyCount": 0,
+      "repostCount": 10,
+      "likeCount": 84,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mwomkr4qy62e"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mwojprrnvo2f",
+      "cid": "bafyreiesl7brawk7shdykwhdpudqpyhbbxqxfa2akl57nydkdf4b6vk3ly",
+      "rkey": "3mwojprrnvo2f",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "We are experiencing slowness and occasional loading failures with the site. We have identified the root cause and are working to rectify it.\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "We are experiencing slowness and occasional loading failures with the site. We have identified the root cause and are working to rectify it.\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-29T19:09:20Z",
+      "indexedAt": "2026-09-29T19:09:30.404Z",
+      "severity": "identified",
+      "replyCount": 3,
+      "repostCount": 37,
+      "likeCount": 127,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mwojprrnvo2f"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mwm5rfvvmk2o",
+      "cid": "bafyreiawghucrpyjj2zig2b2l5wgppihnh6hfljqu3u7bsfd7g6m7mdkoy",
+      "rkey": "3mwm5rfvvmk2o",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "This incident has been resolved.\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "This incident has been resolved.\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-28T20:30:10Z",
+      "indexedAt": "2026-09-28T20:30:11.061Z",
+      "severity": "resolved",
+      "replyCount": 3,
+      "repostCount": 13,
+      "likeCount": 76,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mwm5rfvvmk2o"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mwm2cca6e32e",
+      "cid": "bafyreiacco42yjgm5bxf72co5dtjsdww7m3gqqyqpwna2cur5nyttjmaba",
+      "rkey": "3mwm2cca6e32e",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "The site has remained stable for some time, but we experienced an outage specifically with the discover feed for some time. The fix has been administered are we are monitoring results.\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "The site has remained stable for some time, but we experienced an outage specifically with the discover feed for some time. The fix has been administered are we are monitoring results.\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-28T19:28:02Z",
+      "indexedAt": "2026-09-28T19:28:03.874Z",
+      "severity": "monitoring",
+      "replyCount": 7,
+      "repostCount": 15,
+      "likeCount": 96,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mwm2cca6e32e"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mwlvjqdwmr2t",
+      "cid": "bafyreicrrrvwlm5dgy555dfzz6nl7dckp3owmu3fjjgfp6smj7jsrcccxu",
+      "rkey": "3mwlvjqdwmr2t",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "We have identified the cause of an issue that is sometimes causing the site to fail to load and are working to restore service.\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "We have identified the cause of an issue that is sometimes causing the site to fail to load and are working to restore service.\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-28T18:02:43Z",
+      "indexedAt": "2026-09-28T18:02:44.064Z",
+      "severity": "identified",
+      "replyCount": 3,
+      "repostCount": 40,
+      "likeCount": 129,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mwlvjqdwmr2t"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mw5jx5lgfn2v",
+      "cid": "bafyreig3ml2dshitquy2cxaz45ymhtbr6yz6vhbhkj376ra4wqygbk33de",
+      "rkey": "3mw5jx5lgfn2v",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "This incident has been resolved.\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "This incident has been resolved.\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-23T00:58:12Z",
+      "indexedAt": "2026-09-23T00:58:12.265Z",
+      "severity": "resolved",
+      "replyCount": 1,
+      "repostCount": 7,
+      "likeCount": 55,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mw5jx5lgfn2v"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mw5hc4jywy22",
+      "cid": "bafyreiac7kdfbqhpz7lczytp7js3lufym6l5mx24h73rws5s732a42vccy",
+      "rkey": "3mw5hc4jywy22",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "A fix has been implemented and we are monitoring results.\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "A fix has been implemented and we are monitoring results.\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-23T00:10:38Z",
+      "indexedAt": "2026-09-23T00:10:55.596Z",
+      "severity": "monitoring",
+      "replyCount": 1,
+      "repostCount": 12,
+      "likeCount": 71,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mw5hc4jywy22"
+    },
+    {
+      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mw5gtudbbr2e",
+      "cid": "bafyreidwntwndfzdycume44maflvqoazlqtsto5hllojyxcz3sax2ycypu",
+      "rkey": "3mw5gtudbbr2e",
+      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
+      "authorHandle": "status.bsky.app",
+      "authorDisplayName": "Bluesky Status",
+      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
+      "text": "We are experiencing an outage. We've identified the cause of the problem and are working to rectify it.\n\nstatus.bsky.app",
+      "segments": [
+        {
+          "kind": "text",
+          "text": "We are experiencing an outage. We've identified the cause of the problem and are working to rectify it.\n\n"
+        },
+        {
+          "kind": "link",
+          "text": "status.bsky.app",
+          "uri": "https://status.bsky.app"
+        }
+      ],
+      "embed": null,
+      "createdAt": "2026-09-23T00:02:40Z",
+      "indexedAt": "2026-09-23T00:02:40.664Z",
+      "severity": "identified",
+      "replyCount": 3,
+      "repostCount": 19,
+      "likeCount": 81,
+      "url": "https://bsky.app/profile/status.bsky.app/post/3mw5gtudbbr2e"
     },
     {
       "uri": "at://did:plc:njxo6cs5a6jjk4c2z6dhecsc/app.bsky.feed.post/3mvvjmgfwes2n",
@@ -123,8 +442,8 @@
       "indexedAt": "2026-09-19T20:30:54.764Z",
       "severity": "maintenance",
       "replyCount": 0,
-      "repostCount": 14,
-      "likeCount": 52,
+      "repostCount": 20,
+      "likeCount": 68,
       "url": "https://bsky.app/profile/status.blacksky.community/post/3mvvjmgfwes2n"
     },
     {
@@ -152,8 +471,8 @@
       "indexedAt": "2026-09-19T15:31:43.664Z",
       "severity": "resolved",
       "replyCount": 0,
-      "repostCount": 8,
-      "likeCount": 63,
+      "repostCount": 9,
+      "likeCount": 65,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mvuyvg4dcq2j"
     },
     {
@@ -181,8 +500,8 @@
       "indexedAt": "2026-09-19T14:22:57.065Z",
       "severity": "investigating",
       "replyCount": 1,
-      "repostCount": 11,
-      "likeCount": 71,
+      "repostCount": 12,
+      "likeCount": 73,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mvuv2hll4k2l"
     },
     {
@@ -211,7 +530,7 @@
       "severity": "update",
       "replyCount": 4,
       "repostCount": 41,
-      "likeCount": 104,
+      "likeCount": 105,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mvpv5odi5y2i"
     },
     {
@@ -240,7 +559,7 @@
       "severity": "resolved",
       "replyCount": 3,
       "repostCount": 9,
-      "likeCount": 74,
+      "likeCount": 73,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mvlrakqyoj2e"
     },
     {
@@ -326,8 +645,8 @@
       "indexedAt": "2026-09-14T13:17:18.657Z",
       "severity": "degraded",
       "replyCount": 0,
-      "repostCount": 18,
-      "likeCount": 59,
+      "repostCount": 19,
+      "likeCount": 60,
       "url": "https://bsky.app/profile/status.blacksky.community/post/3mvi72htozk24"
     },
     {
@@ -356,7 +675,7 @@
       "severity": "resolved",
       "replyCount": 1,
       "repostCount": 13,
-      "likeCount": 86,
+      "likeCount": 85,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mve7qjol2q2i"
     },
     {
@@ -443,7 +762,7 @@
       "severity": "resolved",
       "replyCount": 2,
       "repostCount": 15,
-      "likeCount": 90,
+      "likeCount": 89,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mvcl5sxtkg22"
     },
     {
@@ -472,7 +791,7 @@
       "severity": "monitoring",
       "replyCount": 3,
       "repostCount": 11,
-      "likeCount": 73,
+      "likeCount": 72,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mvckee3z6d2l"
     },
     {
@@ -500,8 +819,8 @@
       "indexedAt": "2026-09-12T07:19:27.058Z",
       "severity": "investigating",
       "replyCount": 0,
-      "repostCount": 16,
-      "likeCount": 71,
+      "repostCount": 15,
+      "likeCount": 69,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mvck4qb5o722"
     },
     {
@@ -530,7 +849,7 @@
       "severity": "maintenance",
       "replyCount": 7,
       "repostCount": 40,
-      "likeCount": 138,
+      "likeCount": 136,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mv6phecn6u2j"
     },
     {
@@ -641,7 +960,7 @@
       "severity": "resolved",
       "replyCount": 1,
       "repostCount": 11,
-      "likeCount": 81,
+      "likeCount": 80,
       "url": "https://bsky.app/profile/status.bsky.app/post/3muplkqykqp27"
     },
     {
@@ -698,8 +1017,8 @@
       "indexedAt": "2026-09-04T17:52:27.264Z",
       "severity": "investigating",
       "replyCount": 14,
-      "repostCount": 23,
-      "likeCount": 112,
+      "repostCount": 22,
+      "likeCount": 111,
       "url": "https://bsky.app/profile/status.bsky.app/post/3mupjrbighy2b"
     },
     {
@@ -732,325 +1051,6 @@
       "url": "https://bsky.app/profile/status.bsky.app/post/3munauqvvjl27"
     },
     {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mun4wf6v4m22",
-      "cid": "bafyreib6pcleahis2ng7wmomf6evorbm4h434ndmsehvzl2wrma5wc66ba",
-      "rkey": "3mun4wf6v4m22",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "The fix has been implemented, and service has been restored for users. We are continuing to monitor the situation.\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "The fix has been implemented, and service has been restored for users. We are continuing to monitor the situation.\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-09-03T18:57:20Z",
-      "indexedAt": "2026-09-03T19:00:14.981Z",
-      "severity": "monitoring",
-      "replyCount": 1,
-      "repostCount": 15,
-      "likeCount": 89,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mun4wf6v4m22"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mun4lblhhm2j",
-      "cid": "bafyreicxeu3dmhrcqbszxzbx3baqb5rljd6ktjm53yjpg25p4epic6nufu",
-      "rkey": "3mun4lblhhm2j",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "Some users may be experiencing an interruption in service due to network configuration changes. We have reverted and are monitoring.\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "Some users may be experiencing an interruption in service due to network configuration changes. We have reverted and are monitoring.\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-09-03T18:51:07Z",
-      "indexedAt": "2026-09-03T18:51:07.765Z",
-      "severity": "monitoring",
-      "replyCount": 2,
-      "repostCount": 24,
-      "likeCount": 93,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mun4lblhhm2j"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mun24juz2s2w",
-      "cid": "bafyreie4xpyw634bsgv2yxclto6nnpa2vhkb2ait2hh37grn4vcdnfp4iu",
-      "rkey": "3mun24juz2s2w",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "This incident has been resolved.\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "This incident has been resolved.\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-09-03T18:07:05Z",
-      "indexedAt": "2026-09-03T18:07:05.668Z",
-      "severity": "resolved",
-      "replyCount": 5,
-      "repostCount": 15,
-      "likeCount": 81,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mun24juz2s2w"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mumy6exsl22q",
-      "cid": "bafyreiditxxheyh52aiwpikb7fh3j35ga6imhdgh4jzl2aol64rvfkbmmi",
-      "rkey": "3mumy6exsl22q",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "We made a network configuration change that caused a brief availability incident. We have reverted the change and are observing traffic returning to normal levels. We will continue to observe.\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "We made a network configuration change that caused a brief availability incident. We have reverted the change and are observing traffic returning to normal levels. We will continue to observe.\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-09-03T17:32:19.988Z",
-      "indexedAt": "2026-09-03T17:32:20.269Z",
-      "severity": "monitoring",
-      "replyCount": 12,
-      "repostCount": 25,
-      "likeCount": 130,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mumy6exsl22q"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mukon4a4bd2n",
-      "cid": "bafyreichex26ssdeqwqr5tyuwhi4u3242hu7p65y4yn5jimcd5sa7rsefq",
-      "rkey": "3mukon4a4bd2n",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "Resolved: We are experiencing an outage with a 3rd party service provider that is causing the site to fail to load for many users. We are working with the provider to resolve the issue as soon as possible.\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "Resolved: We are experiencing an outage with a 3rd party service provider that is causing the site to fail to load for many users. We are working with the provider to resolve the issue as soon as possible.\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-09-02T19:36:17Z",
-      "indexedAt": "2026-09-02T19:36:17.504Z",
-      "severity": "resolved",
-      "replyCount": 7,
-      "repostCount": 33,
-      "likeCount": 116,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mukon4a4bd2n"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mukhmkjg5325",
-      "cid": "bafyreidibnqqeljzk2ndwxm55rqk4gvzp5dvipdgdwjxalzaxltt3i757m",
-      "rkey": "3mukhmkjg5325",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "Update: We have restored service and are continuing monitor.\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "Update: We have restored service and are continuing monitor.\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-09-02T17:30:42Z",
-      "indexedAt": "2026-09-02T17:30:42.606Z",
-      "severity": "monitoring",
-      "replyCount": 5,
-      "repostCount": 26,
-      "likeCount": 135,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mukhmkjg5325"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mukaj4mjz72w",
-      "cid": "bafyreihsn6thmixkoxrmnzuo5hiu4pshngvg2js6yxvttyjpodiqctxmtu",
-      "rkey": "3mukaj4mjz72w",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "We are experiencing an outage with a 3rd party service provider that is causing the site to fail to load for many users. We are working with the provider to resolve the issue as soon as possible.\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "We are experiencing an outage with a 3rd party service provider that is causing the site to fail to load for many users. We are working with the provider to resolve the issue as soon as possible.\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-09-02T15:23:31Z",
-      "indexedAt": "2026-09-02T15:23:31.204Z",
-      "severity": "outage",
-      "replyCount": 8,
-      "repostCount": 48,
-      "likeCount": 132,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mukaj4mjz72w"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mudjd3h65v2t",
-      "cid": "bafyreieqnm3afymp7nmyzey6dzx2rxcc2sflldc2olcxcj6qv45xa4ui2e",
-      "rkey": "3mudjd3h65v2t",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "Resolved: We are investigate connectivity issue with one of our PDS (inkcap)\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "Resolved: We are investigate connectivity issue with one of our PDS (inkcap)\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-08-30T23:12:33Z",
-      "indexedAt": "2026-08-30T23:12:34.200Z",
-      "severity": "resolved",
-      "replyCount": 5,
-      "repostCount": 22,
-      "likeCount": 91,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mudjd3h65v2t"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mud2y5oiro2c",
-      "cid": "bafyreihoekr45xxno7ieifpa5apn7bj2rr4sup5xqjuxzenpa6ywzajpke",
-      "rkey": "3mud2y5oiro2c",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "Update: Inkcap is unaccessible. We are working to restore connectivity\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "Update: Inkcap is unaccessible. We are working to restore connectivity\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-08-30T18:55:54Z",
-      "indexedAt": "2026-08-30T18:55:55.174Z",
-      "severity": "investigating",
-      "replyCount": 3,
-      "repostCount": 20,
-      "likeCount": 73,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mud2y5oiro2c"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mucqji5liu2q",
-      "cid": "bafyreic7s4mih5fezgolbjuptjioxinkrvv7zq3jt2dke3k3ynzamcsqaa",
-      "rkey": "3mucqji5liu2q",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "Update: Inkcap is now accessible again. We are still monitoring the situation.\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "Update: Inkcap is now accessible again. We are still monitoring the situation.\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-08-30T15:48:45Z",
-      "indexedAt": "2026-08-30T15:48:45.275Z",
-      "severity": "monitoring",
-      "replyCount": 2,
-      "repostCount": 18,
-      "likeCount": 89,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mucqji5liu2q"
-    },
-    {
-      "uri": "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mucptb45rb2t",
-      "cid": "bafyreidctzniu4jxdx6k3gfvny2ez5z5kxcw6hgzuahbyxvjhsuyojx2iu",
-      "rkey": "3mucptb45rb2t",
-      "authorDid": "did:plc:4dtbz2ivhp5app3sbntcccxc",
-      "authorHandle": "status.bsky.app",
-      "authorDisplayName": "Bluesky Status",
-      "authorAvatar": "https://cdn.bsky.app/img/avatar/plain/did:plc:4dtbz2ivhp5app3sbntcccxc/bafkreiaujega2zpznkf764e24ogagrgr772tv5qcpdgyhctir2ae4oef6q",
-      "text": "We are investigate connectivity issue with one of our PDS (inkcap)\n\nstatus.bsky.app",
-      "segments": [
-        {
-          "kind": "text",
-          "text": "We are investigate connectivity issue with one of our PDS (inkcap)\n\n"
-        },
-        {
-          "kind": "link",
-          "text": "status.bsky.app",
-          "uri": "https://status.bsky.app"
-        }
-      ],
-      "embed": null,
-      "createdAt": "2026-08-30T15:36:19Z",
-      "indexedAt": "2026-08-30T15:36:19.677Z",
-      "severity": "investigating",
-      "replyCount": 1,
-      "repostCount": 22,
-      "likeCount": 82,
-      "url": "https://bsky.app/profile/status.bsky.app/post/3mucptb45rb2t"
-    },
-    {
       "uri": "at://did:plc:njxo6cs5a6jjk4c2z6dhecsc/app.bsky.feed.post/3mtmzip4lrc26",
       "cid": "bafyreihjwx6lzbd4j33npo4i22jaxem6mcp6kipvolotz3usilnya55xmu",
       "rkey": "3mtmzip4lrc26",
@@ -1071,7 +1071,7 @@
       "severity": "maintenance",
       "replyCount": 0,
       "repostCount": 17,
-      "likeCount": 27,
+      "likeCount": 26,
       "url": "https://bsky.app/profile/status.blacksky.community/post/3mtmzip4lrc26"
     },
     {
@@ -1201,7 +1201,7 @@
       "severity": "maintenance",
       "replyCount": 1,
       "repostCount": 17,
-      "likeCount": 57,
+      "likeCount": 56,
       "url": "https://bsky.app/profile/status.blacksky.community/post/3msghvbnjzc2c"
     },
     {
@@ -1340,7 +1340,7 @@
       "severity": "degraded",
       "replyCount": 0,
       "repostCount": 11,
-      "likeCount": 35,
+      "likeCount": 34,
       "url": "https://bsky.app/profile/status.blacksky.community/post/3ms7dwxrawk26"
     },
     {
@@ -1364,7 +1364,7 @@
       "severity": "investigating",
       "replyCount": 0,
       "repostCount": 24,
-      "likeCount": 55,
+      "likeCount": 54,
       "url": "https://bsky.app/profile/status.blacksky.community/post/3ms6ztvis4k2g"
     },
     {
@@ -1384,7 +1384,7 @@
       ],
       "embed": null,
       "createdAt": "2026-01-01T10:05:00.000Z",
-      "indexedAt": "2026-09-20T19:32:37.334Z",
+      "indexedAt": "2026-09-30T19:43:57.255Z",
       "severity": "monitoring",
       "replyCount": 0,
       "repostCount": 0,
@@ -1417,7 +1417,7 @@
       ],
       "embed": null,
       "createdAt": "2026-01-01T09:30:00.000Z",
-      "indexedAt": "2026-09-20T19:32:37.334Z",
+      "indexedAt": "2026-09-30T19:43:57.255Z",
       "severity": "identified",
       "replyCount": 0,
       "repostCount": 0,
@@ -1441,7 +1441,7 @@
       ],
       "embed": null,
       "createdAt": "2026-01-01T09:00:00.000Z",
-      "indexedAt": "2026-09-20T19:32:37.334Z",
+      "indexedAt": "2026-09-30T19:43:57.255Z",
       "severity": "investigating",
       "replyCount": 0,
       "repostCount": 0,
@@ -1452,7 +1452,7 @@
   "settings": {
     "pollIntervalSec": 120,
     "notificationsEnabled": true,
-    "notificationSound": "all",
+    "notificationSound": "urgent",
     "notifyStickyOutages": true,
     "notifySeverities": [
       "outage",
@@ -1477,6 +1477,7 @@
     "notificationsSnoozedUntil": null,
     "notificationShowBody": true,
     "pinnedServices": [],
+    "countedProbeGroups": ["relays", "streams", "appviews", "pdses", "infrastructure"],
     "theme": "system",
     "launchAtLogin": false,
     "trayUnreadStyle": "beat",
@@ -1490,13 +1491,13 @@
     "probeTargets": null
   },
   "unread": [
-    "probe:network/relay:europe.firehose.network/1789923400808",
-    "probe:network/relay:europe.firehose.network/1789921960808",
-    "at://did:plc:njxo6cs5a6jjk4c2z6dhecsc/app.bsky.feed.post/3mvvjmgfwes2n"
+    "probe:network/relay:europe.firehose.network/1790788088190",
+    "probe:network/relay:europe.firehose.network/1790786648190",
+    "at://did:plc:4dtbz2ivhp5app3sbntcccxc/app.bsky.feed.post/3mwormbs23q2f"
   ],
   "sync": {
     "status": "idle",
-    "lastSyncedAt": "2026-09-20T19:32:40.831Z",
+    "lastSyncedAt": "2026-09-30T19:44:08.441Z",
     "error": null
   },
   "webhook": {
@@ -1505,17 +1506,18 @@
     "port": 7385,
     "error": null,
     "deliveries": 3,
-    "lastDeliveryAt": "2026-09-20T19:32:40.831Z"
+    "lastDeliveryAt": "2026-09-30T19:44:08.441Z"
   },
   "network": {
     "health": "operational",
-    "total": 47,
-    "reachable": 47,
+    "total": 52,
+    "reachable": 52,
     "down": [],
     "degraded": [],
-    "community": [],
+    "uncounted": [],
+    "vanished": [],
     "running": false,
-    "lastSweepAt": "2026-09-20T19:32:40.808Z",
+    "lastSweepAt": "2026-09-30T19:44:08.190Z",
     "restraint": null
   },
   "version": "0.1.0-preview",

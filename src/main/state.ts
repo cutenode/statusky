@@ -159,8 +159,17 @@ export function unreadUris(posts: StatusPost[], read: ReadState): string[] {
  * cannot separate two posts stamped the same millisecond, so advancing onto one that
  * an unread post also carries would read that post as a side effect; they stay
  * exceptions instead until every post at that instant has been read.
+ *
+ * And it stops at `now`. A post dated ahead of the clock that has been read stays an
+ * exception rather than carrying its source's cursor past every update still to come,
+ * which would read them all before they had arrived. Once the clock catches up with it,
+ * the next compaction folds it in like any other.
  */
-export function compactRead(read: ReadState, posts: StatusPost[]): ReadState {
+export function compactRead(
+  read: ReadState,
+  posts: StatusPost[],
+  now: number = Date.now()
+): ReadState {
   const above = new Set(read.above)
   const cursors: Cursors = { ...read.cursors }
 
@@ -183,6 +192,8 @@ export function compactRead(read: ReadState, posts: StatusPost[]): ReadState {
 
     for (let i = 0; i < pending.length;) {
       const at = pending[i]!.createdAt
+      // Oldest first, so everything after the first post past `now` is past it too.
+      if (Date.parse(at) > now) break
       let end = i
       while (end < pending.length && pending[end]!.createdAt === at) end++
 
@@ -225,17 +236,26 @@ export function markPostsRead(read: ReadState, uris: string[], posts: StatusPost
  * Sources with no cursor are left alone. Giving one a cursor here would pin the seed to
  * this moment, so an account added later would announce its whole backlog at once — the
  * burst the silent first sync exists to prevent.
+ *
+ * No cursor moves past `now`, for the reason `compactRead` gives: a post dated ahead of
+ * the clock is read as an exception of its own instead.
  */
-export function markAllPostsRead(read: ReadState, posts: StatusPost[]): ReadState {
+export function markAllPostsRead(
+  read: ReadState,
+  posts: StatusPost[],
+  now: number = Date.now()
+): ReadState {
   const cursors: Cursors = { ...read.cursors }
+  const ahead: string[] = []
   for (const post of posts) {
     const current = cursors[post.authorDid]
     if (current === undefined) continue
     const posted = Date.parse(post.createdAt)
     if (Number.isNaN(posted) || posted <= Date.parse(current)) continue
-    cursors[post.authorDid] = post.createdAt
+    if (posted > now) ahead.push(post.uri)
+    else cursors[post.authorDid] = post.createdAt
   }
-  return { cursors, above: [] }
+  return { cursors, above: ahead }
 }
 
 /**
@@ -244,18 +264,42 @@ export function markAllPostsRead(read: ReadState, posts: StatusPost[]): ReadStat
  * The feed is one merged timeline, so "I have read back to here" is a statement about
  * a moment rather than about a source — which is exactly what a cursor per source can
  * express and a list of URIs cannot.
+ *
+ * And because it moves every source's cursor, the moment is never later than `now`.
+ * Posts are dated no later than they arrived when they are read in (see `postedAt` in
+ * src/shared/bsky.ts and `MAX_CLOCK_SKEW_MS` in src/shared/webhook.ts), but one already
+ * in the cache from before that, or one a few minutes ahead inside a status page's skew
+ * allowance, would otherwise read the whole feed into the future: every source's cursor
+ * past every update still to come, so that nothing would ever be unread again. What lies
+ * between `now` and the post itself is still read, as it was asked to be, but one post at
+ * a time in `above` rather than by carrying the cursors there.
  */
-export function markReadThrough(read: ReadState, uri: string, posts: StatusPost[]): ReadState {
+export function markReadThrough(
+  read: ReadState,
+  uri: string,
+  posts: StatusPost[],
+  now: number = Date.now()
+): ReadState {
   const target = posts.find((post) => post.uri === uri)
   if (!target) return read
-  const through = Date.parse(target.createdAt)
-  if (Number.isNaN(through)) return read
+  const posted = Date.parse(target.createdAt)
+  if (Number.isNaN(posted)) return read
+  const through = Math.min(posted, now)
+  const at = through === posted ? target.createdAt : new Date(through).toISOString()
 
   const cursors: Cursors = { ...read.cursors }
-  for (const [did, at] of Object.entries(cursors)) {
-    if (through > Date.parse(at)) cursors[did] = target.createdAt
+  for (const [did, current] of Object.entries(cursors)) {
+    if (through > Date.parse(current)) cursors[did] = at
   }
-  return compactRead({ ...read, cursors }, posts)
+  // Empty unless the cap above bit: nothing can be later than `through` and no later
+  // than `posted` when the two are the same moment.
+  const ahead = posts
+    .filter((post) => {
+      const time = Date.parse(post.createdAt)
+      return time > through && time <= posted
+    })
+    .map((post) => post.uri)
+  return compactRead({ cursors, above: [...read.above, ...ahead] }, posts, now)
 }
 
 /**
@@ -339,6 +383,10 @@ export function sanitizeSettings(settings: Settings): Settings {
     notifySeverities: [...new Set(settings.notifySeverities)],
     notifySources: [...new Set(settings.notifySources)],
     pinnedServices: [...new Set(settings.pinnedServices)],
+    // The control group is never judged, so counting it would mean nothing.
+    countedProbeGroups: [...new Set(settings.countedProbeGroups)].filter(
+      (group) => group !== 'internet'
+    ),
     pollIntervalSec: Math.min(Math.max(Math.round(settings.pollIntervalSec), 15), 3600),
     postsPerAccount: Math.min(Math.max(Math.round(settings.postsPerAccount), 5), 100),
     webhookPort: sanitizePort(settings.webhookPort),

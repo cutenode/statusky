@@ -154,14 +154,35 @@ describe('bootstrap', () => {
 
   // In development electron-vite serves the renderer, so the app:// handler would
   // shadow it — and the dev server's own origin is what the dev wiring validates.
+  // Unpackaged, because a dev server only ever serves an app run from source.
   it('leaves the renderer to the dev server when one is running', async () => {
     process.env.ELECTRON_RENDERER_URL = 'http://localhost:5173'
     try {
-      const { electron } = await boot()
+      const { electron } = await boot({
+        prepare: (e) => {
+          e.app.isPackaged = false
+        }
+      })
 
       expect(electron.protocolHandlers.has('app')).toBe(false)
       expect(electron.BrowserWindow.instances.at(-1)?.loaded).toEqual([
         { url: 'http://localhost:5173' }
+      ])
+    } finally {
+      delete process.env.ELECTRON_RENDERER_URL
+    }
+  })
+
+  // Anything that can set a shipped app's environment could otherwise put a page of its
+  // own in a window that looks exactly like Statusky's. See `devServerUrl`.
+  it('serves app:// in a packaged build even when the environment names a dev server', async () => {
+    process.env.ELECTRON_RENDERER_URL = 'https://attacker.test/'
+    try {
+      const { electron } = await boot()
+
+      expect(electron.protocolHandlers.has('app')).toBe(true)
+      expect(electron.BrowserWindow.instances.at(-1)?.loaded).toEqual([
+        { url: 'app://statusky/index.html' }
       ])
     } finally {
       delete process.env.ELECTRON_RENDERER_URL
@@ -671,12 +692,27 @@ describe('network checks', () => {
     )
   })
 
-  it('run again when the machine wakes', async () => {
-    const { electron } = await boot()
-    await vi.waitFor(() => expect(healthChecks(electron)).toBe(1))
+  // `resume` is every unlock as well as every wake, so a sweep that is still fresh stands.
+  it('run again when the machine wakes, once what they measured has gone stale', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const { electron, api } = await boot()
+      await vi.waitFor(() => expect(healthChecks(electron)).toBe(1))
+      // Long enough for every check in the first sweep to have finished or given up.
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect((await api.State.get()).network.lastSweepAt).not.toBeNull()
 
-    electron.powerMonitor.emit('resume')
-    await vi.waitFor(() => expect(healthChecks(electron)).toBe(2))
+      electron.powerMonitor.emit('resume')
+      await settle()
+      expect(healthChecks(electron)).toBe(1)
+
+      electron.powerMonitor.emit('suspend')
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+      electron.powerMonitor.emit('resume')
+      await vi.waitFor(() => expect(healthChecks(electron)).toBe(2))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('run from the tray menu, and show their dashboard', async () => {

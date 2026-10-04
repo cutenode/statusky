@@ -612,6 +612,43 @@ describe('timestamp fallbacks', () => {
     expect(post?.createdAt).toBe('2026-09-05T00:00:00.000Z')
   })
 
+  // `createdAt` is the author's to write, and a post cannot have been made after the
+  // AppView first saw it: the earlier of the two is the AppView's own `sortAt`.
+  it('dates a post from the future by when the AppView indexed it', () => {
+    const post = normalizePost({
+      ...base,
+      record: { $type: 'app.bsky.feed.post', text: 'Update', createdAt: '2099-01-01T00:00:00Z' }
+    })
+    expect(post?.createdAt).toBe('2026-09-05T00:00:00.000Z')
+    expect(post?.indexedAt).toBe('2026-09-05T00:00:00.000Z')
+  })
+
+  it('keeps a createdAt from before the post was indexed, as a slow clock writes', () => {
+    const post = normalizePost({
+      ...base,
+      record: { $type: 'app.bsky.feed.post', text: 'Update', createdAt: '2026-09-04T23:59:58Z' }
+    })
+    expect(post?.createdAt).toBe('2026-09-04T23:59:58Z')
+  })
+
+  it('keeps a createdAt from the future when there is no index time to hold it to', () => {
+    const post = normalizePost({
+      uri: URI,
+      cid: 'bafy123',
+      author: { did: 'did:plc:aaa', handle: 'status.test' },
+      record: { $type: 'app.bsky.feed.post', text: 'Update', createdAt: '2099-01-01T00:00:00Z' }
+    })
+    expect(post?.createdAt).toBe('2099-01-01T00:00:00Z')
+  })
+
+  it('passes a createdAt that does not parse through, as it always has', () => {
+    const post = normalizePost({
+      ...base,
+      record: { $type: 'app.bsky.feed.post', text: 'Update', createdAt: 'yesterday' }
+    })
+    expect(post?.createdAt).toBe('yesterday')
+  })
+
   it('treats an empty display name as absent', () => {
     const post = normalizePost({
       ...base,

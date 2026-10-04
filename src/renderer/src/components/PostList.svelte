@@ -3,7 +3,7 @@
   import { app } from '$lib/app-state.svelte'
   import { flushSeen } from '$lib/seen.svelte'
   import { cn } from '$lib/utils'
-  import { dayLabel } from '@shared/time'
+  import { groupByDay } from '$lib/days'
   import { sourceLabel } from '@shared/webhook'
   import type { Account, StatusPost } from '@shared/types'
   import type { LucideIcon } from '@lucide/svelte'
@@ -84,16 +84,7 @@
   )
 
   /** Break the list into date sections so long histories stay navigable. */
-  const groups = $derived.by(() => {
-    const out: { label: string; posts: StatusPost[] }[] = []
-    for (const post of filtered) {
-      const label = dayLabel(post.createdAt, now)
-      const last = out.at(-1)
-      if (last?.label === label) last.posts.push(post)
-      else out.push({ label, posts: [post] })
-    }
-    return out
-  })
+  const groups = $derived(groupByDay(filtered, now))
 
   const visibleAccounts = $derived(accounts.filter((a) => !a.muted))
 </script>
@@ -163,14 +154,14 @@
         <EmptyState icon={emptyIcon} title={emptyTitle} description={emptyDescription} />
       {/if}
     {:else}
-      {#each groups as group (group.label)}
+      {#each groups as group (group.key)}
         <div class="sticky top-0 z-10 -mx-2 mb-0.5 px-4 py-1.5 backdrop-blur-md">
           <h2 class="text-[10.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase">
             {group.label}
           </h2>
         </div>
         <div class="mb-1 flex flex-col gap-0.5">
-          {#each group.posts as post (post.uri)}
+          {#each group.items as post (post.uri)}
             <PostCard {post} {now} />
           {/each}
         </div>

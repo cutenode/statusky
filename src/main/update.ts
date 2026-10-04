@@ -308,9 +308,35 @@ export function watchUpdates(deps: UpdateDeps, options: UpdateOptions = {}): Upd
   if (!SELF_UPDATING_PLATFORMS.has(platform)) return pollForReleases(deps, intervalMs)
 
   let fallback: UpdateWatcher | null = null
-  /** Hand over to the release check, once, whatever finally convinces us to. */
+  let updater: { stopUpdates(): void } | null = null
+  /**
+   * Whether Squirrel has a build downloaded and waiting for a restart. Once it has,
+   * nothing the release check finds can take its place: `ready` is the stronger of the
+   * two things this can say — it installs, where `available` only points at a download
+   * page — and a release check that took over afterwards would otherwise trade the
+   * restart entry in the tray for a link to a build that is already on the machine.
+   */
+  let downloaded = false
+  const relay: UpdateDeps = {
+    onAvailable: (version) => {
+      if (!downloaded) deps.onAvailable(version)
+    },
+    onReady: (version) => {
+      downloaded = true
+      deps.onReady(version)
+    }
+  }
+
+  /**
+   * Hand over to the release check, once, whatever finally convinces us to — and take
+   * Squirrel's own schedule down as it does, so that exactly one of the two is ever
+   * running. Left up, it would go on checking every six hours alongside the release
+   * check, and the two would take turns saying different things about the same build.
+   */
   const giveUp = (): void => {
-    fallback ??= pollForReleases(deps, intervalMs)
+    if (fallback) return
+    updater?.stopUpdates()
+    fallback = pollForReleases(relay, intervalMs)
   }
 
   // Alongside the package's own error listener rather than instead of it: it logs, this
@@ -319,7 +345,6 @@ export function watchUpdates(deps: UpdateDeps, options: UpdateOptions = {}): Upd
   // them is the same — stop promising to do it for them and start saying so.
   autoUpdater.on('error', giveUp)
 
-  let updater: { stopUpdates(): void }
   try {
     updater = updateElectronApp({
       // The repository is `package.json`'s `repository` field, read by the package
@@ -344,7 +369,7 @@ export function watchUpdates(deps: UpdateDeps, options: UpdateOptions = {}): Upd
        * live: `stage: 'ready'` puts a restart entry in the tray menu, and it waits there
        * as long as the user likes. See `TrayController.buildMenu`.
        */
-      onNotifyUser: (info) => deps.onReady(downloadedVersion(info))
+      onNotifyUser: (info) => relay.onReady(downloadedVersion(info))
     })
   } catch (error) {
     // `updateElectronApp` validates its options by assertion and reads `package.json`
@@ -358,10 +383,15 @@ export function watchUpdates(deps: UpdateDeps, options: UpdateOptions = {}): Upd
     return { stop: () => fallback?.stop() }
   }
 
+  // Squirrel can refuse before the package has even handed its updater back, and then
+  // `giveUp` had nothing to stop.
+  const started = updater
+  if (fallback) started.stopUpdates()
+
   return {
     stop(): void {
       autoUpdater.removeListener('error', giveUp)
-      updater.stopUpdates()
+      started.stopUpdates()
       fallback?.stop()
     }
   }

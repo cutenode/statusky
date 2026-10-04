@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { app } from '$lib/app-state.svelte'
   import { nav } from '$lib/nav.svelte'
-  import { dayLabel } from '@shared/time'
+  import { groupByDay } from '$lib/days'
   import type { StatusPost } from '@shared/types'
   import CircleCheck from '@lucide/svelte/icons/circle-check'
   import EmptyState from './EmptyState.svelte'
@@ -64,18 +64,6 @@
   const unread = $derived(app.posts.filter((post) => held.has(post.uri) || app.isUnread(post.uri)))
   /** Everything behind you: read before this visit, and read in the strictest sense. */
   const read = $derived(app.posts.filter((post) => !held.has(post.uri) && !app.isUnread(post.uri)))
-
-  /** Break a section into date groups, the same way the other tabs do. */
-  function byDay(posts: StatusPost[]): { label: string; posts: StatusPost[] }[] {
-    const out: { label: string; posts: StatusPost[] }[] = []
-    for (const post of posts) {
-      const label = dayLabel(post.createdAt, now)
-      const last = out.at(-1)
-      if (last?.label === label) last.posts.push(post)
-      else out.push({ label, posts: [post] })
-    }
-    return out
-  }
 </script>
 
 {#snippet heading(title: string, count: number | null, quiet: boolean)}
@@ -108,7 +96,7 @@
 
 {#snippet section(title: string, posts: StatusPost[], count: number | null, quiet: boolean)}
   {@render heading(title, count, quiet)}
-  {#each byDay(posts) as group, index (group.label)}
+  {#each groupByDay(posts, now) as group, index (group.key)}
     <!-- A marker on the thread rather than a bar across it: the date is an aside. -->
     <div class={index === 0 ? 'mb-1 pl-8' : 'mt-2.5 mb-1 pl-8'}>
       <h3 class="text-[10px] font-semibold tracking-[0.11em] text-muted-foreground uppercase">
@@ -119,8 +107,8 @@
          block. The thread breaks by the same two pixels, which at one pixel wide and
          a fading grey is not a thing the eye finds. -->
     <div class="flex flex-col gap-0.5">
-      {#each group.posts as post, row (post.uri)}
-        <TimelineRow {post} {now} dimmed={quiet} last={row === group.posts.length - 1} />
+      {#each group.items as post, row (post.uri)}
+        <TimelineRow {post} {now} dimmed={quiet} last={row === group.items.length - 1} />
       {/each}
     </div>
   {/each}

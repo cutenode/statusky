@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- A local, ad-hoc signed build: the app and every helper inside it.
+         Never a release; forge.config.ts uses entitlements.mac.plist for those. -->
+
+    <!-- The same JIT exception a release build has. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- Library validation admits a library signed by Apple or by the process's
+         own Team ID, and an ad-hoc signature has no Team ID. Under the hardened
+         runtime dyld would refuse Electron Framework itself, and the app would
+         die before reaching the menu bar. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>

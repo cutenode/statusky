@@ -19,7 +19,7 @@ import { nav } from './nav.svelte'
 /**
  * The renderer store is a singleton, so each test re-points it at a fresh bridge
  * and re-runs `init()` — the same sequence the popover performs on load — and is
- * reset afterwards, since `init()` leaves what the last test did to `actionError` alone.
+ * reset afterwards, so one test's state is never the next one's first tick.
  */
 
 let bridge: TestBridge
@@ -80,6 +80,69 @@ describe('init', () => {
     expect(app.posts[0]?.uri).toBe(post.uri)
   })
 
+  /**
+   * Subscribed before asking, and each answer applied as it lands. Asking first and
+   * subscribing once everything had answered lost every push in between.
+   */
+  it('keeps a push that lands while the first state is still on its way', async () => {
+    const answered = makePost({ rkey: 'answered' })
+    const local = installBridge({ posts: [answered] })
+    bridge = local
+    let answerNetwork!: () => void
+    vi.mocked(local.api.Network.get).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerNetwork = () => resolve(makeSnapshot())
+        })
+    )
+    const starting = app.init()
+    await vi.waitFor(() => expect(app.posts).toHaveLength(1))
+
+    // State has answered, the dashboard has not: a sync finishing now is newer than both.
+    const fresh = makePost({ rkey: 'fresh' })
+    local.push({ posts: [fresh] })
+    answerNetwork()
+    stop = await starting
+
+    expect(app.posts.map((post) => post.uri)).toEqual([fresh.uri])
+    expect(app.ready).toBe(true)
+  })
+
+  it('takes the answer over a push that landed before it, which is older', async () => {
+    const local = installBridge({ posts: [makePost({ rkey: 'answered' })] })
+    bridge = local
+    let answer!: () => void
+    const get = vi.mocked(local.api.State.get)
+    const real = get.getMockImplementation()!
+    get.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = () => void real().then(resolve)
+        })
+    )
+    const starting = app.init()
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
+
+    local.push({ posts: [] })
+    expect(app.posts).toEqual([])
+    local.push({ posts: [makePost({ rkey: 'answered' })] })
+    answer()
+    stop = await starting
+
+    expect(app.posts).toHaveLength(1)
+  })
+
+  it('lets go of every subscription, and says why, when the first state cannot be had', async () => {
+    const local = installBridge()
+    bridge = local
+    vi.mocked(local.api.State.get).mockRejectedValueOnce(new Error('The store is locked'))
+
+    await expect(app.init()).rejects.toThrow('The store is locked')
+
+    expect(app.ready).toBe(false)
+    expect([local.listenerCount(), local.pushListenerCount()]).toEqual([0, 0])
+  })
+
   it('returns an unsubscribe that stops further updates', async () => {
     const local = await connect()
     stop?.()
@@ -92,6 +155,26 @@ describe('init', () => {
 })
 
 describe('unread tracking', () => {
+  // Asked of every card in the feed, so worked out once per push rather than per card.
+  it('knows whether anything older than a post is still unread', async () => {
+    const oldest = makePost({ rkey: 'oldest', createdAt: '2026-01-01T09:00:00Z' })
+    const middle = makePost({ rkey: 'middle', createdAt: '2026-01-01T10:00:00Z' })
+    const newest = makePost({ rkey: 'newest', createdAt: '2026-01-01T11:00:00Z' })
+    const undated = makePost({ rkey: 'undated', createdAt: 'whenever' })
+    const local = await connect({
+      posts: [newest, middle, oldest, undated],
+      unread: [middle.uri, undated.uri]
+    })
+
+    expect(app.hasUnreadBelow(newest)).toBe(true)
+    expect(app.hasUnreadBelow(middle)).toBe(false)
+    expect(app.hasUnreadBelow(oldest)).toBe(false)
+    expect(app.hasUnreadBelow(undated)).toBe(false)
+
+    local.push({ unread: [undated.uri] })
+    expect(app.hasUnreadBelow(newest)).toBe(false)
+  })
+
   it('counts unread and answers per-post questions', async () => {
     const read = makePost({ rkey: 'read' })
     const unread = makePost({ rkey: 'unread' })
@@ -294,79 +377,46 @@ describe('actions', () => {
     expect(local.api.Popover.postMenu).toHaveBeenCalledWith('at://x')
     expect(local.api.Host.openExternal).toHaveBeenCalledWith('https://bsky.app')
     expect(local.api.Host.hideWindow).toHaveBeenCalled()
-    expect(app.actionError).toBeNull()
   })
 
-  it('returns the value on success', async () => {
+  it('answers with the value on success', async () => {
     await connect()
-    const account = await app.addAccount('status.example.test')
-    expect(account?.handle).toBe('status.example.test')
-    expect(app.actionError).toBeNull()
+    const outcome = await app.addAccount('status.example.test')
+    expect(outcome.ok && outcome.value.handle).toBe('status.example.test')
   })
 
-  it('surfaces a failed action as an inline error instead of throwing', async () => {
+  // Each answer goes back to whoever asked, to say beside the control that asked. A
+  // line shared by the whole popover put one control's failure under another's.
+  it('answers a failure with the reason, instead of throwing', async () => {
     await connect({ resolveError: 'Profile not found' })
 
-    const account = await app.addAccount('nobody.invalid')
-
-    expect(account).toBeNull()
-    expect(app.actionError).toBe('Profile not found')
+    expect(await app.addAccount('nobody.invalid')).toEqual({
+      ok: false,
+      error: 'Profile not found'
+    })
   })
 
   it('catches a bridge that rejects outright', async () => {
     const local = await connect()
     vi.mocked(local.api.Feed.refresh).mockRejectedValueOnce(new Error('IPC exploded'))
 
-    await app.refresh()
-
-    expect(app.actionError).toBe('IPC exploded')
+    expect(await app.refresh()).toEqual({ ok: false, error: 'IPC exploded' })
   })
 
   it('stringifies a non-Error rejection', async () => {
     const local = await connect()
     vi.mocked(local.api.Feed.markAllRead).mockRejectedValueOnce('just a string')
 
-    await app.markAllRead()
-
-    expect(app.actionError).toBe('just a string')
+    expect(await app.markAllRead()).toEqual({ ok: false, error: 'just a string' })
   })
 
-  it('clears the error on the next action and on request', async () => {
-    const local = await connect({ resolveError: 'Profile not found' })
-    await app.addAccount('nobody.invalid')
-    expect(app.actionError).not.toBeNull()
+  it('hands back what a change came back as', async () => {
+    await connect()
 
-    app.clearError()
-    expect(app.actionError).toBeNull()
+    const outcome = await app.patchSettings({ theme: 'dark' })
 
-    await app.addAccount('nobody.invalid')
-    expect(app.actionError).not.toBeNull()
-
-    vi.mocked(local.api.Feed.refresh).mockResolvedValueOnce(undefined)
-    await app.refresh()
-    expect(app.actionError).toBeNull()
-  })
-
-  it('marks itself busy for the duration of an action', async () => {
-    const local = await connect()
-    let busyDuringCall = false
-    vi.mocked(local.api.Feed.refresh).mockImplementationOnce(async () => {
-      busyDuringCall = app.busy
-    })
-
-    await app.refresh()
-
-    expect(busyDuringCall).toBe(true)
-    expect(app.busy).toBe(false)
-  })
-
-  it('clears busy even when the action fails', async () => {
-    const local = await connect()
-    vi.mocked(local.api.Feed.refresh).mockRejectedValueOnce(new Error('nope'))
-
-    await app.refresh()
-
-    expect(app.busy).toBe(false)
+    expect(outcome.ok && outcome.value.theme).toBe('dark')
+    expect(await app.copyText('x')).toEqual({ ok: true, value: undefined })
   })
 
   it('removing an account works through the bridge', async () => {
@@ -396,16 +446,12 @@ describe('before init', () => {
       version: '1.2.3',
       resolveError: 'Profile not found'
     })
-    await app.addAccount('nobody.invalid')
-    expect(app.actionError).not.toBeNull()
     stop?.()
     stop = null
 
     app.reset()
 
     expect(app.ready).toBe(false)
-    expect(app.busy).toBe(false)
-    expect(app.actionError).toBeNull()
     expect(app.posts).toEqual([])
     expect(app.accounts).toEqual([])
     expect(app.unreadCount).toBe(0)
@@ -451,11 +497,20 @@ describe('the network dashboard', () => {
     expect(local.api.Network.run).toHaveBeenCalledTimes(1)
   })
 
-  it('surfaces a refused sweep as an inline error', async () => {
+  it('answers a refused sweep with the reason', async () => {
     const local = await connect()
     vi.mocked(local.api.Network.run).mockRejectedValueOnce(new Error('Not allowed'))
-    app.runNetworkChecks()
-    await vi.waitFor(() => expect(app.actionError).toBe('Not allowed'))
+    expect(await app.runNetworkChecks()).toEqual({ ok: false, error: 'Not allowed' })
+  })
+
+  // Asked of nobody in particular, so a refusal has nowhere to be said — and must not
+  // escape as an unhandled rejection either.
+  it('lets a refused sweep on opening the popover go quietly', async () => {
+    const local = await connect()
+    vi.mocked(local.api.Network.run).mockRejectedValueOnce(new Error('Not allowed'))
+    app.runNetworkChecksIfStale(0)
+    await Promise.resolve()
+    expect(local.api.Network.run).toHaveBeenCalledTimes(1)
   })
 
   describe('re-checking when the popover opens', () => {
@@ -533,10 +588,10 @@ describe('what only the page is told', () => {
     const local = await connect()
     vi.mocked(local.api.Popover.online).mockRejectedValueOnce(new Error('refused'))
 
-    app.reportOnline(true)
+    expect(() => app.reportOnline(true)).not.toThrow()
     await Promise.resolve()
 
-    expect(app.actionError).toBeNull()
+    expect(local.api.Popover.online).toHaveBeenCalledWith(true)
   })
 
   /**
@@ -565,10 +620,10 @@ describe('what only the page is told', () => {
     const local = await connect()
     vi.mocked(local.api.Popover.reduceMotion).mockRejectedValueOnce(new Error('refused'))
 
-    app.reportReducedMotion(true)
+    expect(() => app.reportReducedMotion(true)).not.toThrow()
     await Promise.resolve()
 
-    expect(app.actionError).toBeNull()
+    expect(local.api.Popover.reduceMotion).toHaveBeenCalledWith(true)
   })
 
   it('shows the Timeline when main asks to catch the user up', async () => {
@@ -681,14 +736,13 @@ describe('check target actions', () => {
     expect(local.api.Accounts.add).not.toHaveBeenCalled()
   })
 
-  it('hands a failure back rather than putting it on actionError', async () => {
+  it('hands a failure back to the field that asked', async () => {
     await connect({ resolveError: 'Profile not found' })
 
     expect(await app.lookUpActor('nobody.invalid')).toEqual({
       ok: false,
       error: 'Profile not found'
     })
-    expect(app.actionError).toBeNull()
   })
 
   it('replaces the targets, and goes back to the defaults with null', async () => {

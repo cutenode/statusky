@@ -10,7 +10,9 @@ import type { Component, MountOptions } from 'svelte'
 import { afterEach } from 'vitest'
 import { installBridge, type BridgeOptions, type TestBridge } from '../../../test/bridge'
 import { app } from '$lib/app-state.svelte'
+import { motion } from '$lib/motion.svelte'
 import { nav } from '$lib/nav.svelte'
+import { targetsDraft } from '$lib/probe-targets-draft.svelte'
 import Providers from './Providers.svelte'
 
 type BoundQueries = { [P in keyof typeof queries]: BoundFunction<(typeof queries)[P]> }
@@ -80,7 +82,14 @@ export async function renderApp(
   const bridge = installBridge(options)
   active = bridge
   const result = render(Component)
-  await act()
+  // The first state takes a few turns of the microtask queue to arrive — one per answer,
+  // since each is applied as it lands — so wait those out, but no longer: a test that
+  // holds the first state back, or fails it, has to see the popover still waiting.
+  for (let turn = 0; turn < 5 && !app.ready; turn++) {
+    // One at a time on purpose: each turn is what lets the next answer land.
+    // oxlint-disable-next-line no-await-in-loop
+    await act()
+  }
   return { bridge, ...result }
 }
 
@@ -155,6 +164,10 @@ function teardown(): void {
   // loaded, on the feed, rather than reading the last test's state for a tick.
   app.reset()
   nav.reset()
+  // Likewise the check targets editor's working copy, which outlives any one panel, and
+  // the motion preference, which only `App` keeps current.
+  targetsDraft.reset()
+  motion.reduced = false
 }
 
 afterEach(teardown)

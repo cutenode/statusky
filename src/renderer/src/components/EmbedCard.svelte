@@ -46,14 +46,22 @@
     </span>
   </button>
 {:else if embed.kind === 'images'}
+  {@const shown = embed.images.slice(0, 4)}
   <div
     class="mt-2 grid gap-1 overflow-hidden rounded-lg"
     class:grid-cols-2={embed.images.length > 1}
   >
-    {#each embed.images.slice(0, 4) as image (image.fullsize)}
+    <!--
+      Keyed by position, not by URL: the same picture attached twice is the same blob,
+      so the same URL, and a repeated key would throw and take the feed down with it.
+      An image with no alt text still needs a name for its button, so it is counted.
+    -->
+    {#each shown as image, index (index)}
       <button
         type="button"
         class="overflow-hidden rounded-md border border-border/60"
+        aria-label={image.alt ? undefined : `Image ${index + 1} of ${shown.length}`}
+        title="Open the full-size image"
         onclick={(e) => {
           e.stopPropagation()
           app.openExternal(image.fullsize)

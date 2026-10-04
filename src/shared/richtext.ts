@@ -37,11 +37,36 @@ function nonEmpty(value: unknown): string | null {
   return typeof value === 'string' && value ? value : null
 }
 
+/**
+ * The one rule for which links this app will act on: an absolute http or https URL,
+ * normalised, or null for anything else.
+ *
+ * A link in a post is whatever its author typed, and the OS will hand any scheme it has a
+ * handler for to that handler — `smb:` mounts a share, `search-ms:` opens Explorer on a
+ * remote folder, and every installed app's own scheme is one more way in. Nothing a
+ * status update links to is anything but a web page, so a post's links are held to this
+ * when they are read, a pushed update's links are held to it in src/shared/webhook.ts,
+ * and everything main opens in a browser is held to it again on the way out, in
+ * src/main/external.ts. Three places, one rule.
+ */
+export function safeHttpUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value) return null
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
 function featureToSegment(feature: unknown, text: string): RichSegment | null {
   if (!isObject(feature)) return null
   switch (feature.$type) {
     case 'app.bsky.richtext.facet#link': {
-      const uri = nonEmpty(feature.uri)
+      // A link to anywhere but the web keeps its words and loses only the link, the same
+      // as a facet that is malformed. See `safeHttpUrl`.
+      const uri = safeHttpUrl(feature.uri)
       return uri ? { kind: 'link', text, uri } : null
     }
     case 'app.bsky.richtext.facet#mention': {
@@ -64,7 +89,8 @@ function featureToSegment(feature: unknown, text: string): RichSegment | null {
  * facet are dropped and their text is emitted as plain text — the AppView does not
  * guarantee well-formed facets, and a bad one should never lose us the post body. That
  * goes for their shape as well as their numbers: `facets` is whatever the record said,
- * so a `null` in the list or a `uri` that is not a string is dropped like any other.
+ * so a `null` in the list or a `uri` that is not a string is dropped like any other —
+ * and so is a `uri` that is a string but not a web address, see `safeHttpUrl`.
  */
 export function segmentRichText(text: string, facets: unknown): RichSegment[] {
   const bytes = encoder.encode(text)

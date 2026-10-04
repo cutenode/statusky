@@ -40,7 +40,8 @@ const EMPTY: AppState = {
     reachable: 0,
     down: [],
     degraded: [],
-    community: [],
+    uncounted: [],
+    vanished: [],
     running: false,
     lastSweepAt: null,
     restraint: null
@@ -60,6 +61,7 @@ const EMPTY_SNAPSHOT: NetworkSnapshot = {
   finishedAt: null,
   offline: false,
   restraint: null,
+  vanished: [],
   services: []
 }
 
@@ -67,11 +69,19 @@ const EMPTY_SNAPSHOT: NetworkSnapshot = {
  * The renderer's single source of truth. The main process pushes whole `AppState`
  * snapshots; every mutation here is a request that comes back as another snapshot,
  * so the UI can never drift from what is actually persisted.
+ *
+ * Each request answers with an `Outcome` rather than throwing or leaving a sentence
+ * somewhere shared: a refusal belongs beside the control that asked, and one shared
+ * error line ended up saying a failed settings change under the Accounts tab's add
+ * field, and was wiped by whatever ran next.
  */
 class AppStore {
-  #state = $state<AppState>(EMPTY)
+  // Raw, because both are only ever replaced whole by a push, never edited in place: a
+  // deep proxy would wrap five hundred posts on every push, and turn every read of one
+  // into a dependency of whatever read it.
+  #state = $state.raw<AppState>(EMPTY)
   /** The network dashboard, which arrives on its own channel. */
-  #snapshot = $state<NetworkSnapshot>(EMPTY_SNAPSHOT)
+  #snapshot = $state.raw<NetworkSnapshot>(EMPTY_SNAPSHOT)
   /**
    * Which platform this is running on, as main reports it.
    *
@@ -84,9 +94,6 @@ class AppStore {
    */
   #platform = $state<Platform>('darwin')
   #ready = $state(false)
-  #busy = $state(false)
-  /** Non-fatal errors from the last user action, shown inline. */
-  #actionError = $state<string | null>(null)
 
   get accounts(): Account[] {
     return this.#state.accounts
@@ -152,12 +159,6 @@ class AppStore {
   }
   get ready(): boolean {
     return this.#ready
-  }
-  get busy(): boolean {
-    return this.#busy
-  }
-  get actionError(): string | null {
-    return this.#actionError
   }
 
   #unreadSet = $derived(new Set(this.#state.unread))
@@ -238,14 +239,28 @@ class AppStore {
   }
 
   /**
+   * When the oldest unread post was written, or `Infinity` when nothing is unread.
+   *
+   * Worked out once per push, so asking `hasUnreadBelow` of every card in the feed is a
+   * comparison each rather than another walk of the whole feed each. An undated post is
+   * older than nothing, and so never the oldest.
+   */
+  #oldestUnreadAt = $derived.by(() => {
+    let oldest = Infinity
+    for (const post of this.#state.posts) {
+      if (!this.#unreadSet.has(post.uri)) continue
+      const at = Date.parse(post.createdAt)
+      if (at < oldest) oldest = at
+    }
+    return oldest
+  })
+
+  /**
    * Whether anything older than this post is still unread, which is what makes
    * "mark read to here" worth offering on it rather than on every post in the feed.
    */
   hasUnreadBelow(post: StatusPost): boolean {
-    const through = Date.parse(post.createdAt)
-    return this.#state.posts.some(
-      (other) => this.#unreadSet.has(other.uri) && Date.parse(other.createdAt) < through
-    )
+    return Date.parse(post.createdAt) > this.#oldestUnreadAt
   }
 
   unreadByAccount = $derived.by(() => {
@@ -270,21 +285,22 @@ class AppStore {
     this.#snapshot = EMPTY_SNAPSHOT
     this.#platform = 'darwin'
     this.#ready = false
-    this.#busy = false
-    this.#actionError = null
   }
 
+  /**
+   * Load the first state and follow every push after it.
+   *
+   * Subscribed before asking, and each answer applied the moment it lands. A push that
+   * arrives before an answer was sent before it, so the answer is the newer of the two
+   * and replaces it; one that arrives after is newer still and replaces the answer. The
+   * other way round — asking first and subscribing once all three had answered — lost
+   * every push in between, and a first sync finishing in that gap stayed off screen
+   * until something else changed.
+   *
+   * A failure unsubscribes again and rejects, for `App` to say so and offer another go.
+   */
   async init(): Promise<() => void> {
     const { State, Network, Popover, Host } = bridge()
-    const [state, snapshot, platform] = await Promise.all([
-      State.get(),
-      Network.get(),
-      Host.getPlatform()
-    ])
-    this.#state = state
-    this.#snapshot = snapshot
-    this.#platform = platform
-    this.#ready = true
     const stops = [
       State.onChanged((next) => {
         this.#state = next
@@ -298,37 +314,37 @@ class AppStore {
       // raised for everything that happened while nobody was at the machine was clicked.
       Popover.onCatchUp(() => nav.open('timeline'))
     ]
-    return () => {
-      for (const stop of stops) stop()
+    const stop = (): void => {
+      for (const unsubscribe of stops) unsubscribe()
     }
-  }
-
-  /**
-   * Run an IPC call, surfacing failures as `actionError` rather than throwing.
-   * Main reports problems by throwing, and the generated client turns that into a
-   * rejection, so every user-visible failure arrives here.
-   */
-  async #run<T>(fn: () => Promise<T>): Promise<T | null> {
-    this.#busy = true
-    this.#actionError = null
     try {
-      return await fn()
+      await Promise.all([
+        State.get().then((state) => {
+          this.#state = state
+        }),
+        Network.get().then((snapshot) => {
+          this.#snapshot = snapshot
+        }),
+        Host.getPlatform().then((platform) => {
+          this.#platform = platform
+        })
+      ])
     } catch (error) {
-      this.#actionError = ipcErrorMessage(error)
-      return null
-    } finally {
-      this.#busy = false
+      stop()
+      throw error
     }
+    this.#ready = true
+    return stop
   }
 
   /**
-   * Run an IPC call for a control that reports its own failures.
+   * Run an IPC call, and hand back what it answered or why it failed.
    *
-   * `#run` puts a failure on `actionError`, which the Accounts tab shows under its add
-   * field. That is right for what that tab does and wrong for the check targets editor
-   * in Settings, whose lookups and file dialogs fail beside the field or button that
-   * asked — and would otherwise leave the same sentence waiting in another tab. This
-   * hands the reason back instead, and leaves `actionError` and `busy` alone.
+   * Main reports problems by throwing, and the generated client turns that into a
+   * rejection, so every refusal arrives here — and goes back to whoever asked, to say
+   * beside the control that asked. A call made in the background, where there is no
+   * control to say it beside, can leave the outcome alone: the next push puts what is
+   * true on screen whether or not the call got through.
    */
   async #ask<T>(fn: () => Promise<T>): Promise<Outcome<T>> {
     try {
@@ -338,28 +354,24 @@ class AppStore {
     }
   }
 
-  clearError(): void {
-    this.#actionError = null
+  refresh(): Promise<Outcome<void>> {
+    return this.#ask(() => bridge().Feed.refresh())
   }
 
-  refresh(): Promise<void | null> {
-    return this.#run(() => bridge().Feed.refresh())
+  addAccount(input: string): Promise<Outcome<Account>> {
+    return this.#ask(() => bridge().Accounts.add(input))
   }
 
-  addAccount(input: string): Promise<Account | null> {
-    return this.#run(() => bridge().Accounts.add(input))
+  removeAccount(did: string): Promise<Outcome<void>> {
+    return this.#ask(() => bridge().Accounts.remove(did))
   }
 
-  removeAccount(did: string): Promise<void | null> {
-    return this.#run(() => bridge().Accounts.remove(did))
+  patchAccount(did: string, patch: AccountPatch): Promise<Outcome<Account>> {
+    return this.#ask(() => bridge().Accounts.patch(did, patch))
   }
 
-  patchAccount(did: string, patch: AccountPatch): Promise<Account | null> {
-    return this.#run(() => bridge().Accounts.patch(did, patch))
-  }
-
-  patchSettings(patch: Partial<Settings>): Promise<Settings | null> {
-    return this.#run(() => bridge().Preferences.patch(patch))
+  patchSettings(patch: Partial<Settings>): Promise<Outcome<Settings>> {
+    return this.#ask(() => bridge().Preferences.patch(patch))
   }
 
   /** Both halves of an account's identity from either one, without tracking it. */
@@ -387,50 +399,51 @@ class AppStore {
     return this.#ask(() => bridge().ProbeTargetsFile.open())
   }
 
-  markRead(uris: string[]): Promise<void | null> {
-    return this.#run(() => bridge().Feed.markRead(uris))
+  markRead(uris: string[]): Promise<Outcome<void>> {
+    return this.#ask(() => bridge().Feed.markRead(uris))
   }
 
   /** Mark one post, and everything older than it across every source, read. */
-  markReadThrough(uri: string): Promise<void | null> {
-    return this.#run(() => bridge().Feed.markReadThrough(uri))
+  markReadThrough(uri: string): Promise<Outcome<void>> {
+    return this.#ask(() => bridge().Feed.markReadThrough(uri))
   }
 
-  markAllRead(): Promise<void | null> {
-    return this.#run(() => bridge().Feed.markAllRead())
+  markAllRead(): Promise<Outcome<void>> {
+    return this.#ask(() => bridge().Feed.markAllRead())
   }
 
-  testNotification(): Promise<void | null> {
-    return this.#run(() => bridge().Host.sendTestNotification())
+  testNotification(): Promise<Outcome<void>> {
+    return this.#ask(() => bridge().Host.sendTestNotification())
   }
 
-  regenerateWebhookSecret(): Promise<WebhookStatus | null> {
-    return this.#run(() => bridge().Webhook.regenerateSecret())
+  regenerateWebhookSecret(): Promise<Outcome<WebhookStatus>> {
+    return this.#ask(() => bridge().Webhook.regenerateSecret())
   }
 
   /** Copy through main: the popover's own clipboard access dies with its focus. */
-  copyText(text: string): Promise<void | null> {
-    return this.#run(() => bridge().Host.copyText(text))
+  copyText(text: string): Promise<Outcome<void>> {
+    return this.#ask(() => bridge().Host.copyText(text))
   }
 
   /**
-   * Sweep the network now. Not routed through `#run`: a sweep takes seconds, and the
-   * dashboard shows its own progress rather than holding the whole UI busy.
+   * Sweep the network now. It answers once the sweep has started, not finished: a sweep
+   * takes seconds, and the dashboard shows its own progress as it goes.
    */
-  runNetworkChecks(): void {
-    void bridge()
-      .Network.run()
-      .catch((error: unknown) => {
-        this.#actionError = ipcErrorMessage(error)
-      })
+  runNetworkChecks(): Promise<Outcome<void>> {
+    return this.#ask(() => bridge().Network.run())
   }
 
-  /** Sweep only if the last one is older than `maxAgeMs` and none is running. */
+  /**
+   * Sweep only if the last one is older than `maxAgeMs` and none is running.
+   *
+   * Asked of nobody in particular — the popover coming to the front — so a refusal has
+   * no control to be said beside, and the dashboard's own age line says the rest.
+   */
   runNetworkChecksIfStale(maxAgeMs: number, now = Date.now()): void {
     const { running, finishedAt } = this.#snapshot
     if (!this.#state.settings.networkChecks || running) return
     if (finishedAt && now - Date.parse(finishedAt) < maxAgeMs) return
-    this.runNetworkChecks()
+    void this.runNetworkChecks()
   }
 
   /**
@@ -467,12 +480,12 @@ class AppStore {
    *
    * Only the URI is sent. Main builds every label from the state it already owns, which
    * is what keeps a context menu from being a way for the page to put words of its own
-   * in front of somebody. Routed through `#run` like any other action, so the one thing
-   * that can go wrong — the update having left the feed between the click and the call —
-   * arrives as a sentence rather than an unhandled rejection.
+   * in front of somebody. The one thing that can go wrong — the update having left the
+   * feed between the click and the call — arrives as an outcome rather than an
+   * unhandled rejection, and there is nothing to say about it: the card has gone too.
    */
-  showPostMenu(uri: string): Promise<void | null> {
-    return this.#run(() => bridge().Popover.postMenu(uri))
+  showPostMenu(uri: string): Promise<Outcome<void>> {
+    return this.#ask(() => bridge().Popover.postMenu(uri))
   }
 
   openExternal(url: string): void {

@@ -158,6 +158,27 @@ describe('validateProbeTargets', () => {
     expect(validateProbeTargets(edited({ tangled: extra })).ok).toBe(true)
   })
 
+  // Each of these resolves, against tangled.org, to a URL on the host it names instead.
+  it.each([
+    ['another host', '//127.0.0.1:631/x?go-get=1'],
+    ['another host behind a backslash', '/\\evil.example/x?go-get=1'],
+    ['a backslash anywhere', '/core\\x?go-get=1'],
+    ['a backslash in the query', '/core?x=\\y&go-get=1']
+  ])('refuses a go-get path that leads to %s', (_name, path) => {
+    const tangled = { ...DEFAULT_PROBE_TARGETS.tangled, goGetPath: path }
+    expect(problems(edited({ tangled }))['tangled.goGetPath']).toMatch(/go-get=1/)
+  })
+
+  it('wants a pckt publication to be a standard.site publication', () => {
+    const apps = {
+      ...DEFAULT_PROBE_TARGETS.apps,
+      pckt: { publication: 'at://did:plc:a/app.bsky.feed.post/3abc' }
+    }
+    expect(problems(edited({ apps }))['apps.pckt.publication']).toMatch(
+      /site\.standard\.publication/
+    )
+  })
+
   it('wants an Offprint publication to be a standard.site publication', () => {
     const apps = {
       ...DEFAULT_PROBE_TARGETS.apps,
@@ -198,6 +219,31 @@ describe('validateProbeTargets', () => {
     expect(validateProbeTargets(edited({ feeds: [] })).ok).toBe(true)
   })
 
+  it('takes PDS hosts, trimmed and lower-cased, and flags a repeat where it repeats', () => {
+    const result = validateProbeTargets(edited({ pdses: ['  PDS.Example.com ', 'other.test'] }))
+    expect(result.ok && result.targets.pdses).toEqual(['pds.example.com', 'other.test'])
+    expect(problems(edited({ pdses: ['pds.test', 'PDS.test'] }))).toEqual({
+      'pdses.1': 'Same host as entry 1'
+    })
+    expect(problems(edited({ pdses: ['https://pds.test'] }))).toEqual({
+      'pdses.0': 'Must be a domain name, such as example.com'
+    })
+  })
+
+  // Saved and exported before the list existed, and still a perfectly good document.
+  it('takes a document with no PDS list as one with an empty list', () => {
+    const { pdses: _, ...older } = edited()
+    const result = validateProbeTargets(older)
+    expect(result.ok && result.targets.pdses).toEqual([])
+  })
+
+  // Saved and exported before pckt had a target, and so kept rather than dropped.
+  it('takes a document with no pckt publication as one with the default', () => {
+    const { pckt: _, ...apps } = structuredClone(DEFAULT_PROBE_TARGETS.apps)
+    const result = validateProbeTargets({ ...edited(), apps })
+    expect(result.ok && result.targets.apps.pckt).toEqual(DEFAULT_PROBE_TARGETS.apps.pckt)
+  })
+
   it.each([
     ['accounts', (n: number) => ({ did: `did:plc:a${n}`, handle: `a${n}.test` })],
     [
@@ -208,6 +254,7 @@ describe('validateProbeTargets', () => {
         uri: `at://did:plc:a/app.bsky.feed.generator/f${n}`
       })
     ],
+    ['pdses', (n: number) => `pds${n}.test`],
     ['cdnImages', (n: number) => ({ did: `did:plc:a${n}`, cid: `bafkrei${'a'.repeat(52)}` })]
   ] as const)('caps %s, since every one is traffic to somebody else', (key, make) => {
     const limit = PROBE_TARGET_LIMITS[key]

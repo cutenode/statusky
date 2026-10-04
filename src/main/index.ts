@@ -24,7 +24,7 @@ import { handleSquirrelEvent } from './squirrel'
 import { createStore } from './store'
 import { TrayController } from './tray'
 import { watchUpdates } from './update'
-import { followDisplayChanges, PopoverWindow } from './window'
+import { devServerUrl, followDisplayChanges, PopoverWindow } from './window'
 
 /**
  * The network checks go through Chromium's network stack rather than Node's, so they
@@ -134,8 +134,9 @@ async function bootstrap(): Promise<void> {
   await app.whenReady()
 
   // The packaged renderer is served over app://statusky so that the IPC layer has a
-  // real origin to validate against. In development electron-vite's server does it.
-  if (!process.env.ELECTRON_RENDERER_URL) {
+  // real origin to validate against. In development electron-vite's server does it —
+  // and only in development, whatever the environment says; see `devServerUrl`.
+  if (!devServerUrl()) {
     serveRenderer(join(import.meta.dirname, '../renderer'))
   }
 
@@ -378,9 +379,12 @@ async function bootstrap(): Promise<void> {
     resume: () => {
       model.resume()
       // A machine coming back has a stale feed and stale measurements. If the Wi-Fi is
-      // not back yet, the checks notice they are offline and retry until it is.
+      // not back yet, the checks notice they are offline and retry until it is. This runs
+      // on every unlock as well as every wake, so the sweep is only a catch-up — refused
+      // under thermal pressure, held to the battery's interval, and skipped while the
+      // last one is still fresh. See `NetworkMonitor.catchUp`.
       void model.refresh()
-      void model.runNetworkChecks()
+      model.catchUpNetwork()
     },
     restrain: (restraint) => model.restrainNetwork(restraint),
     returned: () => notifier.release(),

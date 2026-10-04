@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   isWebhookSource,
+  MAX_CLOCK_SKEW_MS,
   parseWebhookDelivery,
-  safeHttpUrl,
   segmentWebhookBody,
   sourceLabel,
   webhookAccount,
@@ -619,6 +619,12 @@ describe('rendering an update body', () => {
     ])
   })
 
+  it('does not mistake what every object inherits for an entity', () => {
+    expect(segmentWebhookBody('&constructor; &toString; &__proto__;')).toEqual([
+      { kind: 'text', text: '&constructor; &toString; &__proto__;' }
+    ])
+  })
+
   it('produces nothing at all for an empty body', () => {
     expect(segmentWebhookBody('')).toEqual([])
     expect(segmentWebhookBody('<p></p>')).toEqual([])
@@ -655,13 +661,15 @@ describe('rendering an update body', () => {
 })
 
 describe('refusing to trust the payload', () => {
-  it('only accepts http and https URLs', () => {
-    expect(safeHttpUrl('https://ok.test/x')).toBe('https://ok.test/x')
-    expect(safeHttpUrl('http://ok.test/x')).toBe('http://ok.test/x')
-    expect(safeHttpUrl('file:///etc/passwd')).toBeNull()
-    expect(safeHttpUrl('not a url')).toBeNull()
-    expect(safeHttpUrl('')).toBeNull()
-    expect(safeHttpUrl(42)).toBeNull()
+  it('keeps only http and https links to the page and the incident', () => {
+    const { source, posts } = delivery({
+      page: { ...PAGE, url: 'https://status.bsky.app' },
+      incident: incident({ url: 'smb://attacker.test/share' })
+    })
+
+    expect(source.url).toBe('https://status.bsky.app/')
+    // The incident's own link is refused, so the entry falls back to the page's.
+    expect(posts[0]!.url).toBe('https://status.bsky.app/')
   })
 
   it('caps how many updates one delivery can turn into posts', () => {
@@ -710,5 +718,79 @@ describe('refusing to trust the payload', () => {
     expect(posts[0]!.uri).toBe('webhook:pg/incident/Broken/u1')
     expect(posts[0]!.text).toBe('Broken')
     expect(posts[0]!.url).toBe('')
+  })
+})
+
+/**
+ * The sender picks every timestamp in a delivery. Within a few minutes of its arrival a
+ * date is two clocks disagreeing and is kept; past that it is a date nobody can vouch
+ * for, and the update is dated when it arrived. See `MAX_CLOCK_SKEW_MS`.
+ */
+/** An epoch time as the ISO string a delivery would carry. */
+function at(ms: number): string {
+  return new Date(ms).toISOString()
+}
+
+describe('timestamps from the future', () => {
+  const arrived = Date.parse(RECEIVED)
+
+  it('keeps an update dated a little after it arrived, as clocks disagree', () => {
+    const ahead = at(arrived + MAX_CLOCK_SKEW_MS)
+    const { posts } = delivery({
+      page: PAGE,
+      incident: incident({
+        incident_updates: [{ id: 'u1', status: 'MONITORING', created_at: ahead, body: 'x' }]
+      })
+    })
+
+    expect(posts[0]!.createdAt).toBe(ahead)
+  })
+
+  it('dates an update from further ahead than that when it arrived', () => {
+    const { posts } = delivery({
+      page: PAGE,
+      incident: incident({
+        incident_updates: [
+          { id: 'u2', status: 'MONITORING', created_at: '2099-01-01T00:00:00.000Z', body: 'x' },
+          { id: 'u1', status: 'INVESTIGATING', created_at: at(arrived + MAX_CLOCK_SKEW_MS + 1) }
+        ]
+      })
+    })
+
+    expect(posts.map((post) => post.createdAt)).toEqual([RECEIVED, RECEIVED])
+  })
+
+  it('holds an epoch timestamp to the same rule as an ISO one', () => {
+    const { posts } = delivery({
+      page: PAGE,
+      incident: incident({
+        incident_updates: [{ id: 'u1', status: 'RESOLVED', created_at: 4_102_444_800_000 }]
+      })
+    })
+
+    expect(posts[0]!.createdAt).toBe(RECEIVED)
+  })
+
+  it('dates an incident with no update list from the future when it arrived', () => {
+    const { posts } = delivery({
+      page: PAGE,
+      incident: incident({
+        created_at: '2099-01-01T00:00:00.000Z',
+        updated_at: '2099-01-02T00:00:00.000Z'
+      })
+    })
+
+    expect(posts[0]!.createdAt).toBe(RECEIVED)
+  })
+
+  it('dates a component change from the future when it arrived', () => {
+    const { posts } = delivery({
+      page: PAGE,
+      component: { id: 'cmp_1', name: 'AppView' },
+      component_update: { new_status: 'MAJOROUTAGE', created_at: '2099-01-01T00:00:00.000Z' }
+    })
+
+    expect(posts[0]!.createdAt).toBe(RECEIVED)
+    expect(posts[0]!.uri).toBe(`webhook:pg_bsky/component/cmp_1/${RECEIVED}`)
   })
 })

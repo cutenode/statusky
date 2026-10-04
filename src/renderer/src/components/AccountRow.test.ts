@@ -1,11 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fireEvent } from '@testing-library/svelte'
 import { HEALTH_LABEL } from '@shared/status'
 import { nav } from '$lib/nav.svelte'
 import { probeAccount } from '@shared/network'
 import { makeAccount, makeNetworkSummary, makePost } from '../../../test/factories'
 import { NOTIFY_LEVEL_CHOICES } from '@shared/notify'
-import { chooseOption, openSelect, renderWith } from '../test/render'
+import { chooseOption, openSelect, renderWith, settle } from '../test/render'
 import AccountRow from './AccountRow.svelte'
 
 const account = makeAccount({
@@ -223,6 +223,49 @@ describe('the controls', () => {
     expect(queryByLabelText('Stop tracking')).toBeNull()
     // ...but it can still be hidden.
     expect(queryByLabelText('Hide from feed')).not.toBeNull()
+  })
+})
+
+/**
+ * What used to land under the add field at the top of the tab, a long way from the row
+ * that asked — and stay there until something else ran.
+ */
+describe('a request main refuses', () => {
+  it('is said under the row that asked', async () => {
+    const { bridge, getByLabelText, getByRole } = await renderWith(
+      AccountRow,
+      { account },
+      { accounts: [account] }
+    )
+    vi.mocked(bridge.api.Accounts.remove).mockRejectedValueOnce(
+      new Error('That account is not being tracked.')
+    )
+
+    await fireEvent.click(getByLabelText('Stop tracking'))
+    await settle()
+
+    expect(getByRole('alert').textContent).toContain('That account is not being tracked.')
+  })
+
+  it('leaves the level as it was, and stops being said once a request goes through', async () => {
+    const { bridge, getByLabelText, getByRole, queryByRole } = await renderWith(
+      AccountRow,
+      { account },
+      { accounts: [account] }
+    )
+    vi.mocked(bridge.api.Accounts.patch).mockRejectedValueOnce(new Error('Not now'))
+    const trigger = getByLabelText('Notifications for @status.bsky.app')
+    const before = trigger.textContent
+
+    await chooseOption(trigger, 'Outages only')
+    await settle()
+
+    expect(getByRole('alert').textContent).toContain('Not now')
+    expect(trigger.textContent).toBe(before)
+
+    await fireEvent.click(getByLabelText('Hide from feed'))
+    await settle()
+    expect(queryByRole('alert')).toBeNull()
   })
 })
 

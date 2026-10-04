@@ -5,6 +5,7 @@
   import { Separator } from '$lib/components/ui/separator'
   import { Switch } from '$lib/components/ui/switch'
   import { app } from '$lib/app-state.svelte'
+  import { PendingList, Refusals } from '$lib/requests.svelte'
   import { SEVERITY_STYLE } from '$lib/severity'
   import { cn } from '$lib/utils'
   import { isControl, servicesFor } from '@shared/network'
@@ -34,12 +35,19 @@
   } from '@shared/types'
   import BellRing from '@lucide/svelte/icons/bell'
   import type { Snippet } from 'svelte'
+  import Refused from './Refused.svelte'
 
   /** Reads the snooze against. Optional so the panel stands alone in tests. */
   let { now = Date.now() }: { now?: number } = $props()
 
   const settings = $derived(app.settings)
   const off = $derived(!settings.notificationsEnabled)
+
+  // The three lists toggled an entry at a time, each built on — and drawn from — the last
+  // unanswered click, so two quick ones both land.
+  const severities = new PendingList(() => settings.notifySeverities)
+  const sources = new PendingList(() => settings.notifySources)
+  const pins = new PendingList(() => settings.pinnedServices)
 
   const sound = $derived(
     SOUND_CHOICES.find((c) => c.value === settings.notificationSound) ?? SOUND_CHOICES[1]!
@@ -55,7 +63,7 @@
     GRACE_CHOICES.find((c) => c.value === settings.notifyProbeGraceSec)?.label ??
       `${Math.round(settings.notifyProbeGraceSec / 60)} minutes`
   )
-  const preset = $derived(presetOf(settings.notifySeverities))
+  const preset = $derived(presetOf(severities.current))
   const pausedUntil = $derived(snoozedUntil(settings, new Date(now)))
   const probesOn = $derived(settings.notifySources.includes('probe'))
 
@@ -76,41 +84,74 @@
     { kind: 'probe', title: 'Network checks', hint: 'Outages measured from this computer.' }
   ]
 
-  function patch(next: Partial<Settings>): void {
-    void app.patchSettings(next)
+  /** Why main refused what each control last asked for, said under that control. */
+  const refusals = new Refusals()
+
+  /** Change a setting for one control, and say beside it if main refuses. */
+  function patch(key: string, next: Partial<Settings>): Promise<unknown> {
+    return refusals.track(key, app.patchSettings(next))
   }
 
   function toggleSeverity(severity: Severity): void {
-    const chosen = new Set(settings.notifySeverities)
+    const chosen = new Set(severities.current)
     if (chosen.has(severity)) chosen.delete(severity)
     else chosen.add(severity)
     // Stored in display order, so the list reads the same way the chips do.
-    patch({ notifySeverities: SEVERITY_ORDER.filter((s) => chosen.has(s)) })
+    const next = SEVERITY_ORDER.filter((s) => chosen.has(s))
+    void refusals.track(
+      'severities',
+      severities.send(next, (list) => app.patchSettings({ notifySeverities: list }))
+    )
+  }
+
+  /** A preset replaces the list whole, and the chips build on it from there. */
+  function choosePreset(next: Severity[]): void {
+    void refusals.track(
+      'severities',
+      severities.send(next, (list) => app.patchSettings({ notifySeverities: list }))
+    )
   }
 
   function toggleSource(kind: SourceKind, on: boolean): void {
-    const chosen = new Set(settings.notifySources)
+    const chosen = new Set(sources.current)
     if (on) chosen.add(kind)
     else chosen.delete(kind)
-    patch({ notifySources: SOURCE_ROWS.map((row) => row.kind).filter((k) => chosen.has(k)) })
+    const next = SOURCE_ROWS.map((row) => row.kind).filter((k) => chosen.has(k))
+    void refusals.track(
+      kind,
+      sources.send(next, (list) => app.patchSettings({ notifySources: list }))
+    )
   }
 
   function togglePin(id: string): void {
-    const pinned = settings.pinnedServices
-    patch({
-      pinnedServices: pinned.includes(id) ? pinned.filter((p) => p !== id) : [...pinned, id]
-    })
+    const before = pins.current
+    const next = before.includes(id) ? before.filter((p) => p !== id) : [...before, id]
+    void refusals.track(
+      'pins',
+      pins.send(next, (list) => app.patchSettings({ pinnedServices: list }))
+    )
   }
 
   function snooze(choice: SnoozeChoice): void {
-    patch({
+    void patch('pause', {
       notificationsSnoozedUntil: snoozeEnd(choice, settings, new Date()).toISOString()
     })
   }
 
-  /** A time input reports an empty string while half-typed; only store whole times. */
-  function setClock(key: 'quietHoursStart' | 'quietHoursEnd', value: string): void {
-    if (/^\d{2}:\d{2}$/.test(value)) patch({ [key]: value })
+  /**
+   * A time input reports an empty string while half-typed; only store whole times.
+   *
+   * Once main has answered, the box is put back to what it has, which a refusal — or a
+   * time main tidied — would otherwise leave out of step with the box.
+   */
+  async function setClock(
+    event: Event & { currentTarget: HTMLInputElement },
+    key: 'quietHoursStart' | 'quietHoursEnd'
+  ): Promise<void> {
+    const input = event.currentTarget
+    if (!/^\d{2}:\d{2}$/.test(input.value)) return
+    await patch('quietHours', { [key]: input.value })
+    input.value = settings[key]
   }
 
   // A refused notification is invisible by definition, so the button has to say
@@ -121,15 +162,14 @@
   async function sendTest(): Promise<void> {
     testState = 'sending'
     testError = null
-    await app.testNotification()
-    // `app.actionError` is cleared at the start of every action, so whatever is on it
-    // now belongs to this call.
-    testError = app.actionError
-    testState = testError === null ? 'sent' : 'failed'
+    // This call's own answer: nothing else that happens meanwhile is mistaken for it.
+    const outcome = await app.testNotification()
+    testError = outcome.ok ? null : outcome.error
+    testState = outcome.ok ? 'sent' : 'failed'
   }
 </script>
 
-{#snippet row(title: string, description: string, control: Snippet, indent = false)}
+{#snippet row(title: string, description: string, control: Snippet, key: string, indent = false)}
   <div
     class={cn(
       'flex items-center justify-between gap-4 py-2',
@@ -143,6 +183,7 @@
     </div>
     <div class="shrink-0">{@render control()}</div>
   </div>
+  <Refused class={cn(indent && 'pl-3')} text={refusals.of(key)} />
 {/snippet}
 
 {#snippet heading(title: string)}
@@ -166,11 +207,14 @@
       </p>
     </div>
     <Switch
-      checked={settings.notificationsEnabled}
-      onCheckedChange={(checked) => patch({ notificationsEnabled: checked })}
+      bind:checked={
+        () => settings.notificationsEnabled,
+        (checked) => void patch('enabled', { notificationsEnabled: checked })
+      }
       aria-label="Enable notifications"
     />
   </div>
+  <Refused text={refusals.of('enabled')} />
 
   <Separator />
 
@@ -180,7 +224,7 @@
         variant="outline"
         size="sm"
         disabled={off}
-        onclick={() => patch({ notificationsSnoozedUntil: null })}
+        onclick={() => void patch('pause', { notificationsSnoozedUntil: null })}
       >
         Resume
       </Button>
@@ -205,7 +249,8 @@
     pausedUntil
       ? `Held until ${formatClock(pausedUntil, new Date(now))}, then summarized.`
       : 'For a call or a screen share. Also in the menu bar.',
-    pauseControl
+    pauseControl,
+    'pause'
   )}
 
   <Separator />
@@ -213,9 +258,11 @@
   {#snippet soundControl()}
     <Select
       type="single"
-      value={settings.notificationSound}
+      bind:value={
+        () => settings.notificationSound,
+        (value) => void patch('sound', { notificationSound: value as NotificationSound })
+      }
       disabled={off}
-      onValueChange={(value) => patch({ notificationSound: value as NotificationSound })}
     >
       <SelectTrigger class="w-[8.5rem]" aria-label="When to play the notification sound"
         >{sound.label}</SelectTrigger
@@ -227,35 +274,40 @@
       </SelectContent>
     </Select>
   {/snippet}
-  {@render row('Play sound', sound.hint, soundControl)}
+  {@render row('Play sound', sound.hint, soundControl, 'sound')}
 
   <Separator />
 
   {#snippet stickyControl()}
     <Switch
-      checked={settings.notifyStickyOutages}
+      bind:checked={
+        () => settings.notifyStickyOutages,
+        (checked) => void patch('sticky', { notifyStickyOutages: checked })
+      }
       disabled={off}
-      onCheckedChange={(checked) => patch({ notifyStickyOutages: checked })}
       aria-label="Keep outages on screen"
     />
   {/snippet}
   {@render row(
     'Keep outages on screen',
     'Until dismissed. Needs the Alerts style in System Settings.',
-    stickyControl
+    stickyControl,
+    'sticky'
   )}
 
   <Separator />
 
   {#snippet bodyControl()}
     <Switch
-      checked={settings.notificationShowBody}
+      bind:checked={
+        () => settings.notificationShowBody,
+        (checked) => void patch('body', { notificationShowBody: checked })
+      }
       disabled={off}
-      onCheckedChange={(checked) => patch({ notificationShowBody: checked })}
       aria-label="Show update text"
     />
   {/snippet}
-  {@render row('Show update text', 'Off shows only the source and stage.', bodyControl)}
+  {@render row('Show update text', 'Off shows only the source and stage.', bodyControl, 'body')}
 
   <Separator />
 
@@ -285,9 +337,7 @@
       Sent. If nothing appeared, check Notifications in System Settings.
     </p>
   {:else if testState === 'failed'}
-    <p class="px-0.5 pb-2 text-[11px] text-destructive" role="alert">
-      {testError ?? 'The system refused the notification.'}
-    </p>
+    <Refused text={testError} />
   {/if}
 
   <!-- ------------------------------------------------------------ what -->
@@ -306,7 +356,7 @@
           disabled={off}
           title={choice.hint}
           aria-pressed={preset === choice.value}
-          onclick={() => patch({ notifySeverities: [...choice.severities] })}
+          onclick={() => choosePreset([...choice.severities])}
           class={cn(
             'flex-1 rounded-md px-2 py-1 text-[11.5px] font-medium text-muted-foreground transition-colors',
             'focus-visible:ring-[2px] focus-visible:ring-ring/40 focus-visible:outline-none',
@@ -323,7 +373,7 @@
 
     <div class="mt-2 flex flex-wrap gap-1" role="group" aria-label="Incident stages">
       {#each SEVERITY_ORDER as severity (severity)}
-        {@const chosen = settings.notifySeverities.includes(severity)}
+        {@const chosen = severities.current.includes(severity)}
         <button
           type="button"
           disabled={off}
@@ -350,21 +400,25 @@
       {/each}
     </div>
   </div>
+  <Refused text={refusals.of('severities')} />
 
   <Separator />
 
   {#snippet followControl()}
     <Switch
-      checked={settings.notifyFollowUpsOnly}
+      bind:checked={
+        () => settings.notifyFollowUpsOnly,
+        (checked) => void patch('followUps', { notifyFollowUpsOnly: checked })
+      }
       disabled={off}
-      onCheckedChange={(checked) => patch({ notifyFollowUpsOnly: checked })}
       aria-label="Only follow-ups for incidents I was told about"
     />
   {/snippet}
   {@render row(
     'Only follow-ups I asked for',
     'Monitoring and Resolved only for incidents you got a banner about.',
-    followControl
+    followControl,
+    'followUps'
   )}
 
   <!-- ------------------------------------------------------------ where -->
@@ -375,22 +429,26 @@
     {#if index > 0}<Separator />{/if}
     {#snippet sourceControl()}
       <Switch
-        checked={settings.notifySources.includes(source.kind)}
+        bind:checked={
+          () => sources.current.includes(source.kind),
+          (checked) => toggleSource(source.kind, checked)
+        }
         disabled={off}
-        onCheckedChange={(checked) => toggleSource(source.kind, checked)}
         aria-label={`Notifications from ${source.title.toLowerCase()}`}
       />
     {/snippet}
-    {@render row(source.title, source.hint, sourceControl)}
+    {@render row(source.title, source.hint, sourceControl, source.kind)}
   {/each}
 
   {#if probesOn}
     {#snippet scopeControl()}
       <Select
         type="single"
-        value={settings.notifyProbeScope}
+        bind:value={
+          () => settings.notifyProbeScope,
+          (value) => void patch('scope', { notifyProbeScope: value as ProbeNotifyScope })
+        }
         disabled={off}
-        onValueChange={(value) => patch({ notifyProbeScope: value as ProbeNotifyScope })}
       >
         <SelectTrigger class="w-[9.5rem]" aria-label="Which measured services to notify about"
           >{scope.label}</SelectTrigger
@@ -402,7 +460,7 @@
         </SelectContent>
       </Select>
     {/snippet}
-    {@render row('Which services', scope.hint, scopeControl, true)}
+    {@render row('Which services', scope.hint, scopeControl, 'scope', true)}
 
     {#if settings.notifyProbeScope === 'pinned'}
       <div
@@ -414,7 +472,7 @@
         aria-label="Pinned services"
       >
         {#each services as service (service.id)}
-          {@const pinned = settings.pinnedServices.includes(service.id)}
+          {@const pinned = pins.current.includes(service.id)}
           <label
             class="flex cursor-pointer items-center gap-2 px-2 py-1 text-[11.5px] hover:bg-accent"
           >
@@ -432,14 +490,17 @@
           </label>
         {/each}
       </div>
+      <Refused class="pt-1 pl-3" text={refusals.of('pins')} />
     {/if}
 
     {#snippet graceControl()}
       <Select
         type="single"
-        value={String(settings.notifyProbeGraceSec)}
+        bind:value={
+          () => String(settings.notifyProbeGraceSec),
+          (value) => void patch('grace', { notifyProbeGraceSec: Number(value) })
+        }
         disabled={off}
-        onValueChange={(value) => patch({ notifyProbeGraceSec: Number(value) })}
       >
         <SelectTrigger class="w-[8.5rem]" aria-label="How long a service must be down">
           {grace}
@@ -455,24 +516,35 @@
       'Down for at least',
       'Blips shorter than this are never announced.',
       graceControl,
+      'grace',
       true
     )}
 
     {#snippet recoveryControl()}
       <Switch
-        checked={settings.notifyProbeRecovery}
+        bind:checked={
+          () => settings.notifyProbeRecovery,
+          (checked) => void patch('recovery', { notifyProbeRecovery: checked })
+        }
         disabled={off}
-        onCheckedChange={(checked) => patch({ notifyProbeRecovery: checked })}
         aria-label="Notify when a service recovers"
       />
     {/snippet}
-    {@render row('When it recovers', 'A banner when a service is back.', recoveryControl, true)}
+    {@render row(
+      'When it recovers',
+      'A banner when a service is back.',
+      recoveryControl,
+      'recovery',
+      true
+    )}
 
     {#snippet partialControl()}
       <Switch
-        checked={settings.notifyProbePartial}
+        bind:checked={
+          () => settings.notifyProbePartial,
+          (checked) => void patch('partial', { notifyProbePartial: checked })
+        }
         disabled={off}
-        onCheckedChange={(checked) => patch({ notifyProbePartial: checked })}
         aria-label="Notify when a service is partly failing"
       />
     {/snippet}
@@ -480,6 +552,7 @@
       'When it is partly failing',
       'Some checks failing, others passing.',
       partialControl,
+      'partial',
       true
     )}
   {/if}
@@ -490,16 +563,19 @@
 
   {#snippet quietControl()}
     <Switch
-      checked={settings.quietHoursEnabled}
+      bind:checked={
+        () => settings.quietHoursEnabled,
+        (checked) => void patch('quietHoursEnabled', { quietHoursEnabled: checked })
+      }
       disabled={off}
-      onCheckedChange={(checked) => patch({ quietHoursEnabled: checked })}
       aria-label="Quiet hours"
     />
   {/snippet}
   {@render row(
     'Quiet hours',
     'Banners wait until the end, then arrive as one. macOS Focus still applies.',
-    quietControl
+    quietControl,
+    'quietHoursEnabled'
   )}
 
   {#if settings.quietHoursEnabled}
@@ -510,7 +586,7 @@
         value={settings.quietHoursStart}
         disabled={off}
         aria-label="Quiet hours start"
-        onchange={(event) => setClock('quietHoursStart', event.currentTarget.value)}
+        onchange={(event) => void setClock(event, 'quietHoursStart')}
       />
       <span class="text-[11px] text-muted-foreground">to</span>
       <Input
@@ -519,15 +595,18 @@
         value={settings.quietHoursEnd}
         disabled={off}
         aria-label="Quiet hours end"
-        onchange={(event) => setClock('quietHoursEnd', event.currentTarget.value)}
+        onchange={(event) => void setClock(event, 'quietHoursEnd')}
       />
     </div>
+    <Refused class="pt-1 pl-3" text={refusals.of('quietHours')} />
 
     {#snippet breakthroughControl()}
       <Switch
-        checked={settings.quietHoursBreakthrough}
+        bind:checked={
+          () => settings.quietHoursBreakthrough,
+          (checked) => void patch('breakthrough', { quietHoursBreakthrough: checked })
+        }
         disabled={off}
-        onCheckedChange={(checked) => patch({ quietHoursBreakthrough: checked })}
         aria-label="Let outages through quiet hours"
       />
     {/snippet}
@@ -535,6 +614,7 @@
       'Let outages through',
       'Outages and degradations still get a banner.',
       breakthroughControl,
+      'breakthrough',
       true
     )}
   {/if}
@@ -544,9 +624,11 @@
   {#snippet awayControl()}
     <Select
       type="single"
-      value={settings.notifyWhenAway}
+      bind:value={
+        () => settings.notifyWhenAway,
+        (value) => void patch('away', { notifyWhenAway: value as AwayBehaviour })
+      }
       disabled={off}
-      onValueChange={(value) => patch({ notifyWhenAway: value as AwayBehaviour })}
     >
       <SelectTrigger class="w-[8.5rem]" aria-label="What to do while you are away"
         >{away.label}</SelectTrigger
@@ -558,22 +640,25 @@
       </SelectContent>
     </Select>
   {/snippet}
-  {@render row("While I'm away", away.hint, awayControl)}
+  {@render row("While I'm away", away.hint, awayControl, 'away')}
 
   <Separator />
 
   {#snippet burstControl()}
     <Switch
-      checked={settings.notifyCombineBursts}
+      bind:checked={
+        () => settings.notifyCombineBursts,
+        (checked) => void patch('bursts', { notifyCombineBursts: checked })
+      }
       disabled={off}
-      onCheckedChange={(checked) => patch({ notifyCombineBursts: checked })}
       aria-label="Combine bursts"
     />
   {/snippet}
   {@render row(
     'Combine bursts',
     'Updates within two minutes of a banner arrive as one.',
-    burstControl
+    burstControl,
+    'bursts'
   )}
 
   <p class="px-0.5 pt-2 text-[11px] leading-snug text-muted-foreground">

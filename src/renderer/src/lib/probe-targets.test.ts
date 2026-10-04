@@ -25,6 +25,7 @@ describe('paths', () => {
   it('finds the section a path is in, with the two apps apart', () => {
     expect(sectionOf(['accounts', 2, 'did'])).toBe('accounts')
     expect(sectionOf(['cdnImages'])).toBe('cdnImages')
+    expect(sectionOf(['apps', 'pckt', 'publication'])).toBe('pckt')
     expect(sectionOf(['apps', 'leaflet', 'feed', 'rkey'])).toBe('leaflet')
     expect(sectionOf(['apps', 'offprint', 'publication'])).toBe('offprint')
   })
@@ -50,9 +51,11 @@ describe('paths', () => {
     expect(SECTIONS.map((s) => s.key)).toEqual([
       'accounts',
       'feeds',
+      'pdses',
       'forYou',
       'cdnImages',
       'tangled',
+      'pckt',
       'leaflet',
       'offprint'
     ])

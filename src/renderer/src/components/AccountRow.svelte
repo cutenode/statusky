@@ -4,11 +4,13 @@
   import { Tooltip, TooltipContent, TooltipTrigger } from '$lib/components/ui/tooltip'
   import { app } from '$lib/app-state.svelte'
   import { nav } from '$lib/nav.svelte'
+  import { Refusals } from '$lib/requests.svelte'
   import { cn } from '$lib/utils'
   import { NOTIFY_LEVEL_CHOICES } from '@shared/notify'
   import { HEALTH_LABEL } from '@shared/status'
   import { sourceLabel } from '@shared/webhook'
   import type { Account, NotifyLevel } from '@shared/types'
+  import type { Outcome } from '$lib/app-state.svelte'
   import Bell from '@lucide/svelte/icons/bell'
   import BellOff from '@lucide/svelte/icons/bell-off'
   import Eye from '@lucide/svelte/icons/eye'
@@ -18,8 +20,16 @@
   import Webhook from '@lucide/svelte/icons/webhook'
   import Activity from '@lucide/svelte/icons/activity'
   import HealthDot from './HealthDot.svelte'
+  import Refused from './Refused.svelte'
 
   let { account }: { account: Account } = $props()
+
+  /**
+   * Why main refused what this row last asked for — hiding, forgetting, or how much to
+   * announce — said under the row rather than under the add field at the top of the tab.
+   */
+  const refusals = new Refusals()
+  const ask = (request: Promise<Outcome<unknown>>): void => void refusals.track('row', request)
 
   const pushed = $derived(account.kind === 'webhook')
   const level = $derived(
@@ -126,7 +136,7 @@
     <Tooltip>
       <TooltipTrigger
         class="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        onclick={() => void app.patchAccount(account.did, { muted: !account.muted })}
+        onclick={() => ask(app.patchAccount(account.did, { muted: !account.muted }))}
         aria-label={account.muted ? 'Show in feed' : 'Hide from feed'}
       >
         {#if account.muted}
@@ -142,7 +152,7 @@
       <Tooltip>
         <TooltipTrigger
           class="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-destructive/12 hover:text-destructive"
-          onclick={() => void app.removeAccount(account.did)}
+          onclick={() => ask(app.removeAccount(account.did))}
           aria-label="Stop tracking"
         >
           <Trash class="size-3.5" />
@@ -153,9 +163,10 @@
 
     <Select
       type="single"
-      value={account.notify}
-      onValueChange={(value) =>
-        void app.patchAccount(account.did, { notify: value as NotifyLevel })}
+      bind:value={
+        () => account.notify,
+        (value) => ask(app.patchAccount(account.did, { notify: value as NotifyLevel }))
+      }
     >
       <SelectTrigger
         class="ml-1 h-7 w-auto gap-1 px-1.5 text-[11.5px]"
@@ -177,3 +188,4 @@
     </Select>
   </div>
 </div>
+<Refused class="-mt-1 pb-0.5" text={refusals.of('row')} />

@@ -142,19 +142,28 @@ export class Model extends EventEmitter<ModelEvents> {
     return this.store.get('settings')
   }
 
+  /**
+   * Everything the popover is shown, from one read of the store.
+   *
+   * One read, not one per key, and that is the point of taking `store.store` whole:
+   * `electron-store` keeps nothing in memory, so every `get` reads the whole config file
+   * off disk and parses it — five hundred posts and all — on the main thread. A state
+   * push is built on every change and every poll, and the six reads this used to make of
+   * it were six times the stall for the same answer.
+   */
   getState(): AppState {
-    const accounts = this.accounts
-    const posts = visiblePosts(this.store.get('posts'), accounts)
+    const { accounts, settings, posts: stored, read } = this.store.store
+    const posts = visiblePosts(stored, accounts)
     return {
       accounts,
       posts,
-      settings: this.settings,
+      settings,
       // Unread is derived, not stored: the cursors are the state, and a muted source's
       // posts are not in `posts`, so they drop out of the count without being read.
-      unread: unreadUris(posts, this.read),
+      unread: unreadUris(posts, read),
       sync: this.sync,
       webhook: this.receiver.status(),
-      network: this.monitor.summary(this.settings.networkChecks),
+      network: this.monitor.summary(settings.networkChecks, settings.countedProbeGroups),
       loginItem: this.loginItem,
       shortcut: this.shortcut,
       update: this.update,
@@ -162,9 +171,15 @@ export class Model extends EventEmitter<ModelEvents> {
     }
   }
 
+  /** The unread posts' URIs, from one read of the store; what `getState` says, and no more. */
+  private unread(): string[] {
+    const { accounts, posts, read } = this.store.store
+    return unreadUris(visiblePosts(posts, accounts), read)
+  }
+
   /** Count of unread posts from accounts that are currently visible. */
   get unreadCount(): number {
-    return this.getState().unread.length
+    return this.unread().length
   }
 
   /**
@@ -176,7 +191,7 @@ export class Model extends EventEmitter<ModelEvents> {
    * in `unread` either, so muting one while its banner was held also settles it.
    */
   stillUnread(posts: StatusPost[]): StatusPost[] {
-    const unread = new Set(this.getState().unread)
+    const unread = new Set(this.unread())
     return posts.filter((post) => unread.has(post.uri))
   }
 
@@ -635,6 +650,15 @@ export class Model extends EventEmitter<ModelEvents> {
   /** Sweep every service now; resolves when the sweep has finished. */
   runNetworkChecks(): Promise<void> {
     return this.monitor.run()
+  }
+
+  /**
+   * The machine is back: sweep if what was last measured is stale enough, and the
+   * machine's own condition allows it. Unlike `runNetworkChecks`, which is the user
+   * asking, this can say no; see `NetworkMonitor.catchUp`.
+   */
+  catchUpNetwork(): void {
+    this.monitor.catchUp()
   }
 
   private configureNetwork(): void {

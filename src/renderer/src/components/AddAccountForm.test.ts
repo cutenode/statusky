@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent } from '@testing-library/svelte'
 import type { Account } from '@shared/types'
+import { app } from '$lib/app-state.svelte'
 import { makeAccount, makeProfile } from '../../../test/factories'
 import { renderWith } from '../test/render'
 import AddAccountForm from './AddAccountForm.svelte'
@@ -90,6 +91,45 @@ describe('AddAccountForm', () => {
     await fireEvent.input(input, { target: { value: 'nobody.invalid2' } })
 
     expect(queryByText('Profile not found')).toBeNull()
+  })
+
+  it('is labelled for a screen reader, and says a failure out loud', async () => {
+    const { container, getByLabelText, findByRole } = await renderWith(
+      AddAccountForm,
+      {},
+      { resolveError: 'Profile not found' }
+    )
+    const input = getByLabelText('Account to track')
+
+    await fireEvent.input(input, { target: { value: 'nobody.invalid' } })
+    await fireEvent.submit(container.querySelector('form')!)
+
+    expect((await findByRole('alert')).textContent).toBe('Profile not found')
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(input.getAttribute('aria-describedby')).toBe('add-account-note')
+  })
+
+  // The sentence under the field used to be the whole popover's: a failed settings change
+  // or a mark-as-read that lost a race could appear here, and wipe one that belonged.
+  it('says only what its own request answered', async () => {
+    const { bridge, container, getByLabelText, findByText, queryByRole } = await renderWith(
+      AddAccountForm,
+      {},
+      { resolveError: 'Profile not found' }
+    )
+    vi.mocked(bridge.api.Feed.markRead).mockRejectedValueOnce(new Error('Left the feed'))
+
+    await app.markRead(['at://gone'])
+    expect(queryByRole('alert')).toBeNull()
+
+    await fireEvent.input(getByLabelText('Account to track'), {
+      target: { value: 'nobody.invalid' }
+    })
+    await fireEvent.submit(container.querySelector('form')!)
+    expect(await findByText('Profile not found')).toBeTruthy()
+
+    await app.refresh()
+    expect(queryByRole('alert')?.textContent).toBe('Profile not found')
   })
 
   it('does nothing when submitted empty', async () => {

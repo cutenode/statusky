@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent } from '@testing-library/svelte'
+import { motion } from '$lib/motion.svelte'
 import { nav } from '$lib/nav.svelte'
-import { makeService, makeSettings, makeSnapshot } from '../../../test/factories'
+import { targetsDraft } from '$lib/probe-targets-draft.svelte'
+import {
+  makeNetworkSummary,
+  makeService,
+  makeSettings,
+  makeSnapshot
+} from '../../../test/factories'
 import type { BridgeOptions } from '../../../test/bridge'
 import { renderWith } from '../test/render'
 import NetworkPanel from './NetworkPanel.svelte'
@@ -37,6 +44,37 @@ describe('the dashboard', () => {
     expect(container.querySelector('#group-relays')!.closest('section')!.textContent).toContain(
       '1/2'
     )
+  })
+
+  it('marks a panel left out of the menu bar, and never the control group', async () => {
+    const { container } = await panel({
+      ...measured,
+      settings: makeSettings({ countedProbeGroups: ['appviews'] })
+    })
+    const heading = (id: string): string =>
+      container.querySelector(`#group-${id}`)!.textContent!.replace(/\s+/g, ' ').trim()
+    expect(heading('relays')).toBe('Relays · not counted')
+    expect(heading('appviews')).toBe('AppViews')
+    expect(heading('internet')).toBe('Internet')
+  })
+
+  it('says when an account the checks read has gone, and offers Settings', async () => {
+    const toggle = vi.spyOn(nav, 'toggle')
+    const { getByRole } = await panel({
+      ...measured,
+      network: makeNetworkSummary({
+        vanished: [
+          { did: 'did:plc:gone', part: 'account' },
+          { did: 'did:plc:gone', part: 'handle' }
+        ]
+      })
+    })
+    expect(getByRole('status').textContent).toMatch(/^An account the checks read has been deleted/)
+    await fireEvent.click(getByRole('button', { name: 'Replace in Settings' }))
+    expect(toggle).toHaveBeenCalledWith('settings')
+    // And asks the editor there to open on its accounts, not on the top of Settings.
+    expect(targetsDraft.expanded.has('accounts')).toBe(true)
+    expect(targetsDraft.reveal).toBe('accounts')
   })
 
   it('explains the control group, and only that one', async () => {
@@ -137,6 +175,25 @@ describe('being revealed', () => {
     await vi.advanceTimersByTimeAsync(900)
     const second = container.querySelector('[data-service="relay:europe.firehose.network"]')!
     expect(second.className).toContain('highlighted')
+  })
+
+  // Svelte's transitions and a smooth scroll are script, which the stylesheet's
+  // reduced-motion rule cannot reach.
+  it('goes straight there, rather than smoothly, when asked for less motion', async () => {
+    const scroll = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const { container } = await panel()
+    motion.reduced = true
+
+    nav.reveal('relay:europe.firehose.network')
+    await act()
+    await act()
+    const chip = [...container.querySelectorAll('button')].find((b) =>
+      b.textContent?.includes('Relays')
+    )!
+    await fireEvent.click(chip)
+
+    expect(scroll).toHaveBeenCalledWith({ behavior: 'auto', block: 'center' })
+    expect(scroll).toHaveBeenCalledWith({ behavior: 'auto', block: 'start' })
   })
 
   it('goes back to the top when asked for the dashboard itself', async () => {

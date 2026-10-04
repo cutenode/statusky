@@ -9,8 +9,7 @@ import {
 } from '@shared/probe-targets'
 import type { Settings } from '@shared/types'
 import type { BridgeOptions } from '../../../test/bridge'
-import { makeProfile } from '../../../test/factories'
-import { app } from '$lib/app-state.svelte'
+import { makeProfile, makeNetworkSummary } from '../../../test/factories'
 import { pushState, renderWith, settle, type Rendered } from '../test/render'
 import ProbeTargetsPanel from './ProbeTargetsPanel.svelte'
 import SettingsPanel from './SettingsPanel.svelte'
@@ -119,9 +118,12 @@ describe('where the targets come from', () => {
 
     expect(header.textContent).toContain(`3 of ${PROBE_TARGET_LIMITS.cdnImages}`)
     expect(header.getAttribute('aria-expanded')).toBe('false')
+    // Nothing to point at while it is closed.
+    expect(header.hasAttribute('aria-controls')).toBe(false)
 
     await fireEvent.click(header)
     expect(header.getAttribute('aria-expanded')).toBe('true')
+    expect(document.getElementById(header.getAttribute('aria-controls')!)).not.toBeNull()
     expect(view.getByRole('group', { name: 'CDN images' })).toBeTruthy()
 
     await fireEvent.click(header)
@@ -211,8 +213,6 @@ describe('accounts', () => {
     await flush()
 
     expect(within(accounts).getByRole('alert').textContent).toBe('Profile not found')
-    // The Accounts tab shows `actionError` under its own add field.
-    expect(app.actionError).toBeNull()
 
     await type(input, 'nobody.invalid2')
     expect(within(accounts).queryByRole('alert')).toBeNull()
@@ -319,6 +319,112 @@ describe('accounts', () => {
     })
     expect(within(accounts).queryByLabelText('Replace @pfrazee.com with')).toBeNull()
     expect(view.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+})
+
+/**
+ * An edit used to be remembered by its place in the list, and the list's other remove
+ * buttons stayed live: remove a row above it and the edit, and a lookup on its way, went
+ * to whichever account had moved into that place.
+ */
+describe('an account being changed', () => {
+  it('holds every remove button until the change is done', async () => {
+    const [first, second] = DEFAULT_PROBE_TARGETS.accounts
+    const view = await renderPanel()
+    const accounts = await expand(view, 'Accounts')
+
+    await fireEvent.click(
+      within(accounts).getByRole('button', { name: `Change @${second!.handle}` })
+    )
+    const remove = within(accounts).getByRole('button', {
+      name: `Remove @${first!.handle}`
+    }) as HTMLButtonElement
+
+    expect(remove.disabled).toBe(true)
+    expect(remove.title).toBe('Finish changing the account first')
+
+    await fireEvent.click(within(accounts).getByRole('button', { name: 'Keep this account' }))
+    expect(remove.disabled).toBe(false)
+  })
+
+  it('drops what a lookup found for a change abandoned while it was on its way', async () => {
+    const [first] = DEFAULT_PROBE_TARGETS.accounts
+    const view = await renderPanel()
+    let answer!: () => void
+    vi.mocked(view.bridge.api.Actors.resolve).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = () => resolve(makeProfile({ did: 'did:plc:late', handle: 'late.example.com' }))
+        })
+    )
+    const accounts = await expand(view, 'Accounts')
+
+    await fireEvent.click(
+      within(accounts).getByRole('button', { name: `Change @${first!.handle}` })
+    )
+    await type(
+      within(accounts).getByLabelText(`Replace @${first!.handle} with`),
+      'late.example.com'
+    )
+    await fireEvent.click(within(accounts).getByRole('button', { name: 'Look it up and replace' }))
+    await fireEvent.click(within(accounts).getByRole('button', { name: 'Keep this account' }))
+    answer()
+    await flush()
+
+    expect(within(accounts).getByText(`@${first!.handle}`)).toBeTruthy()
+    expect(within(accounts).queryByText('@late.example.com')).toBeNull()
+    expect(view.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+
+  // Esc closes the edit. Left to reach the window as well, it closed the popover too.
+  it('answers Esc itself, and puts focus back on the row', async () => {
+    const [first] = DEFAULT_PROBE_TARGETS.accounts
+    const view = await renderPanel()
+    const accounts = await expand(view, 'Accounts')
+    await fireEvent.click(
+      within(accounts).getByRole('button', { name: `Change @${first!.handle}` })
+    )
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+
+    await fireEvent(within(accounts).getByLabelText(`Replace @${first!.handle} with`), event)
+    await settle()
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(`Change @${first!.handle}`)
+  })
+
+  it('puts focus on the replacement once it is in', async () => {
+    const [first] = DEFAULT_PROBE_TARGETS.accounts
+    const view = await renderPanel(null, {
+      resolves: makeProfile({ did: 'did:plc:replacement', handle: 'replacement.example.com' })
+    })
+    const accounts = await expand(view, 'Accounts')
+    await fireEvent.click(
+      within(accounts).getByRole('button', { name: `Change @${first!.handle}` })
+    )
+
+    await fireEvent.submit(
+      within(accounts).getByLabelText(`Replace @${first!.handle} with`).closest('form')!
+    )
+    await flush()
+
+    expect(document.activeElement?.getAttribute('aria-label')).toBe(
+      'Change @replacement.example.com'
+    )
+  })
+
+  it('leaves other keys to the field', async () => {
+    const [first] = DEFAULT_PROBE_TARGETS.accounts
+    const view = await renderPanel()
+    const accounts = await expand(view, 'Accounts')
+    await fireEvent.click(
+      within(accounts).getByRole('button', { name: `Change @${first!.handle}` })
+    )
+    const field = within(accounts).getByLabelText(`Replace @${first!.handle} with`)
+
+    await fireEvent.keyDown(field, { key: 'a' })
+
+    expect(within(accounts).getByLabelText(`Replace @${first!.handle} with`)).toBe(field)
   })
 })
 
@@ -456,6 +562,62 @@ describe('feeds and images', () => {
     ).toBe(true)
   })
 
+  it('adds a PDS of the user’s own, and sends its host normalised', async () => {
+    const view = await renderPanel()
+    const pdses = await expand(view, 'Your PDSes')
+    expect(pdses.textContent).toContain('Only the PDSes Statusky ships with are checked.')
+
+    await fireEvent.click(within(pdses).getByRole('button', { name: /Add PDS/ }))
+    await settle()
+    const added = within(pdses).getByRole('group', { name: 'PDS 1' })
+    expect(document.activeElement).toBe(within(added).getByLabelText('Host'))
+
+    await fireEvent.click(saveButton(view))
+    await flush()
+    expect(view.bridge.api.Preferences.patch).not.toHaveBeenCalled()
+    expect(within(added).getByText(/Must be a domain name/)).toBeTruthy()
+
+    await type(within(added).getByLabelText('Host'), ' PDS.Example.COM ')
+    await fireEvent.click(saveButton(view))
+    await flush()
+    expect(lastSent(view)?.probeTargets?.pdses).toEqual(['pds.example.com'])
+  })
+
+  it('refuses the same PDS twice, beside the second', async () => {
+    const targets = copy()
+    targets.pdses = ['pds.example.com']
+    const view = await renderPanel(targets)
+    const pdses = await expand(view, 'Your PDSes')
+
+    await fireEvent.click(within(pdses).getByRole('button', { name: /Add PDS/ }))
+    const added = within(pdses).getByRole('group', { name: 'PDS 2' })
+    await type(within(added).getByLabelText('Host'), 'pds.example.com')
+    await fireEvent.click(saveButton(view))
+    await flush()
+
+    expect(within(added).getByText('Same host as entry 1')).toBeTruthy()
+    expect(view.bridge.api.Preferences.patch).not.toHaveBeenCalled()
+  })
+
+  it('removes a PDS, and stops adding them at the limit', async () => {
+    const targets = copy()
+    targets.pdses = Array.from(
+      { length: PROBE_TARGET_LIMITS.pdses },
+      (_, n) => `pds${n}.example.com`
+    )
+    const view = await renderPanel(targets)
+    const pdses = await expand(view, 'Your PDSes')
+
+    const add = within(pdses).getByRole('button', { name: /Add PDS/ }) as HTMLButtonElement
+    expect(add.disabled).toBe(true)
+    await fireEvent.click(within(pdses).getByRole('button', { name: 'Remove pds0.example.com' }))
+    expect(add.disabled).toBe(false)
+
+    await fireEvent.click(saveButton(view))
+    await flush()
+    expect(lastSent(view)?.probeTargets?.pdses).toHaveLength(PROBE_TARGET_LIMITS.pdses - 1)
+  })
+
   it('adds, edits and removes images', async () => {
     const view = await renderPanel()
     const images = await expand(view, 'CDN images')
@@ -545,8 +707,13 @@ describe('single targets', () => {
     })
   })
 
-  it('changes Leaflet’s two records and Offprint’s publication', async () => {
+  it('changes pckt’s publication, Leaflet’s two records and Offprint’s publication', async () => {
     const view = await renderPanel()
+    const pckt = await expand(view, 'pckt')
+    await type(
+      within(pckt).getByLabelText('Publication'),
+      'at://did:plc:abc/site.standard.publication/3mblog'
+    )
     const leaflet = await expand(view, 'Leaflet')
     const document = within(leaflet).getByRole('group', { name: 'Document' })
     const feed = within(leaflet).getByRole('group', { name: 'Feed' })
@@ -562,6 +729,7 @@ describe('single targets', () => {
     await flush()
 
     const apps = lastSent(view)?.probeTargets?.apps
+    expect(apps?.pckt.publication).toBe('at://did:plc:abc/site.standard.publication/3mblog')
     expect(apps?.leaflet.publication.rkey).toBe('newdocument')
     expect(apps?.leaflet.feed.did).toBe('did:plc:busy')
     expect(apps?.offprint.publication).toBe('at://did:plc:abc/site.standard.publication/3mnew')
@@ -619,6 +787,35 @@ describe('the working copy', () => {
     expect(view.getByRole('button', { name: 'Save' })).toBeTruthy()
   })
 
+  // Replaced with the saved document when main answered, whatever had been typed while
+  // the save was on its way went with the copy it was typed into.
+  it('keeps what was typed while a save was on its way', async () => {
+    const view = await renderPanel()
+    const patch = vi.mocked(view.bridge.api.Preferences.patch)
+    const real = patch.getMockImplementation()!
+    let answer!: () => void
+    patch.mockImplementationOnce(
+      (next) =>
+        new Promise((resolve) => {
+          answer = () => void real(next).then(resolve)
+        })
+    )
+    const tangled = await expand(view, 'Tangled')
+    await type(within(tangled).getByLabelText('Page'), '/someone.example.com/first')
+
+    await fireEvent.click(saveButton(view))
+    await type(within(tangled).getByLabelText('Go path'), '/second?go-get=1')
+    answer()
+    await flush()
+
+    expect(lastSent(view)?.probeTargets?.tangled.repoPath).toBe('/someone.example.com/first')
+    expect((within(tangled).getByLabelText('Go path') as HTMLInputElement).value).toBe(
+      '/second?go-get=1'
+    )
+    expect(view.getByText('Unsaved changes to the check targets.')).toBeTruthy()
+    expect(view.getByText('Saved. The next check uses them.')).toBeTruthy()
+  })
+
   it('says why main refused a save', async () => {
     const view = await renderPanel()
     vi.mocked(view.bridge.api.Preferences.patch).mockRejectedValueOnce(new Error('Disk full'))
@@ -641,7 +838,7 @@ describe('resetting', () => {
     const confirm = view.getByRole('group', { name: 'Reset to defaults' })
     expect(confirm.textContent).toContain('Going back to the defaults changes:')
     expect(changesIn(confirm)).toEqual([['Accounts', '1 added, now 6']])
-    expect(confirm.textContent).toContain('Unchanged: Custom feeds, For You')
+    expect(confirm.textContent).toContain('Unchanged: Custom feeds, Your PDSes, For You')
     expect(confirm.textContent).toContain('Export it first')
 
     await fireEvent.click(within(confirm).getByRole('button', { name: 'Reset' }))
@@ -763,7 +960,7 @@ describe('importing', () => {
       ['Tangled', 'changed']
     ])
     expect(confirm.textContent).toContain(
-      'Unchanged: Custom feeds, For You, CDN images, Leaflet, Offprint.'
+      'Unchanged: Custom feeds, Your PDSes, For You, CDN images, pckt, Leaflet, Offprint.'
     )
     // Nothing is sent before it is confirmed.
     expect(view.bridge.api.Preferences.patch).not.toHaveBeenCalled()
@@ -780,9 +977,11 @@ describe('importing', () => {
   it('lists nothing as unchanged when everything changes', async () => {
     const doc = customTargets()
     doc.feeds = []
+    doc.pdses = ['pds.example.com']
     doc.forYou.did = 'did:web:elsewhere.example.com'
     doc.cdnImages = doc.cdnImages.slice(1)
     doc.tangled.ownerDid = 'did:plc:owner'
+    doc.apps.pckt.publication = 'at://did:plc:abc/site.standard.publication/3mblog'
     doc.apps.leaflet.feed.rkey = 'elsewhere'
     doc.apps.offprint.publication = 'at://did:plc:abc/site.standard.publication/3mnew'
     const view = await renderPanel(null, {
@@ -794,7 +993,7 @@ describe('importing', () => {
     await flush()
 
     const confirm = view.getByRole('group', { name: 'Import' })
-    expect(changesIn(confirm)).toHaveLength(7)
+    expect(changesIn(confirm)).toHaveLength(9)
     expect(confirm.textContent).not.toContain('Unchanged')
   })
 
@@ -874,6 +1073,29 @@ describe('importing', () => {
   })
 })
 
+describe('the import box from the keyboard', () => {
+  // Esc puts the box away. Left to reach the window, it closed the popover as well.
+  it('is put away by Esc, which goes no further', async () => {
+    const view = await renderPanel()
+    await fireEvent.click(view.getByRole('button', { name: /Import/ }))
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+
+    await fireEvent(view.getByLabelText('Targets to import'), event)
+
+    expect(event.defaultPrevented).toBe(true)
+    expect(view.queryByLabelText('Targets to import')).toBeNull()
+  })
+
+  it('leaves other keys to the box', async () => {
+    const view = await renderPanel()
+    await fireEvent.click(view.getByRole('button', { name: /Import/ }))
+
+    await fireEvent.keyDown(view.getByLabelText('Targets to import'), { key: 'Enter' })
+
+    expect(view.getByLabelText('Targets to import')).toBeTruthy()
+  })
+})
+
 describe('exporting', () => {
   it('saves through main and says where', async () => {
     const view = await renderPanel()
@@ -918,5 +1140,30 @@ describe('exporting', () => {
     await flush()
 
     expect(view.getByRole('alert').textContent).toContain('permission denied')
+  })
+})
+
+describe('an account the checks found gone', () => {
+  const [first, second] = DEFAULT_PROBE_TARGETS.accounts
+
+  it('says so beside it, and on the section, until it is replaced', async () => {
+    const view = await renderPanel(null, {
+      network: makeNetworkSummary({
+        vanished: [
+          { did: first!.did, part: 'account' },
+          { did: first!.did, part: 'handle' },
+          { did: second!.did, part: 'handle' }
+        ]
+      })
+    })
+    expect(view.getByRole('button', { name: /^Accounts/ }).textContent).toContain('2 gone')
+    const accounts = await expand(view, 'Accounts')
+    expect(accounts.textContent).toContain('No AppView has this account any more.')
+    expect(accounts.textContent).toContain('This handle no longer leads to this account.')
+
+    await fireEvent.click(
+      within(accounts).getByRole('button', { name: `Remove @${first!.handle}` })
+    )
+    expect(view.getByRole('button', { name: /^Accounts/ }).textContent).toContain('1 gone')
   })
 })

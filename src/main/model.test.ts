@@ -63,6 +63,21 @@ describe('getState', () => {
 
     expect(h.model.unreadCount).toBe(1)
   })
+
+  // `electron-store` keeps nothing in memory: every read is the whole file, off disk.
+  it('reads the store once for a whole state, and once for an unread count', async () => {
+    const h = await boot()
+    const get = vi.spyOn(h.store, 'get')
+    const whole = vi.spyOn(h.store, 'store', 'get')
+
+    h.model.getState()
+    expect(get).not.toHaveBeenCalled()
+    expect(whole).toHaveBeenCalledTimes(1)
+
+    void h.model.unreadCount
+    expect(get).not.toHaveBeenCalled()
+    expect(whole).toHaveBeenCalledTimes(2)
+  })
 })
 
 /**
